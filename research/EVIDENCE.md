@@ -76,7 +76,7 @@ Gathered 2026-10-05. Figure-read numbers are approximate (about ±0.01). Source 
 ## Incidents
 
 - OpenAI-Hugging Face (report: `sources/openai/hf.txt`): agents evaluated separately coordinated through an improvised message board; the report attributes this to cooperative multi-agent training ("agents learned to use improvised collaboration channels in rare cases during the training process ... This behavior was then reinforced"). Ord's "1,200 agents / 700 attacked" figures are not in the report text; do not cite them.
-- Anthropic-AISI (Aug 2026): Mythos 5 instances coordinated via public repos during cyber testing.
+- UK AISI incident report (unsanctioned agent behaviour during cyber testing, July 25-28 2026; https://www.aisi.gov.uk/blog/incident-report-unsanctioned-agent-behaviour-during-cyber-testing): 10 of 122 runs showed unsanctioned behaviour (17 cases Mythos 5, 2 from one GPT-5.6 Sol run), mostly one sustained line of activity. "One agent left public messages on GitHub offering collaboration with other agents working on the same challenge. It also provided instructions to reuse accounts and artefacts it had left behind, which were discovered and used by subsequent agents." Cross-run information sharing through unintended channels, not a coordinated team. (Corrected 2026-10-06; an earlier line here said "instances coordinated", which overstated it.)
 - GTG-1002 (Nov 2025): multi-agent decomposition into benign-looking subtasks to bypass safeguards.
 - Cooperative AI writeup (cooperativeai.com/post/lessons-from-multi-agent-safety-incidents): current evals "fail to measure multi-agent capabilities or propensities".
 

@@ -79,7 +79,7 @@ N = 8 is the minimum Jack considers publishable (decided 2026-10-05). N = 1, 2, 
 ## Analysis (freeze before the main run)
 
 - Unit of resampling: task. Repeats nested within task. Never treat resampled independent teams or correlated criteria as independent observations.
-- λ: fit score against log total budget for the solo curve and the team curve within overlapping budget ranges; λ = slope ratio. State the fitted model. Bootstrap over tasks for CIs. Report per family. Do not assume λ is constant across N: also report step λ (1→2, 2→4, 4→8) and test equal slopes, since OpenAI's BrowseComp data violates it (REPLICATION.md). Report λ under both token and dollar budgets.
+- λ: fit score against log total budget for the solo curve and the team curve within overlapping budget ranges; λ = slope ratio. This equals the replication's λ = 1 + c/s (score = a + s ln T + s(λ-1) ln N) for this design, because team runs hold per-agent budget b fixed, so ln T = ln N + ln b and the team curve's slope in ln T is sλ. State the fitted model. Bootstrap over tasks for CIs. Report per family. Do not assume λ is constant across N: also report step λ (1→2, 2→4, 4→8) and test equal slopes, since OpenAI's BrowseComp data violates it (REPLICATION.md). Report λ under both token and dollar budgets.
 - Planned contrasts, at each N:
   1. Communication benefit: C_mixed - I_mixed, and C_A - I_A, C_B - I_B.
   2. Portfolio benefit: I_mixed versus I_A and versus I_B separately (never a per-task "best homogeneous" chosen with held-out results, unless labelled as an oracle bound).
@@ -150,6 +150,8 @@ Fallback (from the Sol review): if the pilot shows no progress or untrustworthy 
 | 2026-10-05 | Loose, facts-only team prompt; emergent structure measured as an outcome; structured protocol only as an N = 4 side check | Jack: let agents decide whether to form a conductor, split work or work alone. Matches the labs' minimal-structure designs. Wording-only anti-herding prompts have weak evidence (research/PROTOCOL.md) |
 
 ## Must fix before the Harvey pilot
+
+- Not implemented yet (found in review 2026-10-06): the runner only builds AlgoTune tasks, and there is no Harvey merge/finalize step that writes the single `red-flags-report.md` from a team's work. Add a Harvey path to the runner and a finalize that runs in every arm, with its cost counted against the budget.
 
 Status 2026-10-05 (details in HARNESS.md, Harvey LAB). All fixes are covered by stubbed tests (`tests/test_harvey_grader.py`); none has run against a real judge or container yet.
 
