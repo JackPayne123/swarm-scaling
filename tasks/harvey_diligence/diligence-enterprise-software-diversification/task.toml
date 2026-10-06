@@ -1,0 +1,25 @@
+schema_version = "1.0"
+artifacts = ["/workspace/output/red-flags-report.md"]
+
+[task]
+name = "harveyai/diligence-enterprise-software-diversification"
+authors = [{ name = "Harvey AI" }]
+keywords = ["legal", "diligence", "mergers-&-acquisitions", "due-diligence", "red-flags", "virtual-data-room", "enterprise-software"]
+
+[metadata]
+work_type = "review"
+source_commit = "harveyai/harvey-labs@465d1fcf270daa01b0d1d63e30e3da9876d7a268"
+
+[environment]
+network_mode = "no-network"
+
+[verifier]
+timeout_sec = 14400.0
+
+[verifier.env]
+ANTHROPIC_API_KEY = "${ANTHROPIC_API_KEY}"
+JUDGE_CONCURRENCY = "${JUDGE_CONCURRENCY:-8}"
+REWARDKIT_JUDGE = "${REWARDKIT_JUDGE:-}"
+
+[agent]
+timeout_sec = 7200.0

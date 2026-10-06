@@ -1,0 +1,95 @@
+# Harness
+
+One harness for every task family: Inspect AI + inspect_harbor for tasks, sandboxes and scoring, plus a custom multi-agent solver (to build) passed via `--solver` / `solver=`. Facts below were checked in source and against the live Harbor hub on 2026-10-05 unless marked as inference; nothing has been run with a model yet.
+
+## Why this stack
+
+- inspect_harbor (Meridian Labs, 1.0.0+, last commit 2026-10-01) runs Harbor datasets as Inspect tasks. Registry: https://meridianlabs-ai.github.io/inspect_harbor/ and https://inspect.aisi.org.uk/evals/. Entries: `inspect_harbor/algotune` (154), `inspect_harbor/harveyai_lab` (1,251), `inspect_harbor/bencalvert04_programbench` (200), `inspect_harbor/yanagiorigami_frontier_cs` (172), plus `inspect_evals/frontier_cs` (238).
+- Custom solver: `inspect eval inspect_harbor/algotune --solver path/to/swarm.py@swarm`. Default agent is react() with bash(timeout=300), python(timeout=300), update_plan and CompactionEdit.
+- Scoring: `harbor_scorer` copies `/tests` into the same container after the solver returns, runs `test.sh`, reads `reward.txt` / `reward.json`, then deletes `/tests` and `/logs/verifier`. Score.value = reward; `passed = reward > 0`; the built-in metric is the arithmetic mean.
+- inspect_harbor does not enforce Harbor's agent timeouts. Set Inspect time and token limits ourselves.
+
+## Nothing off the shelf does what we need (survey 2026-10-05)
+
+- Inspect 0.3.276: no peer, team or messaging primitive. `deepagent(background=True)` is orchestrator-style (information flows subagent to parent only). Per-agent models work (react(model=...), get_model). Limits are a ContextVar tree: concurrent agents each inside their own `token_limit` / `run(limits=...)` get independent budgets, usage rolls up to any sample-level limit, overshoot at most one call. Uncaught errors in a `collect()` task cancel siblings, so wrap each agent.
+- inspect-swe 0.2.71: Claude Code agent teams do not spawn in `-p` mode (inspect-swe's mode), and are lead-spawned and dynamic anyway. Codex Multi-Agent V2 runs through the bridge, but it is OpenAI-only, root-led, has no per-agent token limit, and message payloads are encrypted (cannot log contents). Usable only as an OpenAI-only side check on a different scaffold.
+- Park et al. released code (github.com/jerryjonghopark/test-time-communication, 2026-10-04): a Harbor agent running k Copilot CLI processes with shared logs and a score board, no message injection, one model per run, budget by timeout. Does not plug into inspect_harbor 1.0 (which dropped the harbor dependency). Reuse its prompts and anti-herding protocol ideas, not the code.
+- DeLM (github.com/yuzhenmao/DeLM): Codex / Claude Code CLIs, separate containers, not Inspect, not mixed.
+- Anthropic large-team harness: spec only (Opus 5.5 card s8.12.4: Send Message "inserted following the recipient's next tool result"; Wait for Message "blocks sampling"). No release found.
+- Frameworks (OpenAI Agents SDK, langgraph-swarm, AG2, CAMEL, MetaGPT): handoff or coordinator patterns; none gives flat concurrent peers with injection, hard per-agent budgets and sandbox tools. Wrapping one adds a layer and still needs the same custom code.
+- Harbor 0.24.0: one agent per trial (plus an optional simulated user). No multi-agent trials.
+
+Decision: build a thin custom Inspect solver. Estimate 300-500 lines plus 150-250 lines of mockllm tests (estimate, not measured).
+
+## Solver design
+
+Implemented in `src/swarm_scaling/swarm.py` (solver, prompt, cleanup) and `team.py` (inboxes, registry, tools); tests in `tests/test_swarm.py`, wiring check in `scripts/smoke_swarm.py`.
+
+```
+swarm(models: list[str], per_agent_tokens: int, messaging=True, registry=True,
+      workspace_root="/app", setup: Solver | None = None,
+      finalize: Callable[[TaskState, list[Candidate]], Awaitable[None]] | None = None,
+      protocol_prompt: str | None = None, reasoning_effort: dict[str, str] | None = None,
+      time_limit: int | None = None, reveal_model_family=False)
+```
+
+- Each agent = inspect_harbor's default react() scaffold (bash, python, update_plan, CompactionEdit) with its own model. N = 1, independent and team arms therefore share the scaffold by construction. Mixed teams = a different model per agent.
+- Concurrency: `collect()` over N agents, each inside `run(agent, limits=[token_limit(per_agent_tokens)] (+ time_limit))`, each wrapped so one failure does not cancel the others. Budget is tokens only; dollars are computed afterwards from logged token counts and the price table, not enforced per agent.
+- Messaging tools: `send_message(to, text)` with `to` = agent id or `all`; `wait_for_message(timeout_s)`. Per-sample in-memory inboxes. A message to a finished agent is dropped and the sender is told. `wait_for_message` returns at once when every teammate has finished or is also waiting, so the team cannot deadlock.
+- Delivery: wrap every tool so pending peer messages are appended to the tool result (Anthropic's documented delivery point). This keeps react()'s compaction; the alternative (react(model=<custom Agent>)) disables compaction. Envelope per message: sender id, sender model id (only with `reveal_model_family=True`), UTC timestamp, payload, rendered as a text block after the tool output.
+- Registry: `publish_candidate(path, note)` copies the file or directory into `{workspace_root}/registry/agent_{i}-{k}` and makes it read-only (`chmod -R a-w`); `list_candidates()`. Private dirs `{workspace_root}/agents/agent_{i}`. Default root `/app` because Harbor tasks score there.
+- Independent arm: separate N = 1 samples with `messaging=False, registry=True` (private saved candidates, same pick-pool mechanism as teams), resampled into teams afterwards. `swarm()` refuses N > 1 with messaging and registry both off, because agents in one container share a filesystem and would not be independent.
+- No lead. Same protocol text appended to the task instruction for all agents, naming teammates by id (decide before freezing whether to reveal model family in the mixed arm: `reveal_model_family`).
+- `setup` runs once before the agents start (AlgoTune dev toolkit install). `finalize(state, candidates)` runs after they end and writes the task's single deliverable: AlgoTune selector copies the fastest correct candidate (on dev inputs) to `/app/solver.py`; Harvey merge step writes the named `.docx` files. Both run in every arm, and the Harvey merge cost counts against the budget. `candidates` = every registry entry plus each agent's final private dir (`kind` = `published` / `final_workspace`).
+- Before finalize: kill every process in the container (scoring runs in the same container and is timing-sensitive for AlgoTune). Container-only, by two positive checks: the environment behind Inspect's `SandboxEnvironmentProxy` must be a `DockerSandboxEnvironment`, and a probe inside the sandbox must confirm Linux + `/.dockerenv` + `/proc` with PID 1 not launchd. Before agents start, the same checks gate a snapshot of the container's PIDs; the kill script walks `/proc` and SIGKILLs every PID not in that baseline except 1, itself and its ancestors. The baseline is required: the first real-container test (2026-10-05) killed the container's keepalive (PID 1 is an init whose child keeps the container up) and the sample errored before scoring. On any other sandbox nothing is executed (`state.metadata["swarm"]["process_cleanup"]` records what happened). Verified in a real AlgoTune container with `scripts/check_cleanup_in_docker.py`: an agent-left `sleep 600` was killed (`killed 1`), the container survived and the sample scored, and the host was untouched.
+- Logging per agent (one agent span each via `run(name=agent_id)`) in `state.metadata["swarm"]["agents"]`: tokens by type from `Limit.usage`, which limit hit, end reason, messages sent/received/dropped with contents, candidates published, candidates read (list_candidates calls plus registry paths seen in tool arguments), start/end wall-clock.
+- Set `reasoning_effort` explicitly per model (Inspect issue #4295: unset defaults differ across providers).
+
+### Hard parts
+
+1. Termination and deadlock: all agents blocked in `wait_for_message`; messages to finished agents; one agent out of budget while peers continue.
+2. Token accounting parity across arms and providers. Inspect's `all` counts cached input on every request; the Opus 5.5 card counts each token once per context window. Pick one definition and apply it to every arm; messages are charged to the recipient.
+3. Shared-sandbox CPU contention for timing-based scoring.
+4. Provider quirks: GLM tool-call formatting, `max_connections` with N agents x concurrent samples.
+5. Attributing interleaved events (span per agent).
+
+## Per-family setup
+
+### AlgoTune (`inspect_harbor/algotune`, hub copy published 2026-03-21)
+
+- Agent sees an empty `/app`. Instruction pastes the reference `solve` and `is_solution` as bare methods (helpers and imports stripped). No `generate_problem`, no eval command (the adapter's "use python test_outputs.py" line is absent from the hub copy). `/tests` (evaluator, generator) only appears at scoring.
+- Fix: before agents start, install a dev toolkit in `/app/dev/`: the task's `generate_problem`, `is_solution`, reference solver and a timing script. Same toolkit in every arm. This restores the original AlgoTuner eval command.
+- `task.toml` (identical for all 154): cpus 8, memory 16 GB, agent and verifier timeout 3600 s, network public. Turn agent network off (agents could fetch the AlgoTune repo with every generator). The verifier does not need network.
+- Seeds (2026-10-05): the hub verifier builds its 100 instances with `random_seed=i` for i in 0..99, and agents hold `generate_problem`, so `algotune_task` runs a patched copy of `tests/` (`seed_with_offset`, pure function) that uses `ALGOTUNE_SEED_OFFSET + i`. One offset serves the whole experiment, so every arm and repeat is scored on the same instances: it is generated once (1,000,000 to 2^31-1000, disjoint from dev seeds 10,000+ and selection seeds 60,000+) into the gitignored `data/.algotune_seed_offset` and reused; exporting `ALGOTUNE_SEED_OFFSET` overrides it. If the file is lost it is restored from the offset recorded in `logs/*.eval` (several different offsets there raise instead); creation is atomic. Pre-experiment dev logs live in `logs/dev-2026-10-05/` so their trial offsets are not read. Hardening (2026-10-05): the offset is not in the verifier's environment; it travels as a `seed_offset` file in the scoring-time /tests copy (built in gitignored `data/.algotune_verifier/`), which the verifier reads and deletes while generating problems, and the fixture order is swapped so problems are generated before the solver is imported. A solver could still find the generated problems in process memory during timing; the exploit audit covers that. The hub dataset is pinned to `sha256:69d264f1...` (ALGOTUNE_REF); it reaches the container only as scoring-time `verifier_env` and is recorded in the eval header (`eval.metadata["algotune_seed_offset"]`) and each sample's `verifier_env`. The image, protocol and problem size are unchanged. A solver that reads `/tests` or its environment while it is being scored can still see the offset.
+- Reward = total baseline time / total solver time over 100 instances x 10 reps, interleaved, min taken; invalid or < 1.0 becomes 1.0; missing solver or constructor failure = 0. Compute our own metric (per-task log speedup, plus harmonic mean for comparability) from raw rewards; ignore the built-in mean and `passed`.
+- CPUs are shared by all agents in the sample: use `override_cpus` to raise the limit and keep host-level concurrency low.
+
+### Harvey LAB
+
+- Harbor `harveyai/lab` = v1.0 launch snapshot (published 2026-05-08): 1,251 tasks, 24 areas. It has no `diligence/*`, `firm-knowledge/*` or `contracts/*` (498 + 11 + 250 = 759 = the gap to the repo's 2,010). Task list: `research/task-data/harvey_harbor_tasks.json`.
+- Converted (2026-10-05): `uv run python scripts/convert_harvey_diligence.py` builds `tasks/harvey_diligence/diligence-<name>/` for the 11 tasks from a shallow clone of harvey-labs at `tasks/_src/harvey-labs` (v1.2.0, commit 465d1fc). The clone and every `environment/documents/` are gitignored; never commit data rooms. Load with `harvey_task(names=["diligence-media-recap"])` (below), not bare `harbor()`, which would grade in the container; the sample id is `harveyai/diligence-<name>`.
+- Mapping follows Harvey's published task: criterion `title` + `match_criteria` -> `judge.toml` description, `deliverables` -> `/workspace/output/<file>`, instruction paths prefixed `/workspace/output/`, same `lab-sandbox` base digest. All 11 have one deliverable, `red-flags-report.md`.
+- Documents are COPYed by `environment/Dockerfile` (as published), not bind-mounted. A bind mount would work (inspect_harbor expands `${CONTEXT_DIR}` in `docker-compose.yaml`) but ties the task to a host path, and COPY gives one content-hashed `hb__<hash>` image per task that every sample, arm and repeat reuses. Size per task: 2,600-4,061 files, 120-318 MB; all 11 are 37,623 files, 2.0 GB, so the document layers add about 2 GB on top of one shared base (562 MB compressed arm64, 589 MB amd64, from the ghcr manifests). No image has been built; loading hashes the files (0.3-7 s measured).
+- Grading (2026-10-05): `harvey_task()` (`src/swarm_scaling/harvey.py`) loads the tasks with `[environment] network_mode = "no-network"` (asserted per sample) and grades on the host with `harvey_grader` (`src/swarm_scaling/harvey_grader.py`): it reads `/workspace/output/red-flags-report.md` with `sandbox().read_file`, takes the criteria from the host's `tests/judge.toml`, and calls the judge through LiteLLM. Nothing from `tests/` enters the container (build context = `Dockerfile` + `documents/`, checked for all 11). Export the judge provider's key on the host (`ANTHROPIC_API_KEY`, or e.g. `GEMINI_API_KEY`).
+- Judge: reproduces rewardkit 0.1.4 (Apache-2.0): prompt text, yes/no schema, score normalisation, `reasoning_effort="medium"`, 300 s per call, 1 MB file limit. Differences are listed in the module docstring; the main one is that the report comes before the criterion, so the instruction + report prefix is byte-identical across criteria and provider caching applies (Anthropic: `cache_control` on the report block; OpenAI and Gemini cache prefixes automatically). Request bodies were captured offline (no network): LiteLLM 1.104 sends Anthropic native structured output with adaptive thinking and the cache breakpoint intact, and Gemini `response_json_schema` with `thinkingLevel` medium. No live judge call has been made.
+- Failures: each call gets 4 tries with 2/4/8 s backoff; a criterion that still fails scores non-pass and counts in `n_errored`. If every criterion errors (bad key, outage) the sample errors instead of scoring 0.
+- Score: `Score.value` = `criterion_fraction` (errored = non-pass). Metadata: `all_pass`, `n_criteria`, `n_passed`, `n_errored`, per-criterion `{passed, reasoning[, error]}` (enough for the union-of-runs analysis without re-judging), `judge`, `batch_size`, `judge_usage` (calls, input / cached input / cache-write / output tokens, `cost_usd` from LiteLLM's price map, null if the model is unpriced). Metrics: `mean` (mean criterion_fraction) and `all_pass_rate`.
+- `batch_size` (default 1 = Harvey's one call per criterion): k criteria per call with a fixed array schema of `{id, score, reasoning}`. rewardkit's batched schema keys on criterion names, so each call would compile a new grammar (Anthropic allows 20 per minute). Batching cuts calls and report re-reads k-fold, but criteria judged together can influence each other; compare against batch_size 1 before using it.
+- Judge swap: `harvey_task(judge="gemini/<model>")` (any LiteLLM string). The default Claude judge is outside the cheap pair's families (GLM + Luna); for the frontier check (Sonnet 5.5 in the team) use a Gemini judge and validate it against the default on a few runs.
+- Timeouts: `time_limit` (default 7,200 s, Harvey's agent timeout; inspect_harbor ignores task.toml's `[agent].timeout_sec`) is the sample limit, and Inspect caps scoring at half of it (3,600 s by default). `judge_timeout` is per call. The converter takes `--agent-timeout` / `--verifier-timeout`. None are measured.
+- Parity check (not default): `harvey_task(rewardkit_parity=True)` adds Harvey's original in-container verifier as a second scorer and turns container network on, so use it only to grade a fixed deliverable, never for a scored agent run. That verifier (`tests/test.sh`) pip-installs `harbor-rewardkit[documents]==0.1.4`, runs `rewardkit /tests` (one call per criterion, no caching, one failed call aborts it and loses all results), then `tests/criterion_fraction.py` (source `scripts/harvey_criterion_fraction.py`) adds `criterion_fraction` to reward.json, which lands in `Score.metadata["reward_dict"]` (rewardkit's own key is `reward`, all-pass). It needs `ANTHROPIC_API_KEY` exported (a missing `[verifier.env]` var raises) and honours `REWARDKIT_JUDGE`. The in-container rewardkit installs whatever LiteLLM is current, so its provider mapping can differ from our pinned version.
+- Harvey `task.toml` sets no CPU or memory; inspect_harbor leaves them unlimited unless overridden.
+- The repo's native harness (`lab_core`) has no compaction (`context_overflow` aborts). Under Inspect the solo arm gets CompactionEdit plus a notes file.
+
+### ProgramBench (phase 2)
+
+- Linux x86_64 Docker images only (~1 GB each). Official harness mini-swe-agent with 20 CPUs / 60 GB / 6 h / 1000 steps. Snapshots can be graded offline from a workspace tarball containing `compile.sh`.
+
+## Known pitfalls
+
+- Inspect retries rate-limit and quota errors with backoff for a long time by default, silently under `display="none"`. An exhausted OpenAI balance (`insufficient_quota`, seen 2026-10-05) looked like a hung run for 15 min. Set `max_retries` and `timeout` on every eval, and check provider balances before a grid.
+- Inspect's OpenAI-compatible provider needs `openai>=3.1`; with an older version the eval fails before starting and `display="none"` hides the PrerequisiteError.
+
+- Inspect's multi-agent docs warn that multi-agent designs "often don't out-perform simple react() agents". The solo arm is that baseline.
+- Coordination is trained per lab on native tools; our custom tools may under-elicit collaboration. Validate message delivery and adoption in the pilot and limit conclusions to this harness. Optional side check: GPT-6.1 Sol via inspect-swe codex_cli Multi-Agent V2 (different scaffold, OpenAI-only, flag it as such).
+- `multiagent-inspect` (Andon Labs) is stale and orchestrator-only. inspect_petri is single-target and only relevant to the addressee side project.

@@ -1,0 +1,199 @@
+{
+  "rule": "best-model final speedup in [1.5, 10.0] and median across models >= 1.05; tasks whose best model never exceeds 1.1x are excluded; N/A (no valid result) counts as 1.0; selected tasks sorted by name, pilot = random.Random(seed).sample(sorted_selected, 6), held-out = the rest",
+  "seed": 20261005,
+  "source": {
+    "file": "research/task-data/algotune_agent_summary.json",
+    "sha256": "891b905a18f43d9c1e35d5f4065a61dc8a2c2d9a499c05455f4372c73c835ef9",
+    "origin": "github.com/oripress/AlgoTune reports/agent_summary.json",
+    "n_models": 18
+  },
+  "n_selected": 32,
+  "never_above_1.1x": [
+    "affine_transform_2d",
+    "eigenvectors_complex",
+    "elementwise_integration",
+    "fft_convolution",
+    "firls",
+    "group_lasso",
+    "kernel_density_estimation",
+    "lp_centering",
+    "matrix_completion",
+    "matrix_exponential_sparse",
+    "matrix_sqrt",
+    "odr",
+    "rbf_interpolation",
+    "sha256_hashing",
+    "shift_2d",
+    "sparse_eigenvectors_complex",
+    "svm",
+    "toeplitz_solver",
+    "vectorized_newton",
+    "zoom_2d"
+  ],
+  "pilot": [
+    "cvar_projection",
+    "dst_type_II_scipy_fftpack",
+    "generalized_eigenvalues_real",
+    "job_shop_scheduling",
+    "optimal_advertising",
+    "vehicle_routing"
+  ],
+  "heldout": [
+    "btsp",
+    "chebyshev_center",
+    "clustering_outliers",
+    "eigenvalues_real",
+    "fft_cmplx_scipy_fftpack",
+    "fft_real_scipy_fftpack",
+    "generalized_eigenvalues_complex",
+    "generalized_eigenvectors_complex",
+    "generalized_eigenvectors_real",
+    "lasso",
+    "least_squares",
+    "min_dominating_set",
+    "min_weight_assignment",
+    "pca",
+    "qp",
+    "quantile_regression",
+    "randomized_svd",
+    "robust_linear_program",
+    "set_cover_conflicts",
+    "shortest_path_dijkstra",
+    "sinkhorn",
+    "sparse_lowest_eigenvalues_posdef",
+    "sparse_lowest_eigenvectors_posdef",
+    "tsp",
+    "two_eigenvalues_around_0",
+    "unit_simplex_projection"
+  ],
+  "stats": {
+    "btsp": {
+      "best": 7.222,
+      "median": 1.926
+    },
+    "chebyshev_center": {
+      "best": 7.07,
+      "median": 4.892
+    },
+    "clustering_outliers": {
+      "best": 2.532,
+      "median": 1.131
+    },
+    "cvar_projection": {
+      "best": 7.722,
+      "median": 1.085
+    },
+    "dst_type_II_scipy_fftpack": {
+      "best": 5.84,
+      "median": 1.14
+    },
+    "eigenvalues_real": {
+      "best": 2.523,
+      "median": 2.452
+    },
+    "fft_cmplx_scipy_fftpack": {
+      "best": 4.464,
+      "median": 2.324
+    },
+    "fft_real_scipy_fftpack": {
+      "best": 4.103,
+      "median": 1.222
+    },
+    "generalized_eigenvalues_complex": {
+      "best": 5.594,
+      "median": 3.643
+    },
+    "generalized_eigenvalues_real": {
+      "best": 5.336,
+      "median": 2.419
+    },
+    "generalized_eigenvectors_complex": {
+      "best": 3.361,
+      "median": 2.45
+    },
+    "generalized_eigenvectors_real": {
+      "best": 4.958,
+      "median": 1.441
+    },
+    "job_shop_scheduling": {
+      "best": 3.331,
+      "median": 1.53
+    },
+    "lasso": {
+      "best": 3.193,
+      "median": 1.059
+    },
+    "least_squares": {
+      "best": 3.81,
+      "median": 1.376
+    },
+    "min_dominating_set": {
+      "best": 6.871,
+      "median": 1.886
+    },
+    "min_weight_assignment": {
+      "best": 1.713,
+      "median": 1.241
+    },
+    "optimal_advertising": {
+      "best": 4.319,
+      "median": 1.265
+    },
+    "pca": {
+      "best": 6.466,
+      "median": 3.505
+    },
+    "qp": {
+      "best": 1.892,
+      "median": 1.657
+    },
+    "quantile_regression": {
+      "best": 1.687,
+      "median": 1.173
+    },
+    "randomized_svd": {
+      "best": 6.174,
+      "median": 4.422
+    },
+    "robust_linear_program": {
+      "best": 7.008,
+      "median": 1.067
+    },
+    "set_cover_conflicts": {
+      "best": 6.585,
+      "median": 2.125
+    },
+    "shortest_path_dijkstra": {
+      "best": 4.949,
+      "median": 2.182
+    },
+    "sinkhorn": {
+      "best": 2.254,
+      "median": 1.495
+    },
+    "sparse_lowest_eigenvalues_posdef": {
+      "best": 2.734,
+      "median": 1.682
+    },
+    "sparse_lowest_eigenvectors_posdef": {
+      "best": 2.914,
+      "median": 1.81
+    },
+    "tsp": {
+      "best": 1.922,
+      "median": 1.077
+    },
+    "two_eigenvalues_around_0": {
+      "best": 3.448,
+      "median": 1.777
+    },
+    "unit_simplex_projection": {
+      "best": 6.5,
+      "median": 1.092
+    },
+    "vehicle_routing": {
+      "best": 3.617,
+      "median": 1.22
+    }
+  }
+}

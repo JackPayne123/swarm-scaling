@@ -1,0 +1,33 @@
+version = "1.0"
+
+[task]
+name = "algotune/fft-convolution"
+authors = []
+keywords = []
+
+[metadata]
+author_name = "Ori Press"
+author_email = "ori.press@bethgelab.org"
+difficulty = "medium"
+category = "algorithm"
+tags = [ "python", "optimization", "algotune",]
+algotune_problem_size = 589823
+
+[verifier]
+timeout_sec = 3600.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 1800.0
+cpus = 8
+memory_mb = 16384
+storage_mb = 10240
+gpus = 0
+allow_internet = true
+mcp_servers = []
+
+[verifier.env]
+
+[solution.env]

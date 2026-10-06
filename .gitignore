@@ -1,0 +1,16 @@
+*.pdf
+.venv/
+logs/
+runs/
+__pycache__/
+.env
+tasks/_src/
+tasks/harvey_diligence/*/environment/documents/
+data/.algotune_seed_offset
+data/.algotune_verifier/
+# third-party full texts stay local (not ours to republish); index + extracted chart data are public
+research/sources/**
+!research/sources/
+!research/sources/README.md
+!research/sources/openai/
+!research/sources/openai/multiagent_charts.json
