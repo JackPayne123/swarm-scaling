@@ -14,3 +14,4 @@ research/sources/**
 !research/sources/README.md
 !research/sources/openai/
 !research/sources/openai/multiagent_charts.json
+grant/
