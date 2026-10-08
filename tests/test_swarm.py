@@ -298,3 +298,30 @@ async def test_check_budget_reports_this_agents_usage_and_remaining() -> None:
     tool = swarm_module.budget_tool(FakeLimit(), "all")
     out = await tool()
     assert "Used 1,500 of 2,000,000 tokens" in out and "1,998,500 remaining" in out
+
+
+def test_send_file_copies_into_the_recipients_inbox_and_tells_them_where(tmp_path: Path) -> None:
+    # Teams share drafts, data and notes directly, not only text messages and finished candidates.
+    ws = tmp_path / "ws"
+    sender_dir = ws / "agents" / "agent_0"
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("bash", command=f"mkdir -p {sender_dir}/notes && echo idea > {sender_dir}/notes/plan.md"),
+                    call("send_file", to="agent_1", path="notes", note="my plan"),
+                    submit(),
+                ),
+                scripted(call("bash", command="sleep 0.5"), call("bash", command="echo after"), submit()),
+            ],
+            per_agent_tokens=100_000,
+            workspace_root=str(ws),
+        ),
+    )
+    copied = ws / "agents" / "agent_1" / "inbox" / "from-agent_0-0" / "notes" / "plan.md"
+    assert copied.read_text() == "idea\n"
+    assert (sender_dir / "notes" / "plan.md").read_text() == "idea\n"
+    delivered = [str(e.result) for e in tool_events(log, "bash") if "[file] agent_0 sent you" in str(e.result)]
+    assert len(delivered) == 1 and "my plan" in delivered[0] and str(copied.parent.parent) in delivered[0]
+    assert swarm_meta(log)["agents"]["agent_0"]["files_sent"][0]["to"] == "agent_1"

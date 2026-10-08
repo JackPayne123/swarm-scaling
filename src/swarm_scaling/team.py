@@ -79,6 +79,7 @@ class AgentRecord:
     received: list[dict[str, Any]] = field(default_factory=list)
     dropped: list[dict[str, Any]] = field(default_factory=list)
     published: list[str] = field(default_factory=list)
+    files_sent: list[dict[str, Any]] = field(default_factory=list)
     list_candidates_calls: int = 0
     candidates_read: set[str] = field(default_factory=set)
     submitted: bool = False
@@ -109,6 +110,7 @@ class AgentRecord:
             "messages_received": self.received,
             "messages_dropped": self.dropped,
             "candidates_published": self.published,
+            "files_sent": self.files_sent,
             "list_candidates_calls": self.list_candidates_calls,
             "candidates_read": sorted(self.candidates_read),
         }
@@ -247,6 +249,56 @@ class Team:
         finally:
             self.set_status(agent_id, "running")
 
+    # -- direct file sharing -------------------------------------------------
+
+    def inbox_dir(self, agent_id: str) -> str:
+        return f"{self.agents[agent_id].private_dir}/inbox"
+
+    async def share_file(self, sender: str, to: str, path: str, note: str) -> str:
+        """Copy a file or folder into each recipient's inbox folder and message them its location.
+
+        The copy belongs to the recipient (writable); the sender's original is untouched. Inbox
+        folders sit below each agent's working directory, so their solver.py files are not
+        selection candidates unless the recipient moves one up.
+        """
+        if to == "all":
+            targets = [a.agent_id for a in self.others(sender)]
+        elif to == sender:
+            raise ToolError("You cannot send a file to yourself.")
+        elif to in self.agents:
+            targets = [to]
+        else:
+            raise ToolError(
+                f"Unknown recipient {to!r}. Use one of "
+                f"{', '.join(a.agent_id for a in self.others(sender))} or 'all'."
+            )
+        rec = self.agents[sender]
+        if not path.startswith("/"):
+            path = f"{rec.private_dir}/{path}"
+        k = len(rec.files_sent)
+        name = path.rstrip("/").split("/")[-1] or "file"
+        lines: list[str] = []
+        for target in targets:
+            if self.agents[target].status == "finished":
+                lines.append(f"{target} has already finished; file not sent.")
+                continue
+            dest = f"{self.inbox_dir(target)}/from-{sender}-{k}/{name}"
+            script = (
+                "set -e\n"
+                f"src={shlex.quote(path)}; dest={shlex.quote(dest)}\n"
+                '[ -e "$src" ] || { echo "no such path: $src" >&2; exit 2; }\n'
+                'mkdir -p "$(dirname "$dest")"\n'
+                'cp -R "$src" "$dest"\n'
+            )
+            result = await sandbox().exec(["sh", "-c", script], timeout=120)
+            if not result.success:
+                raise ToolError(f"send_file failed: {result.stderr.strip()}")
+            rec.files_sent.append({"to": target, "source": path, "dest": dest, "note": note, "at": time.time()})
+            body = f"[file] {sender} sent you {path} -> copied to {dest}" + (f"\n{note}" if note else "")
+            self.send(sender, target, body)
+            lines.append(f"Sent to {target}: {dest}")
+        return "\n".join(lines)
+
     # -- registry -----------------------------------------------------------
 
     async def publish(self, agent_id: str, path: str, note: str) -> str:
@@ -343,6 +395,20 @@ def wait_for_message_tool(team: Team, agent_id: str) -> Tool:
         return await team.wait(agent_id, timeout_s)
 
     return ToolDef(execute, name="wait_for_message").as_tool()
+
+
+def send_file_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(to: str, path: str, note: str = "") -> str:
+        """Send a copy of a file or folder to a teammate (or "all"). It lands in their inbox folder and they get a message with its location.
+
+        Args:
+            to: Recipient agent id (for example "agent_1"), or "all" for every teammate.
+            path: File or folder to send (absolute path, or relative to your working directory).
+            note: Optional message to go with it.
+        """
+        return await team.share_file(agent_id, to, path, note)
+
+    return ToolDef(execute, name="send_file").as_tool()
 
 
 def publish_candidate_tool(team: Team, agent_id: str) -> Tool:

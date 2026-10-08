@@ -35,6 +35,7 @@ from swarm_scaling.team import (
     list_candidates_tool,
     publish_candidate_tool,
     read_message_tool,
+    send_file_tool,
     send_message_tool,
     wait_for_message_tool,
     with_delivery,
@@ -281,6 +282,7 @@ def _agent_tools(
     tools = [with_delivery(t, team, agent_id) for t in tools]
     tools.append(with_delivery(send_message_tool(team, agent_id), team, agent_id))
     tools.append(with_delivery(read_message_tool(team, agent_id), team, agent_id))
+    tools.append(with_delivery(send_file_tool(team, agent_id), team, agent_id))
     tools.append(wait_for_message_tool(team, agent_id))
     return tools
 
@@ -346,6 +348,10 @@ def default_protocol_prompt(
             "Messages sent to you appear after your next tool result (long ones as a preview; "
             "read_message(id) shows the full text). wait_for_message(timeout_s) waits for one."
         )
+        lines.append(
+            "- send_file(to, path, note) sends a copy of any file or folder to one agent or to \"all\"; "
+            f"it lands in their {team.root}/agents/<id>/inbox folder and they get a message saying where."
+        )
     if registry and others:
         lines.append(
             "- publish_candidate(path, note) adds a solution to a shared registry "
@@ -355,6 +361,12 @@ def default_protocol_prompt(
         lines.append(
             "- publish_candidate(path, note) saves a copy of a solution as a candidate; "
             "list_candidates() lists your saved candidates."
+        )
+    if others:
+        lines.append(
+            f"- Other agents' working directories are readable at {team.root}/agents/<agent_id>. "
+            "You can share any file or folder by publishing it"
+            + (", sending it with send_file, or sending its path in a message." if messaging else ".")
         )
     if others and (messaging or registry):
         lines.append("")
