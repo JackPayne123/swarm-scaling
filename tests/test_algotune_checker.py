@@ -89,8 +89,9 @@ def test_checker_is_a_twin_of_the_agent_box_on_its_own_cpus() -> None:
     add_checker(config)
     dumped = config.model_dump(mode="json", by_alias=True, exclude_none=True)["services"]
     assert dumped["default"]["cpuset"] == "0-7" and dumped["checker"]["cpuset"] == "8-15"
-    assert {k: v for k, v in dumped["checker"].items() if k != "cpuset"} == {
-        k: v for k, v in dumped["default"].items() if k != "cpuset"
+    assert dumped["checker"]["mem_limit"] == "8192m"
+    assert {k: v for k, v in dumped["checker"].items() if k not in ("cpuset", "mem_limit")} == {
+        k: v for k, v in dumped["default"].items() if k not in ("cpuset", "mem_limit")
     }
     with pytest.raises(ValueError):
         add_checker(ComposeConfig(services={"default": ComposeService(image="hb__x", cpus=12.0)}))

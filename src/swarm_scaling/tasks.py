@@ -37,6 +37,7 @@ VERIFIER_DIR = SPLIT_PATH.parent / ".algotune_verifier"
 # Generated compose files, one per sample (see algotune_task). Gitignored.
 COMPOSE_DIR = SPLIT_PATH.parent / ".algotune_compose"
 DOCKER_VM_CPUS = 16  # Docker Desktop's VM on this Mac; the agent box and the checker each get half
+CHECKER_MEMORY_MB = 8192
 
 # Inserted into the verifier copy. The offset travels as a file in /tests (copied in only at scoring), not as an
 # environment variable (visible in /proc/self/environ to the solver), and the file is read and deleted while the
@@ -178,6 +179,8 @@ def add_checker(config: ComposeConfig) -> None:
     if not 0 < 2 * n <= DOCKER_VM_CPUS:
         raise ValueError(f"cannot pin two boxes of {default.cpus} CPUs inside {DOCKER_VM_CPUS} CPUs")
     checker = default.model_copy(deep=True)
+    # Two 12 GB boxes would fill the 24.6 GB Docker VM; one dev_eval process needs far less.
+    checker.mem_limit = f"{CHECKER_MEMORY_MB}m"
     default.__pydantic_extra__["cpuset"] = f"0-{n - 1}"
     checker.__pydantic_extra__["cpuset"] = f"{n}-{2 * n - 1}"
     config.services[CHECKER] = checker
