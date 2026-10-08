@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 from pathlib import Path
 
@@ -51,6 +52,25 @@ def arm_config(arm: str, models: list[str], n: int, budget: int, mult: int) -> d
     if len(models) > 1 and n % len(models) != 0:
         raise ValueError(f"a mixed team of {n} cannot split evenly across {len(models)} models")
     return {"models": team, "per_agent_tokens": budget, "messaging": arm == "team", "registry": True}
+
+
+def wait_for_docker_images(timeout_s: int = 300) -> None:
+    """Block until Docker lists the prebuilt AlgoTune images (hb__*).
+
+    Docker Desktop's Resource Saver stops the engine after idle minutes. A run that wakes it can reach
+    `compose up` before the image store is back, and compose then tries to pull the local-only image:
+    "pull access denied for hb__...". That killed two runs on 2026-10-08 (pilot2-team2-cvar, a smoke run).
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        out = subprocess.run(
+            ["docker", "image", "ls", "-q", "--filter", "reference=hb__*"], capture_output=True, text=True
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"Docker did not list any hb__* image within {timeout_s}s: {out.stderr.strip()}")
+        time.sleep(3)
 
 
 def main() -> None:
@@ -97,6 +117,7 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / "run.json").write_text(json.dumps({**metadata, "argv": vars(args)}, indent=2))
 
+    wait_for_docker_images()
     logs = eval(
         algotune_task(split=args.split),
         solver=swarm(
