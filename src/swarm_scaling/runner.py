@@ -67,6 +67,8 @@ def main() -> None:
     p.add_argument("--name", required=True, help="run name; logs go to logs/<name>/")
     p.add_argument("--budget-type", default="all", help='what --budget meters: "all" (default: input incl. cached + output) or "output"')
     p.add_argument("--reasoning-effort", default=None, help="explicit reasoning effort for every model (e.g. high)")
+    p.add_argument("--tool-style", default="default", choices=("default", "claude_code"),
+                   help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -86,6 +88,7 @@ def main() -> None:
         "family": "algotune",
         "split": args.split,
         "protocol": "loose",
+        "tool_style": args.tool_style,
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
         "launched_at": time.time(),
@@ -106,6 +109,7 @@ def main() -> None:
             time_limit=args.time_limit,
             budget_type=args.budget_type,
             deliverable=ALGOTUNE_DELIVERABLE,
+            tool_style=args.tool_style,
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

@@ -32,12 +32,19 @@ from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
 
 from swarm_scaling.team import (
     Team,
+    ToolStyle,
     list_candidates_tool,
     publish_candidate_tool,
     read_message_tool,
     send_file_tool,
+    send_message_cc_tool,
     send_message_tool,
+    task_create_tool,
+    task_get_tool,
+    task_list_tool,
+    task_update_tool,
     wait_for_message_tool,
+    with_budget_notices,
     with_delivery,
 )
 
@@ -76,6 +83,8 @@ def swarm(
     cpu_sample_interval: float = 15.0,
     budget_type: str = "all",
     deliverable: str | None = None,
+    budget_warnings: tuple[float, ...] = (0.5, 0.75, 0.9),
+    tool_style: ToolStyle = "default",
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -105,6 +114,11 @@ def swarm(
             AlgoTune: a file named solver.py. Candidates are found by this name, so state it.
         cpu_sample_interval: Seconds between container CPU samples (Docker only); the summary in
             state.metadata["swarm"]["cpu"] flags samples where the agents saturated the container's CPUs.
+        budget_warnings: Fractions of the agent's own budget at which a notice is appended to its
+            next tool result (each once; only the highest when several are passed at once). () disables.
+        tool_style: "claude_code" replaces send_message with Claude Code's SendMessage(to, message,
+            summary), delivers <teammate-message> blocks, and adds a shared task list (TaskCreate,
+            TaskList, TaskGet, TaskUpdate). Only team arms (messaging on) differ.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -129,7 +143,7 @@ def swarm(
         if setup is not None:
             state = await setup(state, generate)
 
-        team = Team(agent_ids, model_names, workspace_root, reveal_model_family)
+        team = Team(agent_ids, model_names, workspace_root, reveal_model_family, tool_style)
         dirs = [team.registry_dir] + [a.private_dir for a in team.agents.values()]
         mk = await sandbox().exec(["mkdir", "-p", *dirs])
         if not mk.success:
@@ -148,9 +162,13 @@ def swarm(
             def submitted(answer: str) -> None:
                 rec.submitted = True
 
+            tools = _agent_tools(team, agent_id, messaging, registry, budget_tool(tokens, budget_type), tool_style)
+            if budget_warnings:
+                # outermost, so the notice also follows message tools and deliveries
+                tools = [with_budget_notices(t, tokens, rec, budget_warnings, budget_type) for t in tools]
             agent = react(
                 name=agent_id,
-                tools=_agent_tools(team, agent_id, messaging, registry, budget_tool(tokens, budget_type)),
+                tools=tools,
                 model=resolve_model(model),
                 submit=AgentSubmit(tool=_submit_tool(submitted)),
                 compaction=CompactionEdit(),
@@ -164,6 +182,8 @@ def swarm(
                 budget_tokens=per_agent_tokens,
                 budget_type=budget_type,
                 deliverable=deliverable,
+                budget_warnings=budget_warnings,
+                tool_style=tool_style,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -231,6 +251,9 @@ def swarm(
             "workspace_root": workspace_root,
             "per_agent_tokens": per_agent_tokens,
             "time_limit": time_limit,
+            "tool_style": tool_style,
+            "budget_warnings": list(budget_warnings),
+            "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
             "process_cleanup": cleanup,
@@ -269,7 +292,12 @@ def budget_tool(limit, budget_type: str) -> Tool:
 
 
 def _agent_tools(
-    team: Team, agent_id: str, messaging: bool, registry: bool, budget: Tool | None = None
+    team: Team,
+    agent_id: str,
+    messaging: bool,
+    registry: bool,
+    budget: Tool | None = None,
+    tool_style: ToolStyle = "default",
 ) -> list[Tool]:
     tools: list[Tool] = [bash(timeout=300), python(timeout=300), update_plan()]
     if budget is not None:
@@ -280,9 +308,13 @@ def _agent_tools(
         return tools
     # every tool result is a delivery point; wait_for_message drains its own inbox
     tools = [with_delivery(t, team, agent_id) for t in tools]
-    tools.append(with_delivery(send_message_tool(team, agent_id), team, agent_id))
+    send = send_message_cc_tool if tool_style == "claude_code" else send_message_tool
+    tools.append(with_delivery(send(team, agent_id), team, agent_id))
     tools.append(with_delivery(read_message_tool(team, agent_id), team, agent_id))
     tools.append(with_delivery(send_file_tool(team, agent_id), team, agent_id))
+    if tool_style == "claude_code":
+        for make in (task_create_tool, task_list_tool, task_get_tool, task_update_tool):
+            tools.append(with_delivery(make(team, agent_id), team, agent_id))
     tools.append(wait_for_message_tool(team, agent_id))
     return tools
 
@@ -324,6 +356,8 @@ def default_protocol_prompt(
     budget_tokens: int = 0,
     budget_type: str = "all",
     deliverable: str | None = None,
+    budget_warnings: tuple[float, ...] = (),
+    tool_style: ToolStyle = "default",
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
@@ -342,15 +376,30 @@ def default_protocol_prompt(
     lines.append(f"- Your private working directory is {rec.private_dir}.")
     if deliverable:
         lines.append(f"- A solution is {deliverable}. Keep your current best one in your private working directory.")
-    if messaging:
+    if messaging and tool_style == "claude_code":
+        lines.append(
+            '- SendMessage(to, message, summary) sends a message to one agent ("agent_i") or to "all"; '
+            "summary is a short preview shown with it. Messages sent to you appear after your next tool "
+            "result as <teammate-message> blocks (long ones as a preview; read_message(id) shows the full "
+            "text). wait_for_message(timeout_s) waits for one."
+        )
+    elif messaging:
         lines.append(
             '- send_message(to, text) sends a message to one agent ("agent_i") or to "all". '
             "Messages sent to you appear after your next tool result (long ones as a preview; "
             "read_message(id) shows the full text). wait_for_message(timeout_s) waits for one."
         )
+    if messaging:
         lines.append(
             "- send_file(to, path, note) sends a copy of any file or folder to one agent or to \"all\"; "
             f"it lands in their {team.root}/agents/<id>/inbox folder and they get a message saying where."
+        )
+    if messaging and tool_style == "claude_code":
+        lines.append(
+            "- The team shares a task list. TaskCreate(subject, description) adds a task; TaskList() lists "
+            "every task with its id, subject, status (pending, in_progress or completed), owner and creator; "
+            "TaskGet(taskId) shows one task with its description; TaskUpdate(taskId, status, owner) changes "
+            "a task's status or owner. Any agent can update any task."
         )
     if registry and others:
         lines.append(
@@ -392,10 +441,19 @@ def default_protocol_prompt(
             + (", messages you receive" if messaging else "")
             + " and your output)."
         )
-    lines.append(
-        "check_budget() shows how much you have used. You may stop at any time by submitting; "
-        "you do not have to use the whole budget."
-    )
+    if budget_warnings:
+        pcts = [f"{t:.0%}" for t in sorted(budget_warnings)]
+        when = pcts[0] if len(pcts) == 1 else ", ".join(pcts[:-1]) + f" and {pcts[-1]}"
+        lines.append(
+            f"check_budget() shows how much you have used, and a notice is added to a tool result when you "
+            f"pass {when} of your budget. You may stop at any time by submitting; "
+            "you do not have to use the whole budget."
+        )
+    else:
+        lines.append(
+            "check_budget() shows how much you have used. You may stop at any time by submitting; "
+            "you do not have to use the whole budget."
+        )
     return "\n".join(lines)
 
 

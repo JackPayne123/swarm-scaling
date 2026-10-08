@@ -21,6 +21,8 @@ from inspect_ai.tool import Tool, ToolDef, ToolError, ToolResult
 from inspect_ai.util import sandbox
 
 AgentStatus = Literal["running", "waiting", "finished"]
+ToolStyle = Literal["default", "claude_code"]
+TaskStatus = Literal["pending", "in_progress", "completed"]
 
 
 def _iso(ts: float) -> str:
@@ -42,11 +44,9 @@ class Message:
     text: str
     sent_at: float
     id: str = ""
+    summary: str | None = None
 
-    def render(self, max_chars: int | None = None) -> str:
-        who = self.sender
-        if self.sender_model:
-            who += f" ({self.sender_model})"
+    def render(self, max_chars: int | None = None, style: ToolStyle = "default") -> str:
         body = self.text
         if max_chars is not None and len(body) > max_chars:
             body = (
@@ -54,7 +54,27 @@ class Message:
                 + f"\n[... truncated: {len(self.text) - max_chars} more characters. "
                 f'Call read_message("{self.id}") for the full text.]'
             )
+        if style == "claude_code":
+            # the envelope Claude Code uses for agent-team messages, plus the id read_message takes
+            attrs = f'teammate_id="{self.sender}"'
+            if self.sender_model:
+                attrs += f' model="{self.sender_model}"'
+            attrs += f' summary="{self.summary or ""}" message_id="{self.id}"'
+            return f"<teammate-message {attrs}>\n{body}\n</teammate-message>"
+        who = self.sender
+        if self.sender_model:
+            who += f" ({self.sender_model})"
         return f"--- message {self.id} from {who} to {self.to} at {_iso(self.sent_at)} ---\n{body}"
+
+
+@dataclass
+class TeamTask:
+    id: str
+    subject: str
+    description: str
+    created_by: str
+    status: TaskStatus = "pending"
+    owner: str | None = None
 
 
 @dataclass
@@ -80,6 +100,7 @@ class AgentRecord:
     dropped: list[dict[str, Any]] = field(default_factory=list)
     published: list[str] = field(default_factory=list)
     files_sent: list[dict[str, Any]] = field(default_factory=list)
+    budget_notices: list[dict[str, Any]] = field(default_factory=list)
     list_candidates_calls: int = 0
     candidates_read: set[str] = field(default_factory=set)
     submitted: bool = False
@@ -111,6 +132,7 @@ class AgentRecord:
             "messages_dropped": self.dropped,
             "candidates_published": self.published,
             "files_sent": self.files_sent,
+            "budget_notices": self.budget_notices,
             "list_candidates_calls": self.list_candidates_calls,
             "candidates_read": sorted(self.candidates_read),
         }
@@ -123,16 +145,20 @@ class Team:
         model_names: list[str],
         workspace_root: str,
         reveal_model_family: bool = False,
+        tool_style: ToolStyle = "default",
     ) -> None:
         self.root = workspace_root.rstrip("/")
         self.registry_dir = f"{self.root}/registry"
         self.reveal_model_family = reveal_model_family
+        self.tool_style = tool_style
         self.agents: dict[str, AgentRecord] = {
             aid: AgentRecord(aid, name, f"{self.root}/agents/{aid}")
             for aid, name in zip(agent_ids, model_names, strict=True)
         }
         self.entries: list[RegistryEntry] = []
         self.messages: dict[str, Message] = {}
+        self.tasks: dict[str, TeamTask] = {}
+        self.task_events: list[dict[str, Any]] = []
         self._change = anyio.Event()
         self._read_re = re.compile(
             re.escape(self.registry_dir) + r"/(agent_\d+-\d+)"
@@ -153,7 +179,7 @@ class Team:
 
     # -- messaging ----------------------------------------------------------
 
-    def send(self, sender: str, to: str, text: str) -> str:
+    def send(self, sender: str, to: str, text: str, summary: str | None = None) -> str:
         rec = self.agents[sender]
         if to == "all":
             targets = [a.agent_id for a in self.others(sender)]
@@ -174,12 +200,15 @@ class Team:
             text=text,
             sent_at=now,
             id=f"m{len(self.messages)}",
+            summary=summary,
         )
         self.messages[msg.id] = msg
         lines: list[str] = []
         for target in targets:
             trec = self.agents[target]
             entry = {"to": target, "text": text, "at": now}
+            if summary is not None:
+                entry["summary"] = summary
             if trec.status == "finished":
                 rec.dropped.append(entry)
                 lines.append(f"{target} has already finished; message not delivered.")
@@ -200,8 +229,7 @@ class Team:
             )
         return msgs
 
-    @staticmethod
-    def render(msgs: list[Message]) -> str:
+    def render(self, msgs: list[Message]) -> str:
         """Previews of each message, and headers only once the delivery cap is reached."""
         parts = [f"[team messages: {len(msgs)} new]"]
         used = 0
@@ -214,7 +242,7 @@ class Team:
                     "Read each with read_message(id).]"
                 )
                 break
-            block = m.render(MESSAGE_PREVIEW_CHARS)
+            block = m.render(MESSAGE_PREVIEW_CHARS, self.tool_style)
             parts.append(block)
             used += len(block)
         return "\n".join(parts)
@@ -223,7 +251,7 @@ class Team:
         msg = self.messages.get(message_id)
         if msg is None or msg.sender == agent_id or msg.to not in (agent_id, "all"):
             raise ToolError(f"No message {message_id!r} was sent to you.")
-        return msg.render()
+        return msg.render(style=self.tool_style)
 
     async def wait(self, agent_id: str, timeout_s: float) -> str:
         rec = self.agents[agent_id]
@@ -295,9 +323,61 @@ class Team:
                 raise ToolError(f"send_file failed: {result.stderr.strip()}")
             rec.files_sent.append({"to": target, "source": path, "dest": dest, "note": note, "at": time.time()})
             body = f"[file] {sender} sent you {path} -> copied to {dest}" + (f"\n{note}" if note else "")
-            self.send(sender, target, body)
+            self.send(sender, target, body, summary=f"sent you {name}")
             lines.append(f"Sent to {target}: {dest}")
         return "\n".join(lines)
+
+    # -- shared task list (claude_code tool style) ------------------------------
+
+    def _task(self, task_id: str) -> TeamTask:
+        task = self.tasks.get(str(task_id).lstrip("#"))
+        if task is None:
+            raise ToolError(f"No task {task_id!r}. TaskList() lists the task ids.")
+        return task
+
+    def create_task(self, agent_id: str, subject: str, description: str) -> str:
+        task = TeamTask(str(len(self.tasks) + 1), subject, description, created_by=agent_id)
+        self.tasks[task.id] = task
+        self.task_events.append(
+            {"event": "create", "task_id": task.id, "agent": agent_id, "at": time.time(),
+             "subject": subject, "description": description}
+        )
+        return f"Task #{task.id} created: {subject}"
+
+    def update_task(
+        self, agent_id: str, task_id: str, status: TaskStatus | None, owner: str | None
+    ) -> str:
+        task = self._task(task_id)
+        if status is None and owner is None:
+            raise ToolError("Nothing to update: give a status, an owner, or both.")
+        if owner is not None and owner not in self.agents:
+            raise ToolError(f"Unknown owner {owner!r}. Use one of {', '.join(self.agents)}.")
+        changes: dict[str, Any] = {}
+        if status is not None:
+            task.status = changes["status"] = status
+        if owner is not None:
+            task.owner = changes["owner"] = owner
+        self.task_events.append(
+            {"event": "update", "task_id": task.id, "agent": agent_id, "at": time.time(), **changes}
+        )
+        return f"Task #{task.id} updated: " + ", ".join(f"{k}={v}" for k, v in changes.items())
+
+    def list_tasks(self) -> str:
+        if not self.tasks:
+            return "No tasks yet."
+        lines = [f"Tasks ({len(self.tasks)}):"]
+        for t in self.tasks.values():
+            lines.append(
+                f"- #{t.id} [{t.status}] {t.subject}  owner: {t.owner or '-'}  created by: {t.created_by}"
+            )
+        return "\n".join(lines)
+
+    def get_task(self, task_id: str) -> str:
+        t = self._task(task_id)
+        return (
+            f"Task #{t.id}: {t.subject}\nstatus: {t.status}\nowner: {t.owner or '-'}\n"
+            f"created by: {t.created_by}\n\n{t.description}"
+        )
 
     # -- registry -----------------------------------------------------------
 
@@ -368,6 +448,69 @@ def send_message_tool(team: Team, agent_id: str) -> Tool:
         return team.send(agent_id, to, text)
 
     return ToolDef(execute, name="send_message").as_tool()
+
+
+def send_message_cc_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(to: str, message: str, summary: str) -> str:
+        """Send a message to a teammate. It is delivered with the recipient's next tool result.
+
+        Args:
+            to: Recipient teammate id (for example "agent_1"), or "all" for every teammate.
+            message: The message. Recipients see up to 2,000 characters inline and can read the rest with read_message.
+            summary: A 5-10 word preview of the message, shown to the recipient with it.
+        """
+        return team.send(agent_id, to, message, summary=summary)
+
+    return ToolDef(execute, name="SendMessage").as_tool()
+
+
+def task_create_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(subject: str, description: str) -> str:
+        """Create a task in the team's shared task list. New tasks are pending with no owner.
+
+        Args:
+            subject: A brief title for the task.
+            description: What needs to be done.
+        """
+        return team.create_task(agent_id, subject, description)
+
+    return ToolDef(execute, name="TaskCreate").as_tool()
+
+
+def task_list_tool(team: Team, agent_id: str) -> Tool:
+    async def execute() -> str:
+        """List every task in the team's shared task list with its id, subject, status, owner and creator."""
+        return team.list_tasks()
+
+    return ToolDef(execute, name="TaskList").as_tool()
+
+
+def task_get_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(taskId: str) -> str:  # noqa: N803 (Claude Code's parameter name)
+        """Show one task from the shared task list in full, including its description.
+
+        Args:
+            taskId: The task id, for example "1".
+        """
+        return team.get_task(taskId)
+
+    return ToolDef(execute, name="TaskGet").as_tool()
+
+
+def task_update_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(  # noqa: N803 (Claude Code's parameter name)
+        taskId: str, status: TaskStatus | None = None, owner: str | None = None
+    ) -> str:
+        """Update a task in the shared task list. Any agent may update any task.
+
+        Args:
+            taskId: The task id, for example "1".
+            status: New status: pending, in_progress or completed.
+            owner: New owner, an agent id (for example "agent_1"); set it to your own id to claim the task.
+        """
+        return team.update_task(agent_id, taskId, status, owner)
+
+    return ToolDef(execute, name="TaskUpdate").as_tool()
 
 
 def read_message_tool(team: Team, agent_id: str) -> Tool:
@@ -459,8 +602,42 @@ def with_delivery(tool: Tool, team: Team, agent_id: str) -> Tool:
         pending = team.drain(agent_id)
         if not pending:
             return result
-        return _append_messages(result, Team.render(pending))
+        return _append_messages(result, team.render(pending))
 
+    return _rewrap(tdef, execute)
+
+
+def with_budget_notices(
+    tool: Tool, limit: Any, rec: AgentRecord, thresholds: tuple[float, ...], budget_type: str = "all"
+) -> Tool:
+    """Wrap a tool so a notice is appended to its result when the agent's usage passes a threshold.
+
+    `limit` is the agent's own token limit (``.usage``, ``.limit``). Each threshold is announced
+    once; when several are passed at once only the highest is announced.
+    """
+    tdef = ToolDef(tool)
+    inner = tdef.tool
+
+    async def execute(**kwargs: Any) -> ToolResult:
+        result = await inner(**kwargs)
+        if limit.limit is None:
+            return result
+        used, cap = int(limit.usage), int(limit.limit)
+        # usage only grows, so every threshold up to the last one announced is done
+        done = max((n["threshold"] for n in rec.budget_notices), default=0.0)
+        passed = [t for t in thresholds if t > done and used >= t * cap]
+        if not passed:
+            return result
+        rec.budget_notices.append({"threshold": max(passed), "used": used, "at": time.time()})
+        unit = "output-token" if budget_type == "output" else "token"
+        notice = f"[budget] You have used {used * 100 // cap}% of your {unit} budget ({used:,} of {cap:,})."
+        return _append_messages(result, notice)
+
+    return _rewrap(tdef, execute)
+
+
+def _rewrap(tdef: ToolDef, execute: Any) -> Tool:
+    """A tool with `execute` as its body and everything else (name, schema, options) from `tdef`."""
     return ToolDef(
         execute,
         name=tdef.name,

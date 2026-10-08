@@ -325,3 +325,128 @@ def test_send_file_copies_into_the_recipients_inbox_and_tells_them_where(tmp_pat
     delivered = [str(e.result) for e in tool_events(log, "bash") if "[file] agent_0 sent you" in str(e.result)]
     assert len(delivered) == 1 and "my plan" in delivered[0] and str(copied.parent.parent) in delivered[0]
     assert swarm_meta(log)["agents"]["agent_0"]["files_sent"][0]["to"] == "agent_1"
+
+
+def used(n: int) -> ModelUsage:
+    return ModelUsage(input_tokens=n, output_tokens=0, total_tokens=n)
+
+
+def test_budget_notice_appears_once_per_threshold_on_any_tool(tmp_path: Path) -> None:
+    # Pilot: an agent ran out of budget mid-work without saving, never having called check_budget.
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("bash", usage=used(400), command="true"),  # 40%
+                    call("send_message", usage=used(150), to="agent_1", text="hi"),  # 55%: crosses 50%
+                    call("bash", usage=used(50), command="true"),  # 60%
+                    call("bash", usage=used(100), command="true"),  # 70%
+                    call("bash", usage=used(100), command="true"),  # 80%: crosses 75%
+                    call("submit", usage=used(1), answer="done"),
+                ),
+                scripted(call("submit", usage=used(1), answer="done")),
+            ],
+            per_agent_tokens=1000,
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    results = [str(e.result) for e in tool_events(log, "bash") + tool_events(log, "send_message")]
+    notices = sorted(r[r.index("[budget]"):] for r in results if "[budget]" in r)
+    assert notices == [
+        "[budget] You have used 55% of your token budget (550 of 1,000).",
+        "[budget] You have used 80% of your token budget (800 of 1,000).",
+    ]
+    assert "[budget]" in str(tool_events(log, "send_message")[0].result)
+    log_notices = swarm_meta(log)["agents"]["agent_0"]["budget_notices"]
+    assert [(n["threshold"], n["used"]) for n in log_notices] == [(0.5, 550), (0.75, 800)]
+
+
+def test_solo_agent_gets_only_the_highest_of_several_thresholds_passed_at_once(tmp_path: Path) -> None:
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[scripted(call("bash", usage=used(920), command="true"), call("submit", usage=used(1), answer="x"))],
+            per_agent_tokens=1000,
+            messaging=False,
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    (bash_event,) = tool_events(log, "bash")
+    assert str(bash_event.result).count("[budget]") == 1 and "used 92%" in str(bash_event.result)
+    assert [n["threshold"] for n in swarm_meta(log)["agents"]["agent_0"]["budget_notices"]] == [0.9]
+
+
+def test_claude_code_style_swaps_the_message_tool_and_adds_a_task_list(tmp_path: Path) -> None:
+    seen_tools: set[str] = set()
+    prompts: list[str] = []
+
+    def script(input, tools, tool_choice, config):
+        seen_tools.update(t.name for t in tools)
+        prompts.append(input[-1].text)
+        return submit()
+
+    run_swarm(
+        tmp_path,
+        swarm(
+            models=[get_model(MODEL, custom_outputs=script), scripted(submit())],
+            per_agent_tokens=100_000,
+            tool_style="claude_code",
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    assert {"SendMessage", "TaskCreate", "TaskList", "TaskUpdate", "TaskGet", "read_message", "wait_for_message"} <= seen_tools
+    assert "send_message" not in seen_tools
+    assert "SendMessage(to, message, summary)" in prompts[0] and "TaskCreate(subject, description)" in prompts[0]
+    assert "send_message" not in prompts[0] and "send_file(to, path, note)" in prompts[0]
+    assert "How you work together, if at all, is up to you." in prompts[0]
+
+
+def test_claude_code_message_arrives_as_a_teammate_message_block(tmp_path: Path) -> None:
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(call("SendMessage", to="agent_1", message="hello from 0", summary="greeting"), submit()),
+                scripted(call("bash", command="sleep 0.5"), call("bash", command="echo later"), submit()),
+            ],
+            per_agent_tokens=100_000,
+            tool_style="claude_code",
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    delivered = [str(e.result) for e in tool_events(log, "bash") if "hello from 0" in str(e.result)]
+    assert len(delivered) == 1
+    assert '<teammate-message teammate_id="agent_0" summary="greeting" message_id="m0">\nhello from 0\n</teammate-message>' in delivered[0]
+
+
+def test_task_created_by_one_agent_is_claimed_and_completed_by_another(tmp_path: Path) -> None:
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("TaskCreate", subject="profile solver", description="find the hot loop"),
+                    call("bash", command="sleep 1.5"),
+                    call("TaskGet", taskId="1"),
+                    submit(),
+                ),
+                scripted(
+                    call("bash", command="sleep 0.5"),
+                    call("TaskList"),
+                    call("TaskUpdate", taskId="1", owner="agent_1", status="in_progress"),
+                    call("TaskUpdate", taskId="1", status="completed"),
+                    submit(),
+                ),
+            ],
+            per_agent_tokens=100_000,
+            tool_style="claude_code",
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    (listing,) = tool_events(log, "TaskList")
+    assert "#1 [pending] profile solver" in str(listing.result) and "created by: agent_0" in str(listing.result)
+    (got,) = tool_events(log, "TaskGet")
+    assert all(s in str(got.result) for s in ("status: completed", "owner: agent_1", "find the hot loop"))
+    events = swarm_meta(log)["tasks"]
+    assert [(e["event"], e["agent"]) for e in events] == [("create", "agent_0"), ("update", "agent_1"), ("update", "agent_1")]
