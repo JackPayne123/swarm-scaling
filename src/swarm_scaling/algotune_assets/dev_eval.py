@@ -44,8 +44,12 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
               "total_reference_s": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
-    # The final evaluation cannot import files from this directory, so neither may the solver.
-    sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != DEV_DIR]
+    # Load the solver exactly as the final evaluation does: plain `pytest /tests/test_outputs.py`
+    # puts neither this directory, the working directory nor the solver's own directory on sys.path.
+    # Otherwise a solver that imports itself by name (e.g. numba cache=True) passes here and fails
+    # in the real evaluation, as an Opus 5.5 pilot run did on 2026-10-08.
+    hidden = {DEV_DIR, Path.cwd().resolve(), solver_path.resolve().parent}
+    sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() not in hidden]
     try:
         solver = load_module("solver", solver_path).Solver()
     except Exception:
