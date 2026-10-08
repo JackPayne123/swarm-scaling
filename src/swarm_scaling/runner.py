@@ -65,7 +65,7 @@ def main() -> None:
     p.add_argument("--epochs", type=int, default=1, help="repeats per sample")
     p.add_argument("--time-limit", type=int, default=3600, help="per-agent wall-clock seconds")
     p.add_argument("--name", required=True, help="run name; logs go to logs/<name>/")
-    p.add_argument("--budget-type", default="output", help='what --budget meters: "output" (default) or "all"')
+    p.add_argument("--budget-type", default="all", help='what --budget meters: "all" (default: input incl. cached + output) or "output"')
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()

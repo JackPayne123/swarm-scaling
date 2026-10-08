@@ -194,7 +194,14 @@ def algotune_task(
         config = sample.sandbox.config
         assert isinstance(config, ComposeConfig)
         # inspect_harbor reads network_mode from task.toml only (all 154 say "public") and has no override.
-        config.services["default"].network_mode = "none"
+        service = config.services["default"]
+        service.network_mode = "none"
+        # Use the already-built image and never rebuild: a rebuild needs PyPI, and a pip read timeout
+        # broke one on 2026-10-08. One fixed image for the whole experiment is also more reproducible.
+        # Build it once with: docker build -t <image> <task>/environment
+        if service.image:
+            service.build = None
+            service.__pydantic_extra__["x-local"] = True
         # The hub cache is shared between runs, so the seeded verifier is a copy; only the scorer reads it.
         tests_dir = Path(sample.metadata["tests_dir"])
         seeded_dir = VERIFIER_DIR / str(sample.id).replace("/", "_")

@@ -2,7 +2,12 @@
 # secret is copied into the project.
 K="$HOME/.pa-oauth"
 export OPENAI_API_KEY="$(cat "$K/openai_key")"
-export ANTHROPIC_API_KEY="$(cat "$K/anthropic_api_key")"
+# Prefer the experiment's credit key (workspace-scoped) when present
+if [ -r "$K/anthropic_credit_key" ]; then
+  export ANTHROPIC_API_KEY="$(cat "$K/anthropic_credit_key")"
+else
+  export ANTHROPIC_API_KEY="$(cat "$K/anthropic_api_key")"
+fi
 export GEMINI_API_KEY="$(cat "$K/gemini_key")"
 export GOOGLE_API_KEY="$GEMINI_API_KEY"
 # GLM via Z.ai's OpenAI-compatible endpoint: Inspect model string openai-api/zai/glm-5.3-flash
