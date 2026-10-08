@@ -126,15 +126,19 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
             cache[digest] = await _dev_eval(c, i)
         results.append(replace(cache[digest], candidate=c))
     best = pick_best(results)
+    selected_source = None
     if best is not None:
         copied = await box.exec(["cp", f"{best.candidate.path}/solver.py", SOLVER_PATH])
         if not copied.success:
             raise RuntimeError(f"could not install the selected solver: {copied.stderr}")
+        # kept in the log so every final solution can be re-scored later in a clean serial timing pass
+        selected_source = await box.read_file(SOLVER_PATH)
 
     state.metadata["finalize"] = {
         "dev_n": FINAL_DEV_N,
         "dev_seed": FINAL_DEV_SEED,
         "selected": None if best is None else {"agent_id": best.candidate.agent_id, "path": best.candidate.path},
+        "selected_source": selected_source,
         "candidates": [
             {
                 "agent_id": r.candidate.agent_id,
