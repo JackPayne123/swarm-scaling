@@ -149,7 +149,7 @@ def swarm(
 
             agent = react(
                 name=agent_id,
-                tools=_agent_tools(team, agent_id, messaging, registry),
+                tools=_agent_tools(team, agent_id, messaging, registry, budget_tool(tokens, budget_type)),
                 model=resolve_model(model),
                 submit=AgentSubmit(tool=_submit_tool(submitted)),
                 compaction=CompactionEdit(),
@@ -249,8 +249,30 @@ def swarm(
     return solve
 
 
-def _agent_tools(team: Team, agent_id: str, messaging: bool, registry: bool) -> list[Tool]:
+def budget_tool(limit, budget_type: str) -> Tool:
+    """check_budget(): tokens used and remaining under this agent's own limit (no effect on the budget)."""
+
+    async def execute() -> str:
+        """Show how much of your token budget you have used and how much remains.
+
+        You may stop at any time by submitting; you do not have to use the whole budget.
+        """
+        used = int(limit.usage)
+        cap = int(limit.limit) if limit.limit is not None else None
+        unit = "output tokens" if budget_type == "output" else "tokens"
+        if cap is None:
+            return f"Used {used:,} {unit}; no limit."
+        return f"Used {used:,} of {cap:,} {unit}; {max(cap - used, 0):,} remaining."
+
+    return ToolDef(execute, name="check_budget").as_tool()
+
+
+def _agent_tools(
+    team: Team, agent_id: str, messaging: bool, registry: bool, budget: Tool | None = None
+) -> list[Tool]:
     tools: list[Tool] = [bash(timeout=300), python(timeout=300), update_plan()]
+    if budget is not None:
+        tools.append(budget)
     if registry:
         tools += [publish_candidate_tool(team, agent_id), list_candidates_tool(team, agent_id)]
     if not messaging:
@@ -358,6 +380,10 @@ def default_protocol_prompt(
             + (", messages you receive" if messaging else "")
             + " and your output)."
         )
+    lines.append(
+        "check_budget() shows how much you have used. You may stop at any time by submitting; "
+        "you do not have to use the whole budget."
+    )
     return "\n".join(lines)
 
 

@@ -121,7 +121,7 @@ def test_independent_mode_exposes_no_message_or_registry_tools(tmp_path: Path) -
             workspace_root=str(tmp_path / "ws"),
         ),
     )
-    assert seen_tools == {"bash", "python", "update_plan", "submit", "publish_candidate", "list_candidates"}
+    assert seen_tools == {"bash", "python", "update_plan", "check_budget", "submit", "publish_candidate", "list_candidates"}
     for prompt in prompts:
         assert "other agents" not in prompt and "message" not in prompt and "shared" not in prompt
         assert "your saved candidates" in prompt
@@ -287,3 +287,14 @@ def test_cpu_summary_flags_a_saturated_container() -> None:
     idle = swarm_module.summarise_cpu([sample(0, 0, 0, 0), sample(10, 4, 100, 0), sample(20, 8, 200, 0)])
     assert busy["flag"] is True and busy["mean_util"] > 0.9
     assert idle["flag"] is False and idle["mean_util"] < 0.1
+
+
+@pytest.mark.asyncio
+async def test_check_budget_reports_this_agents_usage_and_remaining() -> None:
+    # Agents are told their budget up front and may stop early; they need to see what is left.
+    class FakeLimit:
+        usage, limit = 1500, 2_000_000
+
+    tool = swarm_module.budget_tool(FakeLimit(), "all")
+    out = await tool()
+    assert "Used 1,500 of 2,000,000 tokens" in out and "1,998,500 remaining" in out

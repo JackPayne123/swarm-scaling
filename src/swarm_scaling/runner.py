@@ -66,6 +66,7 @@ def main() -> None:
     p.add_argument("--time-limit", type=int, default=3600, help="per-agent wall-clock seconds")
     p.add_argument("--name", required=True, help="run name; logs go to logs/<name>/")
     p.add_argument("--budget-type", default="all", help='what --budget meters: "all" (default: input incl. cached + output) or "output"')
+    p.add_argument("--reasoning-effort", default=None, help="explicit reasoning effort for every model (e.g. high)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -85,6 +86,7 @@ def main() -> None:
         "family": "algotune",
         "split": args.split,
         "protocol": "loose",
+        "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
         "launched_at": time.time(),
     }
@@ -104,6 +106,7 @@ def main() -> None:
             time_limit=args.time_limit,
             budget_type=args.budget_type,
             deliverable=ALGOTUNE_DELIVERABLE,
+            reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],
         sample_id=args.sample,
