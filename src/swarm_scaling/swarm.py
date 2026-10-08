@@ -34,6 +34,7 @@ from swarm_scaling.team import (
     Team,
     list_candidates_tool,
     publish_candidate_tool,
+    read_message_tool,
     send_message_tool,
     wait_for_message_tool,
     with_delivery,
@@ -257,6 +258,7 @@ def _agent_tools(team: Team, agent_id: str, messaging: bool, registry: bool) -> 
     # every tool result is a delivery point; wait_for_message drains its own inbox
     tools = [with_delivery(t, team, agent_id) for t in tools]
     tools.append(with_delivery(send_message_tool(team, agent_id), team, agent_id))
+    tools.append(with_delivery(read_message_tool(team, agent_id), team, agent_id))
     tools.append(wait_for_message_tool(team, agent_id))
     return tools
 
@@ -319,8 +321,8 @@ def default_protocol_prompt(
     if messaging:
         lines.append(
             '- send_message(to, text) sends a message to one agent ("agent_i") or to "all". '
-            "Messages sent to you appear after your next tool result. "
-            "wait_for_message(timeout_s) waits for one."
+            "Messages sent to you appear after your next tool result (long ones as a preview; "
+            "read_message(id) shows the full text). wait_for_message(timeout_s) waits for one."
         )
     if registry and others:
         lines.append(

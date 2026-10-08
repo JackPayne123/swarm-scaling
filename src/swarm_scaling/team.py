@@ -27,6 +27,13 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S") + "Z"
 
 
+# Incoming messages are appended to the recipient's next tool result. With 8 agents broadcasting,
+# full texts would flood every context, so deliveries show a preview per message and stop listing
+# bodies past a total cap; read_message(id) returns the full text (Orazio, Inspect community Slack).
+MESSAGE_PREVIEW_CHARS = 2000
+DELIVERY_CHARS = 8000
+
+
 @dataclass
 class Message:
     sender: str
@@ -34,12 +41,20 @@ class Message:
     to: str
     text: str
     sent_at: float
+    id: str = ""
 
-    def render(self) -> str:
+    def render(self, max_chars: int | None = None) -> str:
         who = self.sender
         if self.sender_model:
             who += f" ({self.sender_model})"
-        return f"--- message from {who} to {self.to} at {_iso(self.sent_at)} ---\n{self.text}"
+        body = self.text
+        if max_chars is not None and len(body) > max_chars:
+            body = (
+                body[:max_chars]
+                + f"\n[... truncated: {len(self.text) - max_chars} more characters. "
+                f'Call read_message("{self.id}") for the full text.]'
+            )
+        return f"--- message {self.id} from {who} to {self.to} at {_iso(self.sent_at)} ---\n{body}"
 
 
 @dataclass
@@ -115,6 +130,7 @@ class Team:
             for aid, name in zip(agent_ids, model_names, strict=True)
         }
         self.entries: list[RegistryEntry] = []
+        self.messages: dict[str, Message] = {}
         self._change = anyio.Event()
         self._read_re = re.compile(
             re.escape(self.registry_dir) + r"/(agent_\d+-\d+)"
@@ -155,7 +171,9 @@ class Team:
             to=to,
             text=text,
             sent_at=now,
+            id=f"m{len(self.messages)}",
         )
+        self.messages[msg.id] = msg
         lines: list[str] = []
         for target in targets:
             trec = self.agents[target]
@@ -182,7 +200,28 @@ class Team:
 
     @staticmethod
     def render(msgs: list[Message]) -> str:
-        return f"[team messages: {len(msgs)} new]\n" + "\n".join(m.render() for m in msgs)
+        """Previews of each message, and headers only once the delivery cap is reached."""
+        parts = [f"[team messages: {len(msgs)} new]"]
+        used = 0
+        for i, m in enumerate(msgs):
+            if used >= DELIVERY_CHARS:
+                rest = msgs[i:]
+                listed = ", ".join(f"{x.id} from {x.sender} ({len(x.text)} chars)" for x in rest)
+                parts.append(
+                    f"[{len(rest)} more message(s) not shown here: {listed}. "
+                    "Read each with read_message(id).]"
+                )
+                break
+            block = m.render(MESSAGE_PREVIEW_CHARS)
+            parts.append(block)
+            used += len(block)
+        return "\n".join(parts)
+
+    def read(self, agent_id: str, message_id: str) -> str:
+        msg = self.messages.get(message_id)
+        if msg is None or msg.sender == agent_id or msg.to not in (agent_id, "all"):
+            raise ToolError(f"No message {message_id!r} was sent to you.")
+        return msg.render()
 
     async def wait(self, agent_id: str, timeout_s: float) -> str:
         rec = self.agents[agent_id]
@@ -272,11 +311,23 @@ def send_message_tool(team: Team, agent_id: str) -> Tool:
 
         Args:
             to: Recipient agent id (for example "agent_1"), or "all" for every teammate.
-            text: The message. Keep it short; it counts against the recipient's token budget.
+            text: The message. Recipients see up to 2,000 characters inline and can read the rest with read_message.
         """
         return team.send(agent_id, to, text)
 
     return ToolDef(execute, name="send_message").as_tool()
+
+
+def read_message_tool(team: Team, agent_id: str) -> Tool:
+    async def execute(message_id: str) -> str:
+        """Read the full text of a message sent to you (shown truncated or listed without its text).
+
+        Args:
+            message_id: The message id, for example "m3".
+        """
+        return team.read(agent_id, message_id)
+
+    return ToolDef(execute, name="read_message").as_tool()
 
 
 def wait_for_message_tool(team: Team, agent_id: str) -> Tool:

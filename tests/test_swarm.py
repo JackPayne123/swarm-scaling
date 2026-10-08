@@ -93,7 +93,7 @@ def test_message_delivered_in_recipients_next_tool_result(tmp_path: Path) -> Non
         ),
     )
     bash_results = [str(e.result) for e in tool_events(log, "bash")]
-    delivered = [r for r in bash_results if "hello from 0" in r and "message from agent_0" in r]
+    delivered = [r for r in bash_results if "hello from 0" in r and "from agent_0" in r]
     assert len(delivered) == 1, bash_results
     agents = swarm_meta(log)["agents"]
     assert agents["agent_0"]["messages_sent"][0]["to"] == "agent_1"
