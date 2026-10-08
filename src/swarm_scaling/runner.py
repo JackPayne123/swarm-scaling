@@ -23,11 +23,11 @@ from pathlib import Path
 
 from inspect_ai import eval
 
-from swarm_scaling.algotune_devkit import algotune_finalize
+from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize
 from swarm_scaling.swarm import swarm
 from swarm_scaling.tasks import LOG_DIR, algotune_task
 
-ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (dev_eval.py)"
+ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (measured as the dev_eval tool measures)"
 ALGOTUNE_DELIVERABLE = (
     "a file named solver.py defining class Solver with a solve method, as the task describes "
     "(only files named solver.py are considered, in a published candidate or your working directory)"
@@ -110,6 +110,8 @@ def main() -> None:
             budget_type=args.budget_type,
             deliverable=ALGOTUNE_DELIVERABLE,
             tool_style=args.tool_style,
+            agent_tools=algotune_agent_tools,
+            final_path=SOLVER_PATH,
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

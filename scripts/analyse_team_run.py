@@ -130,6 +130,13 @@ def main() -> None:
         (a1, (s1, e1)), (a2, (s2, e2)) = list(spans.items())[:2]
         overlap = max(0, min(e1, e2) - max(s1, s2))
         summ.append(f"overlap {a1}/{a2}: {overlap:.0f}s")
+    checker_calls = (s.metadata.get("checker") or {}).get("calls", [])
+    per_agent = defaultdict(lambda: [0, 0.0])
+    for c in checker_calls:
+        per_agent[c["agent_id"]][0] += 1
+        per_agent[c["agent_id"]][1] += c["queue_wait_s"]
+    summ += ["", f"checker (dev_eval) calls: {len(checker_calls)}"]
+    summ += [f"  {a}: {k} calls, {w:.0f}s total queue wait" for a, (k, w) in sorted(per_agent.items())]
     summ += ["", f"model errors: {model_errors}", f"tool errors ({len(tool_errors)}):"]
     summ += [f"  {x}" for x in tool_errors[:40]]
     summ += ["", "TEAM-RELATED SENTENCES IN REASONING/TEXT:"]

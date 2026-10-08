@@ -1,16 +1,22 @@
 """AlgoTune dev toolkit and final selection (HARNESS.md, AlgoTune section).
 
-`algotune_setup()` runs before any agent and installs /app/dev in the sample sandbox.
+`algotune_setup()` runs before any agent and installs /app/dev in the agent box and the checker.
+`algotune_agent_tools()` gives every agent the dev_eval tool, which runs dev_eval.py in the
+checker container (tasks.py), one evaluation at a time per sample.
 `algotune_finalize()` runs after the agents, evaluates every candidate solver on fixed dev
-instances and installs the fastest correct one as /app/solver.py.
+instances in the checker and installs the fastest correct one as /app/solver.py in the agent box.
 """
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any, Callable
 
+import anyio
 from inspect_ai.solver import Generate, Solver, TaskState, solver
+from inspect_ai.tool import Tool, ToolDef, ToolError
 from inspect_ai.util import sandbox
 
 from swarm_scaling.swarm import Candidate
@@ -19,6 +25,11 @@ ASSETS = Path(__file__).parent / "algotune_assets"
 DEV_DIR = "/app/dev"
 SOLVER_PATH = "/app/solver.py"
 
+# Compose service (tasks.py) where every evaluation runs. Agents' bash and python tools reach only the default box.
+CHECKER = "checker"
+CHECK_DIR = "/app/checks"  # in the checker: a fresh directory per evaluation
+DEV_EVAL_TIMEOUT_S = 900  # per dev_eval tool call, run time only (not the queue wait)
+
 # Selection runs on its own dev instances: dev_eval's default seeds start at 0, these start far away.
 FINAL_DEV_SEED = 50_000
 FINAL_DEV_N = 20
@@ -26,8 +37,11 @@ FINAL_TIMEOUT_S = 900  # per candidate
 
 DEV_TOOLKIT_NOTE = (
     "A dev toolkit is installed in /app/dev (read /app/dev/README.md first). It contains the full "
-    "reference Task class with generate_problem, and `python /app/dev/dev_eval.py <solver.py>`, which "
-    "checks your solver for correctness and measures its speedup the way the final evaluation does."
+    "reference Task class with generate_problem. The dev_eval tool checks a solver for correctness and "
+    "measures its speedup the way the final evaluation does. It runs on a separate, dedicated machine, one "
+    "evaluation at a time: calls from every agent working on this task wait in one queue, and each result "
+    "says how long it waited. Timings you take in your own container are affected by whatever else is "
+    "running there."
 )
 
 
@@ -38,9 +52,12 @@ async def _install_toolkit(state: TaskState) -> None:
 
     box = sandbox()
     await box.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
-    await box.write_file(f"{DEV_DIR}/dev_eval.py", (ASSETS / "dev_eval.py").read_text())
     await box.write_file(f"{DEV_DIR}/README.md", (ASSETS / "README.md").read_text())
-    await box.write_file(f"{DEV_DIR}/config.json", json.dumps({"problem_size": problem_size}))
+
+    checker = sandbox(CHECKER)
+    await checker.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
+    await checker.write_file(f"{DEV_DIR}/dev_eval.py", (ASSETS / "dev_eval.py").read_text())
+    await checker.write_file(f"{DEV_DIR}/config.json", json.dumps({"problem_size": problem_size}))
 
 
 @solver
@@ -81,49 +98,143 @@ def pick_best(results: list[DevResult]) -> DevResult | None:
     )
 
 
-async def _dev_eval(candidate: Candidate, index: int) -> DevResult:
-    box = sandbox()
-    out = f"/tmp/dev_eval_{index}.json"
+async def run_dev_eval(source: bytes, run_dir: str, args: list[str], timeout: int) -> tuple[dict | None, str]:
+    """Run the checker's dev_eval.py on `source` (a solver.py), copied into the fresh directory `run_dir`.
+
+    Returns dev_eval's JSON result and its printed report, or (None, why there is no result).
+    `timeout` inside the container ends dev_eval itself, and the run is shielded from cancellation,
+    so an agent stopped mid-call cannot leave an evaluation running under the next one.
+    """
+    box = sandbox(CHECKER)
+    solver, out = f"{run_dir}/solver.py", f"{run_dir}/result.json"
+    await box.write_file(solver, source)
     cmd = [
-        "python", f"{DEV_DIR}/dev_eval.py", f"{candidate.path}/solver.py",
-        "--n", str(FINAL_DEV_N), "--seed", str(FINAL_DEV_SEED), "--json-out", out,
+        "timeout", "-k", "10", str(timeout),
+        "python", f"{DEV_DIR}/dev_eval.py", solver, *args, "--json-out", out,
     ]  # fmt: skip
-    try:
-        proc = await box.exec(cmd, timeout=FINAL_TIMEOUT_S, timeout_retry=False)
-    except TimeoutError:
-        return DevResult(candidate, False, None, error=f"timed out after {FINAL_TIMEOUT_S}s")
+    with anyio.CancelScope(shield=True):
+        try:
+            proc = await box.exec(cmd, timeout=timeout + 60, timeout_retry=False)
+        except TimeoutError:
+            return None, f"timed out after {timeout}s"
+    if proc.returncode == 124:  # coreutils timeout
+        return None, f"timed out after {timeout}s"
     try:
         detail = json.loads(await box.read_file(out))
     except FileNotFoundError:  # the process died before writing a result (crash, OOM kill)
-        return DevResult(candidate, False, None, error=f"no result, exit {proc.returncode}: {proc.stderr[-500:]}")
+        return None, f"no result, exit {proc.returncode}: {proc.stderr[-500:]}"
+    return detail, (proc.stderr + proc.stdout).strip()
+
+
+def _first_errors(detail: dict) -> str:
+    return "; ".join(e.splitlines()[-1] for e in detail["errors"][:3])
+
+
+async def _dev_eval(candidate: Candidate, source: bytes, index: int) -> DevResult:
+    args = ["--n", str(FINAL_DEV_N), "--seed", str(FINAL_DEV_SEED)]
+    detail, report = await run_dev_eval(source, f"{CHECK_DIR}/final_{index}", args, FINAL_TIMEOUT_S)
+    if detail is None:
+        return DevResult(candidate, False, None, error=report)
     return DevResult(
         candidate,
         detail["valid"],
         detail["speedup"],
-        error="; ".join(e.splitlines()[-1] for e in detail["errors"][:3]),
+        error=_first_errors(detail),
         detail={k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s")},
     )
+
+
+class Checker:
+    """The dev_eval tool for every agent of one sample: one evaluation at a time in the checker, in call order.
+
+    Every call is recorded in state.metadata["checker"]["calls"] (who, when, queue wait, run time, result).
+    """
+
+    def __init__(self, state: TaskState) -> None:
+        self.lock = anyio.Lock()  # waiters are served in arrival order (FIFO)
+        self.calls: list[dict[str, Any]] = []
+        state.metadata["checker"] = {"calls": self.calls}
+
+    def tool(self, agent_id: str) -> Tool:
+        async def execute(path: str, n: int = 20, seed: int = 0, reps: int = 10, size: int | None = None) -> str:
+            """Check a solver for correctness and measure its speedup over the reference, the way the final evaluation does.
+
+            Runs /app/dev's dev_eval on a separate, dedicated machine that holds the toolkit and a copy of this
+            one file (as solver.py). Evaluations run one at a time, in the order they are requested by any
+            agent working on this task; the result says how long this call waited in the queue.
+
+            Args:
+                path: Absolute path of the solver file in your container. Only this file is copied, so it cannot import sibling files.
+                n: Number of dev instances.
+                seed: First dev seed offset (>= 0). Dev instances never use the final evaluation's seeds.
+                reps: Timed repeats per instance.
+                size: Problem size passed to generate_problem. Default: the final evaluation's.
+            """
+            if not path.startswith("/"):
+                raise ToolError(f"path must be absolute, got {path!r}")
+            if seed < 0:
+                raise ToolError("seed must be >= 0")
+            try:
+                source = await sandbox().read_file(path, text=False)
+            except (FileNotFoundError, IsADirectoryError):
+                raise ToolError(f"no such file: {path}")
+            args = ["--n", str(n), "--seed", str(seed), "--reps", str(reps)]
+            if size is not None:
+                args += ["--size", str(size)]
+            requested = time.time()
+            async with self.lock:
+                started = time.time()
+                run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
+                detail, report = await run_dev_eval(source, run_dir, args, DEV_EVAL_TIMEOUT_S)
+                ended = time.time()
+                self.calls.append({
+                    "agent_id": agent_id,
+                    "path": path,
+                    "started_at": requested,  # when the call was made, before queueing
+                    "queue_wait_s": round(started - requested, 3),
+                    "run_s": round(ended - started, 3),
+                    "valid": None if detail is None else detail["valid"],
+                    "speedup": None if detail is None else detail["speedup"],
+                    "error": report if detail is None else _first_errors(detail),
+                    "n": n,
+                    "seed": seed,
+                })  # fmt: skip
+            head = f"[dev_eval] waited {started - requested:.1f}s in the queue, ran {ended - started:.1f}s."
+            return f"{head}\n{report}"
+
+        return ToolDef(execute, name="dev_eval").as_tool()
+
+
+def algotune_agent_tools(state: TaskState) -> Callable[[str], list[Tool]]:
+    """swarm(agent_tools=...): one Checker (queue) per sample, and its dev_eval tool for each agent."""
+    checker = Checker(state)
+    return lambda agent_id: [checker.tool(agent_id)]
 
 
 async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> None:
     """Evaluate every candidate, copy the fastest correct solver to /app/solver.py, record all results.
 
-    Run it after every agent process has been stopped: timings are meaningless under load.
-    Reinstalls the toolkit first so the check is the packaged one, not an agent-edited copy.
-    Candidates with identical solver.py text share one evaluation. Copies nothing when no candidate is correct.
+    Evaluations run in the checker container after every agent has stopped, so no agent work shares
+    their CPUs. Reinstalls the toolkit first so the check is the packaged one.
+    Candidates with identical solver.py text share one evaluation. Any /app/solver.py an agent wrote is
+    removed first (agents are told it has no effect), so nothing is installed when no candidate is correct.
     """
     await _install_toolkit(state)
     box = sandbox()
+    removed = await box.exec(["rm", "-f", SOLVER_PATH])
+    if not removed.success:
+        raise RuntimeError(f"could not clear {SOLVER_PATH}: {removed.stderr}")
     cache: dict[str, DevResult] = {}
     results = []
     for i, c in enumerate(candidates):
         try:
-            digest = hashlib.sha256(await box.read_file(f"{c.path}/solver.py", text=False)).hexdigest()
+            source = await box.read_file(f"{c.path}/solver.py", text=False)
         except FileNotFoundError:
             results.append(DevResult(c, False, None, error="no solver.py"))
             continue
+        digest = hashlib.sha256(source).hexdigest()
         if digest not in cache:
-            cache[digest] = await _dev_eval(c, i)
+            cache[digest] = await _dev_eval(c, source, i)
         results.append(replace(cache[digest], candidate=c))
     best = pick_best(results)
     selected_source = None

@@ -1,18 +1,19 @@
 # Dev toolkit
 
-The task description gives only the reference `solve` and `is_solution`. This directory adds what is missing to check your work before you finish.
+The task description gives only the reference `solve` and `is_solution`. This directory and the `dev_eval` tool add what is missing to check your work before you finish.
 
-- `reference_task.py` - the full reference `Task` class: `generate_problem(n, random_seed)`, `solve` (the reference being timed against), `is_solution`, with its imports and helpers.
-- `dev_eval.py` - generates dev instances, checks your solver with `is_solution`, and reports the speedup over the reference.
-- `config.json` - the problem size `n` the final evaluation uses.
+- `reference_task.py` - the full reference `Task` class: `generate_problem(n, random_seed)`, `solve` (the reference being timed against), `is_solution`, with its imports and helpers. Use it for your own correctness checks.
+- The `dev_eval` tool generates dev instances, checks a solver with `is_solution`, and reports the speedup over the reference. It copies the one file you name (as `solver.py`) to a separate, dedicated machine and runs the check there.
 
 ```
-python /app/dev/dev_eval.py /app/solver.py            # 20 instances, default seeds
-python /app/dev/dev_eval.py my_try/solver.py --n 5 --reps 3   # quicker, noisier
-python /app/dev/dev_eval.py /app/solver.py --seed 500 # different dev instances
+dev_eval(path="<your working directory>/solver.py")              # 20 instances, default seeds
+dev_eval(path="<your working directory>/try2.py", n=5, reps=3)   # quicker, noisier
+dev_eval(path="<your working directory>/solver.py", seed=500)    # different dev instances
 ```
 
-Other options: `--size N` (problem size, default the final evaluation's), `--json-out PATH`. Exit code 0 means every instance was valid.
+Other option: `size` (problem size, default the final evaluation's; the output shows the size used).
+
+The dedicated machine runs one evaluation at a time. Calls from every agent working on this task wait in one queue, in the order they were made, and each result says how long the call waited.
 
 ## How it matches the final evaluation
 
@@ -24,5 +25,5 @@ Other options: `--size N` (problem size, default the final evaluation's), `--jso
 ## Notes
 
 - Only `/app/solver.py` is evaluated, loaded as a single file. Keep it self-contained; it cannot import sibling files.
-- Anything else running in the container (including other `dev_eval.py` runs) distorts timings. Treat speedups measured under load as rough.
+- Timings you take in your own container are affected by whatever else is running there. The `dev_eval` tool's machine runs nothing else while it times a solver.
 - The container has no network access.

@@ -62,6 +62,8 @@ class Candidate:
 
 
 Finalize = Callable[[TaskState, list[Candidate]], Awaitable[None]]
+# Called once per sample with its state; returns each agent's extra tools by agent id.
+AgentTools = Callable[[TaskState], Callable[[str], list[Tool]]]
 
 DEFAULT_SELECTION_RULE = "a rule fixed before the run"
 
@@ -85,6 +87,8 @@ def swarm(
     deliverable: str | None = None,
     budget_warnings: tuple[float, ...] = (0.5, 0.75, 0.9),
     tool_style: ToolStyle = "default",
+    agent_tools: AgentTools | None = None,
+    final_path: str | None = None,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -119,6 +123,9 @@ def swarm(
         tool_style: "claude_code" replaces send_message with Claude Code's SendMessage(to, message,
             summary), delivers <teammate-message> blocks, and adds a shared task list (TaskCreate,
             TaskList, TaskGet, TaskUpdate). Only team arms (messaging on) differ.
+        agent_tools: Task-specific tools given to every agent in every arm (AlgoTune: dev_eval).
+        final_path: Where finalize writes the chosen answer (AlgoTune: /app/solver.py), stated to
+            agents so they know that writing it themselves has no effect.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -151,6 +158,7 @@ def swarm(
 
         started = time.time()
         baseline_pids = await snapshot_container_pids()
+        tools_for = agent_tools(state) if agent_tools is not None else None
 
         async def run_agent(agent_id: str, model: str | Model) -> AgentState | None:
             rec = team.agents[agent_id]
@@ -162,7 +170,10 @@ def swarm(
             def submitted(answer: str) -> None:
                 rec.submitted = True
 
-            tools = _agent_tools(team, agent_id, messaging, registry, budget_tool(tokens, budget_type), tool_style)
+            extra = tools_for(agent_id) if tools_for is not None else []
+            tools = _agent_tools(
+                team, agent_id, messaging, registry, budget_tool(tokens, budget_type), tool_style, extra
+            )
             if budget_warnings:
                 # outermost, so the notice also follows message tools and deliveries
                 tools = [with_budget_notices(t, tokens, rec, budget_warnings, budget_type) for t in tools]
@@ -184,6 +195,7 @@ def swarm(
                 deliverable=deliverable,
                 budget_warnings=budget_warnings,
                 tool_style=tool_style,
+                final_path=final_path,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -298,10 +310,12 @@ def _agent_tools(
     registry: bool,
     budget: Tool | None = None,
     tool_style: ToolStyle = "default",
+    extra: list[Tool] | None = None,
 ) -> list[Tool]:
     tools: list[Tool] = [bash(timeout=300), python(timeout=300), update_plan()]
     if budget is not None:
         tools.append(budget)
+    tools += extra or []
     if registry:
         tools += [publish_candidate_tool(team, agent_id), list_candidates_tool(team, agent_id)]
     if not messaging:
@@ -358,6 +372,7 @@ def default_protocol_prompt(
     deliverable: str | None = None,
     budget_warnings: tuple[float, ...] = (),
     tool_style: ToolStyle = "default",
+    final_path: str | None = None,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
@@ -430,6 +445,11 @@ def default_protocol_prompt(
         + " is chosen from "
         + (f"{pool} and {where}" if pool else where)
         + f" by a fixed rule: {selection_rule}."
+        + (
+            f" The chosen answer is then written to {final_path}, so writing to {final_path} yourself has no effect."
+            if final_path
+            else ""
+        )
     )
     lines.append("")
     if budget_type == "output":

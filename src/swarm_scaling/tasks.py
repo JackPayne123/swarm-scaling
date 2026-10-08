@@ -8,13 +8,14 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from inspect_ai import Task, task, task_with
 from inspect_ai.scorer import Metric, SampleScore, Score, Scorer, Target, mean, metric, scorer
 from inspect_ai.solver import TaskState
-from inspect_ai.util import ComposeConfig
+from inspect_ai.util import ComposeConfig, SandboxEnvironmentSpec
 from inspect_harbor import algotune, harbor_scorer
 
-from swarm_scaling.algotune_devkit import algotune_setup
+from swarm_scaling.algotune_devkit import CHECKER, algotune_setup
 
 SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json"
 
@@ -33,6 +34,9 @@ PROJECT_ROOT = SPLIT_PATH.parents[1]
 LOG_DIR = PROJECT_ROOT / "logs"
 # Patched verifier copies (they hold the secret offset file); reused across runs instead of temp dirs. Gitignored.
 VERIFIER_DIR = SPLIT_PATH.parent / ".algotune_verifier"
+# Generated compose files, one per sample (see algotune_task). Gitignored.
+COMPOSE_DIR = SPLIT_PATH.parent / ".algotune_compose"
+DOCKER_VM_CPUS = 16  # Docker Desktop's VM on this Mac; the agent box and the checker each get half
 
 # Inserted into the verifier copy. The offset travels as a file in /tests (copied in only at scoring), not as an
 # environment variable (visible in /proc/self/environ to the solver), and the file is read and deleted while the
@@ -161,6 +165,24 @@ def _seed_offset(path: Path = SEED_OFFSET_FILE, log_dir: Path = LOG_DIR) -> int:
     return offset
 
 
+def add_checker(config: ComposeConfig) -> None:
+    """Add the `checker` service: a copy of `default` that only the dev_eval tool and final selection use.
+
+    The two are pinned to disjoint CPUs of the Docker VM (default 0..n-1, checker n..2n-1, n = the
+    default's cpus), so agent work in the default box cannot disturb the checker's timings, and the
+    checker times on as many CPUs as final scoring (which runs in the default box after the agents stop).
+    ComposeService has no cpuset field; extras set after construction reach the generated YAML.
+    """
+    default = config.services["default"]
+    n = int(default.cpus or 0)
+    if not 0 < 2 * n <= DOCKER_VM_CPUS:
+        raise ValueError(f"cannot pin two boxes of {default.cpus} CPUs inside {DOCKER_VM_CPUS} CPUs")
+    checker = default.model_copy(deep=True)
+    default.__pydantic_extra__["cpuset"] = f"0-{n - 1}"
+    checker.__pydantic_extra__["cpuset"] = f"{n}-{2 * n - 1}"
+    config.services[CHECKER] = checker
+
+
 def _harbor_name(task_name: str) -> str:
     """AlgoTune's snake_case name to the Harbor hub slug."""
     return "algotune/" + task_name.replace("_", "-").lower()
@@ -175,7 +197,8 @@ def algotune_task(
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
     Every sample gets the dev toolkit (`algotune_setup`, a Task.setup step that still runs when
-    `--solver` replaces the default agent) and a sandbox without network. The scorer is Harbor's
+    `--solver` replaces the default agent) and a sandbox without network, plus a `checker` service
+    (`add_checker`) on its own CPUs for the dev_eval tool and final selection. The scorer is Harbor's
     with the AlgoTune metrics added. Defaults to 8 CPUs and 12 GB (task.toml asks for 16 GB; Docker has 24 GB).
 
     The verifier scores on seeds `offset + i` instead of `i` (`seed_with_offset`). The offset reaches the
@@ -202,6 +225,18 @@ def algotune_task(
         if service.image:
             service.build = None
             service.__pydantic_extra__["x-local"] = True
+        add_checker(config)
+        # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an
+        # inline ComposeConfig when reading them, which rejects cpuset (only x- extras are allowed), so every
+        # log would be unreadable. The YAML is what Inspect would generate; it is also kept in sample metadata.
+        compose_yaml = yaml.dump(
+            config.model_dump(mode="json", by_alias=True, exclude_none=True), default_flow_style=False, sort_keys=False
+        )
+        compose_file = COMPOSE_DIR / f"{str(sample.id).replace('/', '_')}-compose.yaml"
+        compose_file.parent.mkdir(parents=True, exist_ok=True)
+        compose_file.write_text(compose_yaml)
+        sample.sandbox = SandboxEnvironmentSpec(sample.sandbox.type, str(compose_file))
+        sample.metadata["compose_yaml"] = compose_yaml
         # The hub cache is shared between runs, so the seeded verifier is a copy; only the scorer reads it.
         tests_dir = Path(sample.metadata["tests_dir"])
         seeded_dir = VERIFIER_DIR / str(sample.id).replace("/", "_")

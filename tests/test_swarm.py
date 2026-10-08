@@ -15,6 +15,7 @@ from inspect_ai.dataset import Sample
 from inspect_ai.event import ToolEvent
 from inspect_ai.log import EvalLog
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
+from inspect_ai.tool import ToolDef
 from inspect_ai.util import ExecResult
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
 from inspect_ai.util._sandbox.events import SandboxEnvironmentProxy
@@ -450,3 +451,43 @@ def test_task_created_by_one_agent_is_claimed_and_completed_by_another(tmp_path:
     assert all(s in str(got.result) for s in ("status: completed", "owner: agent_1", "find the hot loop"))
     events = swarm_meta(log)["tasks"]
     assert [(e["event"], e["agent"]) for e in events] == [("create", "agent_0"), ("update", "agent_1"), ("update", "agent_1")]
+
+
+def test_task_tools_reach_every_agent_in_every_arm_and_the_prompt_says_where_the_answer_goes(tmp_path: Path) -> None:
+    # Parity: solo and team agents get the same task tools (AlgoTune: dev_eval). Agents are told the
+    # chosen answer is written to the deliverable path, so writing it themselves has no effect.
+    def probe_tools(state):
+        def for_agent(agent_id: str):
+            async def execute() -> str:
+                """Probe."""
+                return agent_id
+
+            return [ToolDef(execute, name="probe").as_tool()]
+
+        return for_agent
+
+    for n in (1, 2):
+        seen: list[set[str]] = []
+        prompts: list[str] = []
+
+        def script(input, tools, tool_choice, config):
+            seen.append({t.name for t in tools})
+            prompts.append(input[-1].text)
+            return submit()
+
+        run_swarm(
+            tmp_path / f"n{n}",
+            swarm(
+                models=[get_model(MODEL, custom_outputs=script) for _ in range(n)],
+                per_agent_tokens=100_000,
+                workspace_root=str(tmp_path / f"ws{n}"),
+                agent_tools=probe_tools,
+                final_path="/app/solver.py",
+            ),
+        )
+        assert len(seen) == n and all("probe" in tools for tools in seen)
+        assert all(
+            "The chosen answer is then written to /app/solver.py, so writing to /app/solver.py yourself has no effect."
+            in p
+            for p in prompts
+        )

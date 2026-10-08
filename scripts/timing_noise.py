@@ -1,13 +1,13 @@
 """Timing-noise gate (PLAN.md Budget): time the reference solver against itself with dev_eval.
 
-Installs the reference as /app/solver.py via inspect_harbor's oracle, then runs
-`dev_eval.py /app/solver.py` REPEATS times inside the container. A clean machine should give
+Installs the reference as /app/solver.py via inspect_harbor's oracle, then runs dev_eval on a
+copy of it REPEATS times in the checker container (where the dev_eval tool and final selection
+time solvers). A clean machine should give
 speedups close to 1.0 with a small spread. Run with nothing else busy on the machine.
 
 Usage: uv run python scripts/timing_noise.py [sample_id ...]
 """
 
-import re
 import sys
 
 from inspect_ai import eval
@@ -15,6 +15,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, chain, solver
 from inspect_ai.util import sandbox
 from inspect_harbor import oracle
 
+from swarm_scaling.algotune_devkit import CHECK_DIR, run_dev_eval
 from swarm_scaling.tasks import algotune_task
 
 REPEATS = 5
@@ -24,10 +25,10 @@ REPEATS = 5
 def time_reference_against_itself() -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         speedups = []
-        for _ in range(REPEATS):
-            result = await sandbox().exec(["python", "/app/dev/dev_eval.py", "/app/solver.py"], timeout=1800)
-            match = re.search(r"speedup[^0-9]*([0-9.]+)x", result.stdout)
-            speedups.append(float(match.group(1)) if match else None)
+        source = await sandbox().read_file("/app/solver.py", text=False)
+        for i in range(REPEATS):
+            detail, _ = await run_dev_eval(source, f"{CHECK_DIR}/noise_{i}", [], 1800)
+            speedups.append(detail["speedup"] if detail else None)
         state.metadata["timing_noise"] = speedups
         return state
 
