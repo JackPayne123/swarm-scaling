@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pilot 2 (2026-10-08): pilot 1 design plus explicit file sharing (send_file, readable-folders line).
+# Pilot 2 (2026-10-08): pilot 1 design plus send_file, readable-folders line, budget warnings and Claude-Code-style team tools (SendMessage, task list).
 # Claude Opus 5.5, effort high, 2M total-token cap per agent, free stopping, 3 non-CP-SAT pilot tasks.
 # Runs one eval at a time (clean timing) and stops if measured spend passes SPEND_CAP.
 # Usage: bgjob run --name pilot2 -- bash scripts/pilot2.sh
@@ -11,7 +11,7 @@ MODEL=anthropic/claude-opus-5-5
 BUDGET=2000000
 SPEND_CAP=150
 TASKS=(algotune/cvar-projection algotune/dst-type-ii-scipy-fftpack algotune/generalized-eigenvalues-real)
-COMMON=(--models "$MODEL" --reasoning-effort high --budget "$BUDGET" --time-limit 7200)
+COMMON=(--models "$MODEL" --reasoning-effort high --budget "$BUDGET" --time-limit 7200 --tool-style claude_code)
 
 spent() {
   uv run python scripts/run_cost.py logs/pilot2-* 2>/dev/null | awk '/^TOTAL/ {gsub(/\$/, "", $2); print $2}'
