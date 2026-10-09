@@ -1,5 +1,8 @@
+import sys
+
 import pytest
 
+from swarm_scaling import runner
 from swarm_scaling.runner import arm_config
 
 GLM, LUNA = "openai-api/zai/glm-5.3-flash", "openai/gpt-6-luna"
@@ -20,3 +23,14 @@ def test_arms_share_the_save_mechanism_and_differ_only_in_sharing():
 def test_invalid_arm_settings_are_refused(arm, models, n, mult):
     with pytest.raises(ValueError):
         arm_config(arm, models, n, 1000, mult)
+
+
+def test_a_token_sized_budget_is_refused_as_dollars(monkeypatch, tmp_path, capsys):
+    # The default budget type is dollars: a pilot script's --budget 2000000 must not become $2,000,000 per agent.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    argv = ["runner", "--arm", "solo", "--models", GLM, "--budget", "2000000", "--name", "x"]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit):
+        runner.main()
+    assert "for a token budget pass --budget-type all" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()  # refused before anything is written or started

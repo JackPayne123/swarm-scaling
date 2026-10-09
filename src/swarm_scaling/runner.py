@@ -35,6 +35,9 @@ ALGOTUNE_DELIVERABLE = (
     "only a file named solver.py is considered)"
 )
 ARMS = ("solo", "independent", "team", "registry")
+# A cost budget above this per agent is refused: a token-sized number (e.g. 2000000) passed without
+# --budget-type all would otherwise run as dollars.
+MAX_COST_PER_AGENT = 100.0
 
 
 def arm_config(arm: str, models: list[str], n: int, budget: float, mult: int) -> dict:
@@ -106,6 +109,11 @@ def main() -> None:
         p.error("a token budget must be a whole number")
     budget = args.budget if args.budget_type == "cost" else int(args.budget)
     config = arm_config(args.arm, models, args.n, budget, args.mult)
+    if args.budget_type == "cost" and config["per_agent_tokens"] > MAX_COST_PER_AGENT:
+        p.error(
+            f"cost budget ${config['per_agent_tokens']:,.2f} per agent is above ${MAX_COST_PER_AGENT:.0f}; "
+            "for a token budget pass --budget-type all"
+        )
     metadata = {
         "arm": args.arm,
         "n": args.n,

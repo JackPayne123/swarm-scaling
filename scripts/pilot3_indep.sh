@@ -11,7 +11,7 @@ MODEL=anthropic/claude-opus-5-5
 BUDGET=2000000
 SPEND_CAP=130
 TASKS=(algotune/cvar-projection algotune/dst-type-ii-scipy-fftpack algotune/generalized-eigenvalues-real)
-COMMON=(--models "$MODEL" --reasoning-effort high --budget "$BUDGET" --time-limit 7200 --tool-style claude_code)
+COMMON=(--models "$MODEL" --reasoning-effort high --budget "$BUDGET" --budget-type all --time-limit 7200 --tool-style claude_code)
 
 spent() {
   uv run python scripts/run_cost.py logs/pilot3-* 2>/dev/null | awk '/^TOTAL/ {gsub(/\$/, "", $2); print $2}'
