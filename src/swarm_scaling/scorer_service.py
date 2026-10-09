@@ -195,12 +195,14 @@ class Scorer:
         cpu_model: str,
         version: str,
         seed_offset_id: str,
+        task_image_digest: str | dict | None = None,
         timeouts_s: dict[str, float] | None = None,
         log_path: Path | None = None,
     ) -> None:
         self.tasks = {**tasks, **{a.slug: a for a in tasks.values()}}  # accept the task name or the sample id
         self.cpusets, self.run = cpusets, run
         self.cpu_model, self.version, self.seed_offset_id = cpu_model, version, seed_offset_id
+        self.task_image_digest = task_image_digest
         self.timeouts_s = timeouts_s or TIMEOUTS_S
         self.log_path = log_path
         self.jobs: dict[str, Job] = {}
@@ -213,7 +215,7 @@ class Scorer:
     def health(self) -> dict:
         return {
             "ok": True, "slots": len(self.cpusets), "queue_len": self.queue.qsize(), "cpu_model": self.cpu_model,
-            "version": self.version, "seed_offset_id": self.seed_offset_id,
+            "version": self.version, "seed_offset_id": self.seed_offset_id, "task_image_digest": self.task_image_digest,
             "tasks": sorted({a.name for a in self.tasks.values()}),
         }  # fmt: skip
 
@@ -356,7 +358,9 @@ def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, Ta
 
 
 def main() -> None:
-    from swarm_scaling.tasks import PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_names
+    from swarm_scaling.tasks import (
+        PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_image_digest, task_names,
+    )  # fmt: skip
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="0.0.0.0")
@@ -377,10 +381,13 @@ def main() -> None:
     offset = _seed_offset()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
+    # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
+    digests = {a.image: task_image_digest(a.image) for a in tasks.values()}
+    digest = next(iter(digests.values())) if len(digests) == 1 else digests
     cpusets = [f"{args.first_cpu + 8 * k}-{args.first_cpu + 8 * k + 7}" for k in range(args.slots)]
     scorer = Scorer(
         tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu_model(), git_version(PROJECT_ROOT),
-        seed_offset_id(offset), log_path=args.work_dir / "jobs.jsonl",
+        seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl",
     )  # fmt: skip
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets}, {len(tasks)} tasks, cpu {scorer.cpu_model}, "

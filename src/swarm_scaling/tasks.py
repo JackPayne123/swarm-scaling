@@ -368,6 +368,18 @@ def docker_host() -> tuple[int, int]:
     return int(cpus), int(memory) // 2**20
 
 
+def task_image_digest(image: str) -> str | None:
+    """The image's registry digest (sha256:...) from `docker image inspect`, or None for a locally built image.
+
+    Cloud VMs pull the task image by digest, so agents' and scorer's logs can show they ran the identical image.
+    """
+    out = subprocess.run(["docker", "image", "inspect", image, "--format", "{{json .RepoDigests}}"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"docker image inspect {image} failed: {out.stderr.strip()}")
+    digests = json.loads(out.stdout) or []
+    return digests[0].split("@", 1)[1] if digests else None
+
+
 def box_resources(
     cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int, checker: bool = True
 ) -> dict:
@@ -517,6 +529,7 @@ def algotune_task(
         offset = _seed_offset()
         backend_meta = {"checker_backend": "local", "algotune_seed_offset": offset, "seed_offset_id": seed_offset_id(offset)}
     names_by_id = task_names()
+    images = set()
     for sample in base.dataset:
         config = sample.sandbox.config
         assert isinstance(config, ComposeConfig)
@@ -526,6 +539,7 @@ def algotune_task(
         # Use the already-built image and never rebuild: a rebuild needs PyPI, and a pip read timeout
         # broke one on 2026-10-08. One fixed image for the whole experiment is also more reproducible.
         # Build it once with: docker build -t <image> <task>/environment
+        images.add(service.image)
         if service.image:
             service.build = None
             service.__pydantic_extra__["x-local"] = True
@@ -548,9 +562,13 @@ def algotune_task(
         sample.metadata["compose_yaml"] = compose_yaml
         if not is_remote:  # only the local scorer reads it
             seed_verifier(sample, offset)
+    image_meta = {"task_images": {image: task_image_digest(image) for image in sorted(images)}}
+    if len(images) == 1:
+        (image,) = images
+        image_meta = {"task_image": image, "task_image_digest": image_meta["task_images"][image]}
     return task_with(
         base,
         setup=algotune_setup(),
         scorer=algotune_scorer(),
-        metadata={**(base.metadata or {}), **backend_meta, **resources},
+        metadata={**(base.metadata or {}), **backend_meta, **resources, **image_meta},
     )
