@@ -2,9 +2,10 @@
 
     python /app/dev/dev_eval.py /app/solver.py [--n 20] [--seed 0] [--size N] [--reps 10]
 
-Mirrors the final evaluation: the same instance generator, the same is_solution check, and the same
+Mirrors the final evaluation: the same instance generator, the same is_solution check, the same
 interleaved timing (one untimed warmup of the reference and the solver, then `reps` alternating timed
-calls of each, minimum per instance, speedup = total reference time / total solver time).
+calls of each, minimum per instance, speedup = total reference time / total solver time), and the same
+thread check (thread_guard.py: a solver whose threads keep using CPU while the reference is timed is invalid).
 Dev instances come from seeds the final evaluation does not use.
 """
 
@@ -21,6 +22,8 @@ import sys
 import time
 import traceback
 from pathlib import Path
+
+from thread_guard import ThreadGuard  # next to this file
 
 DEV_DIR = Path(__file__).resolve().parent
 SEED_OFFSET = 10_000
@@ -42,8 +45,11 @@ def timed_ns(fn, problem) -> int:
 def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict:
     result = {"solver": str(solver_path), "n": n, "seed": seed, "size": size, "reps": reps,
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
-              "total_reference_s": None, "errors": []}
+              "total_reference_s": None, "thread_check": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
+    # One untimed reference call before the solver is imported, so the threads the reference starts are its own.
+    task.solve(task.generate_problem(n=size, random_seed=SEED_OFFSET + seed))
+    guard = ThreadGuard()
     # Load the solver exactly as the final evaluation does: plain `pytest /tests/test_outputs.py`
     # puts neither this directory, the working directory nor the solver's own directory on sys.path.
     # Otherwise a solver that imports itself by name (e.g. numba cache=True) passes here and fails
@@ -60,14 +66,18 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
     for i in range(n):
         problem = task.generate_problem(n=size, random_seed=SEED_OFFSET + seed + i)
         try:
+            guard.before_reference()
             task.solve(problem)
+            guard.after_reference(None)
             solution = solver.solve(problem)
             if not task.is_solution(problem, solution):
                 result["errors"].append(f"instance {i}: is_solution returned False")
                 continue
             solver_times, reference_times = [], []
             for _ in range(reps):
+                guard.before_reference()
                 reference_times.append(timed_ns(task.solve, problem))
+                guard.after_reference(reference_times[-1])
                 solver_times.append(timed_ns(solver.solve, problem))
         except Exception:
             result["errors"].append(f"instance {i}: exception\n" + traceback.format_exc())
@@ -76,7 +86,10 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
         total_reference += min(reference_times)
 
     result["n_invalid"] = len(result["errors"])
-    result["valid"] = result["n_invalid"] == 0
+    result["thread_check"] = guard.summary()
+    if guard.error() is not None:
+        result["errors"].insert(0, guard.error())
+    result["valid"] = not result["errors"]
     if total_solver > 0:
         result["speedup"] = total_reference / total_solver
         result["total_solver_s"] = total_solver / 1e9
@@ -97,7 +110,7 @@ def report(result: dict) -> None:
     print(f"reference total {result['total_reference_s']:.4f}s, solver total {result['total_solver_s']:.4f}s")
     print(f"speedup: {result['speedup']:.3f}x" + ("" if result["valid"] else "  (valid instances only)"))
     if not result["valid"]:
-        print("INVALID: the final evaluation scores any invalid output as 1.0")
+        print("INVALID: the final evaluation scores an invalid run as 1.0")
     elif result["speedup"] < 1.0:
         print("NOTE: the final evaluation scores a solver slower than the reference as 1.0")
 

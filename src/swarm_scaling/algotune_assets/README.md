@@ -20,6 +20,7 @@ The dedicated machine runs one evaluation at a time. Calls from every agent work
 - Same generator and the same problem size. Dev instances use different seeds from the final instances.
 - Same check: your output goes to `is_solution` exactly as `solve` returns it, with no conversion. Return the types `is_solution` expects.
 - Same timing: per instance, one untimed warmup call of the reference and of your solver, then alternating timed calls of each (10 by default), minimum of each. Speedup is total reference time divided by total solver time.
+- Same thread check: a solver whose threads keep using CPU while the reference is being timed is scored invalid.
 - The final evaluation uses 100 instances. An invalid output or a solver slower than the reference scores 1.0, and a missing `/app/solver.py` scores 0.
 
 ## Notes

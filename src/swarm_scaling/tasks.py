@@ -16,7 +16,14 @@ from inspect_ai.solver import TaskState
 from inspect_ai.util import ComposeConfig, SandboxEnvironmentSpec, sandbox, sandbox_default
 from inspect_harbor import algotune, harbor_scorer
 
-from swarm_scaling.algotune_devkit import CHECKER, CHECKER_LOCK, SOLVER_PATH, algotune_setup
+from swarm_scaling.algotune_devkit import (
+    ASSETS,
+    CHECKER,
+    CHECKER_LOCK,
+    SOLVER_PATH,
+    algotune_setup,
+    end_checker_processes,
+)
 
 SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json"
 
@@ -110,7 +117,9 @@ def algotune_scorer() -> Scorer:
     The selected /app/solver.py is copied from the agent box into the checker, then Harbor's scorer runs with
     the checker as the default sandbox, so its /tests copy (with the seed_offset file), verifier run and reward
     read all happen there, on the checker's CPUs. CHECKER_LOCK is held throughout, so no other timed run in
-    the process overlaps the verifier. Queue wait and run times go in metadata["checker"].
+    the process overlaps the verifier. Every checker process started since setup is killed first, so nothing a
+    solver left running competes with the verifier or sees /tests. Queue wait, run times and the cleanup
+    result go in metadata["checker"].
     The selected solver was already evaluated in the checker by finalize, also as a single file.
     """
     verify = harbor_scorer()
@@ -119,6 +128,7 @@ def algotune_scorer() -> Scorer:
         requested = time.time()
         async with CHECKER_LOCK:
             started = time.time()
+            cleanup = await end_checker_processes(state)
             await _copy_solver_to_checker()
             with sandbox_default(CHECKER):
                 result = await verify(state, target)
@@ -126,7 +136,9 @@ def algotune_scorer() -> Scorer:
         result.metadata = {
             **(result.metadata or {}),
             "log_speedup": math.log(_speedup(result.as_float())),
-            "checker": {"queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended},
+            "checker": {
+                "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
+            },
         }
         return result
 
@@ -151,6 +163,61 @@ def seed_with_offset(test_outputs: str) -> str:
         # pytest sets up fixtures in argument order: problems (offset read and deleted) before solver import
         .replace(_VERIFIER_FIXTURE_ORDER, "def performance_results(problem_set, solver_instance) -> dict:")
     )
+
+
+# with_thread_guard: anchor -> replacement in the verifier, each anchor required exactly once.
+_GUARD_PATCHES = {
+    _VERIFIER_IMPORT: _VERIFIER_IMPORT
+    + "from thread_guard import ThreadGuard\n\n"
+    + "_GUARD = None  # set in problem_set: after an untimed reference call, before the solver is imported\n",
+    '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n    return problems\n': (
+        '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n'
+        "    global _GUARD\n"
+        "    task.solve(problems[0])\n"
+        "    _GUARD = ThreadGuard()\n"
+        "    return problems\n"
+    ),
+    "        _ = baseline_func(problem)\n\n        # Warmup Solver": (
+        "        _GUARD.before_reference()\n"
+        "        _ = baseline_func(problem)\n"
+        "        _GUARD.after_reference(None)\n\n"
+        "        # Warmup Solver"
+    ),
+    (
+        "            start_b = time.perf_counter_ns()\n"
+        "            _ = baseline_func(problem)\n"
+        "            end_b = time.perf_counter_ns()\n"
+    ): (
+        "            _GUARD.before_reference()\n"
+        "            start_b = time.perf_counter_ns()\n"
+        "            _ = baseline_func(problem)\n"
+        "            end_b = time.perf_counter_ns()\n"
+        "            _GUARD.after_reference(end_b - start_b)\n"
+    ),
+    "    if validity and total_time_solver > 0:\n": (
+        "    logger.info(f\"Thread check: {_GUARD.summary()}\")\n"
+        "    if _GUARD.error() is not None:\n"
+        "        logger.error(_GUARD.error())\n"
+        "        validity = False\n"
+        "    if validity and total_time_solver > 0:\n"
+    ),
+}
+
+
+def with_thread_guard(test_outputs: str) -> str:
+    """The verifier with thread_guard.py's check: a solver whose threads use CPU during reference timing is invalid.
+
+    Pilot 3: a solver that left spin-waiting threads running scored 3837x on dev_eval by slowing the reference.
+    Adds one untimed reference call (on the first problem, before the solver is imported, so the threads the
+    reference starts count as its own), wraps every reference call in the guard, and sets validity False when
+    the check fails, which the verifier scores 1.0 like any invalid run. Timing and the speedup formula are
+    unchanged. Needs thread_guard.py next to the verifier. Raises unless every anchor occurs exactly once.
+    """
+    for anchor, replacement in _GUARD_PATCHES.items():
+        if test_outputs.count(anchor) != 1:
+            raise ValueError(f"expected exactly one {anchor!r} in the AlgoTune verifier")
+        test_outputs = test_outputs.replace(anchor, replacement)
+    return test_outputs
 
 
 SEED_OFFSET_FILE = SPLIT_PATH.parent / ".algotune_seed_offset"  # gitignored; one secret for the whole experiment
@@ -251,7 +318,8 @@ def algotune_task(
     Harbor's, run in the checker, with the AlgoTune metrics added. Defaults to 8 CPUs and 12 GB (task.toml
     asks for 16 GB; Docker has 24 GB).
 
-    The verifier scores on seeds `offset + i` instead of `i` (`seed_with_offset`). The offset reaches the
+    The verifier scores on seeds `offset + i` instead of `i` (`seed_with_offset`) and marks a run invalid when
+    solver threads use CPU while the reference is timed (`with_thread_guard`). The offset reaches the
     container only at scoring time, as a `seed_offset` file in the copied /tests that the verifier deletes
     before importing the solver, and is recorded in the task metadata. The hub dataset is pinned (ALGOTUNE_REF).
     """
@@ -293,7 +361,8 @@ def algotune_task(
         shutil.rmtree(seeded_dir, ignore_errors=True)
         shutil.copytree(tests_dir, seeded_dir)
         test_outputs = seeded_dir / "test_outputs.py"
-        test_outputs.write_text(seed_with_offset(test_outputs.read_text()))
+        test_outputs.write_text(with_thread_guard(seed_with_offset(test_outputs.read_text())))
+        shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
         (seeded_dir / "seed_offset").write_text(f"{offset}\n")
         sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))
         sample.metadata["tests_dir"] = str(seeded_dir)

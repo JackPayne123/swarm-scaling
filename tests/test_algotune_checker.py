@@ -15,8 +15,11 @@ import pytest
 from inspect_ai.scorer import Target
 from inspect_ai.util import ComposeConfig, ComposeService, ExecResult
 from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbox_environments_context_var
+from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
+from inspect_ai.util._sandbox.events import SandboxEnvironmentProxy
 
 from swarm_scaling import algotune_devkit as devkit
+from swarm_scaling import swarm as swarm_module
 from swarm_scaling.swarm import Candidate
 from swarm_scaling.tasks import add_checker, algotune_scorer
 
@@ -73,7 +76,7 @@ class FakeChecker(FakeBox):
         errors = [] if valid else ["instance 0: is_solution returned False"]
         self.files[out] = json.dumps({
             "valid": valid, "speedup": speedup, "n_invalid": len(errors), "errors": errors,
-            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0,
+            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0, "thread_check": None,
         })  # fmt: skip
         return ok(f"speedup: {speedup}x")
 
@@ -82,6 +85,7 @@ class FakeChecker(FakeBox):
 def boxes(monkeypatch: pytest.MonkeyPatch) -> dict[str, FakeBox]:
     boxes = {"default": FakeBox(), devkit.CHECKER: FakeChecker()}
     monkeypatch.setattr(devkit, "sandbox", lambda name=None: boxes[name or "default"])
+    monkeypatch.setattr(swarm_module, "sandbox", lambda name=None: boxes[name or "default"])  # checker cleanup
     return boxes
 
 
@@ -109,7 +113,9 @@ async def test_agent_box_gets_no_evaluator(boxes, tmp_path: Path) -> None:
     state = SimpleNamespace(metadata={"tests_dir": str(tmp_path), "harbor_config": {"metadata": {"algotune_problem_size": 7}}})
     await devkit._install_toolkit(state)
     assert set(boxes["default"].files) == {"/app/dev/reference_task.py", "/app/dev/README.md"}
-    assert set(boxes["checker"].files) == {"/app/dev/reference_task.py", "/app/dev/dev_eval.py", "/app/dev/config.json"}
+    assert set(boxes["checker"].files) == {
+        "/app/dev/reference_task.py", "/app/dev/dev_eval.py", "/app/dev/thread_guard.py", "/app/dev/config.json"
+    }
 
 
 @pytest.mark.asyncio
@@ -140,6 +146,34 @@ async def test_dev_eval_calls_run_one_at_a_time_in_call_order_and_report_their_w
     solvers = [cmd[cmd.index(f"{devkit.DEV_DIR}/dev_eval.py") + 1] for cmd in checker.execs]
     assert len(set(solvers)) == 3 and all(s.endswith("/solver.py") for s in solvers)
     assert boxes["default"].execs == []  # nothing ran in the agents' box
+
+
+@pytest.mark.asyncio
+async def test_checker_processes_are_killed_before_each_timing_but_only_in_a_confirmed_container(boxes, monkeypatch) -> None:
+    # A solver can leave a daemon running into later timings, or into scoring where it could read /tests/seed_offset.
+    # The kill must never run on the host: outside a confirmed Docker container (here the in-memory fake) nothing runs.
+    checker = boxes[devkit.CHECKER]
+    boxes["default"].files["/app/agents/agent_0/s.py"] = "speedup=2"
+    state = SimpleNamespace(metadata={devkit.CHECKER_PIDS: [1, 7]})
+    dev_eval = devkit.algotune_agent_tools(state)("agent_0")[0]
+    await dev_eval(path="/app/agents/agent_0/s.py")
+    assert state.metadata["checker"]["calls"][0]["cleanup"] == "skipped: not a Docker sandbox (FakeChecker)"
+    assert len(checker.execs) == 1  # the timed run only
+
+    # a confirmed container: probe, then the kill sparing the PIDs from setup, then the timed run
+    async def docker_exec(cmd: list[str], **kwargs) -> ExecResult[str]:
+        checker.execs.append(cmd)
+        return ok("ok" if cmd[2] == swarm_module._CONTAINER_PROBE else "killed 2")
+
+    docker = SandboxEnvironmentProxy(DockerSandboxEnvironment.__new__(DockerSandboxEnvironment))
+    docker.exec = docker_exec  # type: ignore[method-assign]
+    monkeypatch.setattr(swarm_module, "sandbox", lambda name=None: docker if name == devkit.CHECKER else boxes["default"])
+    checker.execs.clear()
+    await dev_eval(path="/app/agents/agent_0/s.py")
+    probe, kill, timed = checker.execs
+    assert (probe[2], kill[2], kill[3:]) == (swarm_module._CONTAINER_PROBE, swarm_module._KILL_SCRIPT, ["sh", "1 7"])
+    assert f"{devkit.DEV_DIR}/dev_eval.py" in timed
+    assert state.metadata["checker"]["calls"][1]["cleanup"] == "killed 2"
 
 
 @pytest.mark.asyncio
@@ -175,6 +209,7 @@ async def test_timed_checker_runs_never_overlap_across_samples(monkeypatch, tmp_
     (tmp_path / "evaluator.py").write_text("class Task: ...")
     current: contextvars.ContextVar[dict[str, FakeBox]] = contextvars.ContextVar("boxes")
     monkeypatch.setattr(devkit, "sandbox", lambda name=None: current.get()[name or "default"])
+    monkeypatch.setattr(swarm_module, "sandbox", lambda name=None: current.get()[name or "default"])
     intervals: list[tuple[float, float]] = []
 
     class TimedChecker(FakeChecker):
@@ -238,6 +273,7 @@ async def test_final_scoring_runs_in_the_checker_holding_the_lock(tmp_path) -> N
 
     assert result.value == 2.5
     assert seen == {"locked": True, "offset": True}
+    assert result.metadata["checker"]["cleanup"] == "skipped: not a Docker sandbox (VerifierBox)"
     assert not any(p.startswith("/tests") for p in agent_box.files)
     assert agent_box.execs == []  # nothing ran in the agents' box
     assert result.metadata["checker"]["started_at"] <= result.metadata["checker"]["ended_at"]

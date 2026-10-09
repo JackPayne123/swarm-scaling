@@ -6,7 +6,8 @@ checker container (tasks.py).
 `algotune_finalize()` runs after the agents, evaluates every candidate solver on fixed dev
 instances in the checker and installs the fastest correct one as /app/solver.py in the agent box.
 Every timed run in a checker (dev_eval calls, finalize evaluations, final scoring in tasks.py) holds
-CHECKER_LOCK, so across all samples running in this process only one is timed at any moment.
+CHECKER_LOCK, so across all samples running in this process only one is timed at any moment, and first
+ends every checker process started since setup (`end_checker_processes`).
 """
 
 import hashlib
@@ -21,7 +22,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.tool import Tool, ToolDef, ToolError
 from inspect_ai.util import sandbox
 
-from swarm_scaling.swarm import Candidate
+from swarm_scaling.swarm import Candidate, kill_agent_processes, snapshot_container_pids
 
 ASSETS = Path(__file__).parent / "algotune_assets"
 DEV_DIR = "/app/dev"
@@ -30,6 +31,8 @@ SOLVER_PATH = "/app/solver.py"
 # Compose service (tasks.py) where every evaluation runs. Agents' bash and python tools reach only the default box.
 CHECKER = "checker"
 CHECK_DIR = "/app/checks"  # in the checker: a fresh directory per evaluation
+# state.metadata key: the checker's PIDs at setup (its init and keepalive), spared by end_checker_processes
+CHECKER_PIDS = "checker_baseline_pids"
 DEV_EVAL_TIMEOUT_S = 900  # per dev_eval tool call, run time only (not the queue wait)
 
 # One queue for the whole process: parallel samples' checkers share CPUs 8-15, so their timings must not overlap.
@@ -46,7 +49,7 @@ DEV_TOOLKIT_NOTE = (
     "measures its speedup the way the final evaluation does. It runs on a separate, dedicated machine, one "
     "evaluation at a time: calls from every agent working on this task wait in one queue, and each result "
     "says how long it waited. Timings you take in your own container are affected by whatever else is "
-    "running there."
+    "running there. A solver whose threads keep using CPU while the reference is being timed is scored invalid."
 )
 
 
@@ -62,6 +65,7 @@ async def _install_toolkit(state: TaskState) -> None:
     checker = sandbox(CHECKER)
     await checker.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
     await checker.write_file(f"{DEV_DIR}/dev_eval.py", (ASSETS / "dev_eval.py").read_text())
+    await checker.write_file(f"{DEV_DIR}/thread_guard.py", (ASSETS / "thread_guard.py").read_text())
     await checker.write_file(f"{DEV_DIR}/config.json", json.dumps({"problem_size": problem_size}))
 
 
@@ -71,6 +75,8 @@ def algotune_setup() -> Solver:
 
     async def setup(state: TaskState, generate: Generate) -> TaskState:
         await _install_toolkit(state)
+        # before any solver has run, so only the checker's own processes are spared later
+        state.metadata[CHECKER_PIDS] = await snapshot_container_pids(CHECKER)
         state.user_prompt.text += f"\n\n{DEV_TOOLKIT_NOTE}"
         return state
 
@@ -101,6 +107,17 @@ def pick_best(results: list[DevResult]) -> DevResult | None:
             r.candidate.path,
         ),
     )
+
+
+async def end_checker_processes(state: TaskState) -> str:
+    """Before a timed run: kill every checker process not running at setup (e.g. a solver's daemon or helper).
+
+    A solver evaluated earlier can leave processes that would compete with the next timing or read
+    /tests during scoring. Uses swarm.kill_agent_processes on the checker, so nothing runs unless the
+    checker is positively a Docker container (DockerSandboxEnvironment and an in-container probe), and
+    the PIDs snapshotted at setup (the container's init and keepalive) are spared. Returns what happened.
+    """
+    return await kill_agent_processes(state.metadata.get(CHECKER_PIDS), CHECKER)
 
 
 async def run_dev_eval(source: bytes, run_dir: str, args: list[str], timeout: int) -> tuple[dict | None, str]:
@@ -135,14 +152,17 @@ def _first_errors(detail: dict) -> str:
     return "; ".join(e.splitlines()[-1] for e in detail["errors"][:3])
 
 
-async def _dev_eval(candidate: Candidate, source: bytes, index: int) -> DevResult:
+async def _dev_eval(state: TaskState, candidate: Candidate, source: bytes, index: int) -> DevResult:
     args = ["--n", str(FINAL_DEV_N), "--seed", str(FINAL_DEV_SEED)]
     requested = time.time()
     async with CHECKER_LOCK:
         started = time.time()
+        cleanup = await end_checker_processes(state)
         detail, report = await run_dev_eval(source, f"{CHECK_DIR}/final_{index}", args, FINAL_TIMEOUT_S)
         ended = time.time()
-    timing = {"queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended}
+    timing = {
+        "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
+    }
     if detail is None:
         return DevResult(candidate, False, None, error=report, detail=timing)
     return DevResult(
@@ -150,7 +170,7 @@ async def _dev_eval(candidate: Candidate, source: bytes, index: int) -> DevResul
         detail["valid"],
         detail["speedup"],
         error=_first_errors(detail),
-        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s")}, **timing},
+        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check")}, **timing},
     )
 
 
@@ -163,6 +183,7 @@ class Checker:
     """
 
     def __init__(self, state: TaskState) -> None:
+        self.state = state
         self.calls: list[dict[str, Any]] = []
         state.metadata["checker"] = {"calls": self.calls}
 
@@ -196,6 +217,7 @@ class Checker:
             async with CHECKER_LOCK:
                 started = time.time()
                 run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
+                cleanup = await end_checker_processes(self.state)
                 detail, report = await run_dev_eval(source, run_dir, args, DEV_EVAL_TIMEOUT_S)
                 ended = time.time()
                 self.calls.append({
@@ -207,8 +229,10 @@ class Checker:
                     "valid": None if detail is None else detail["valid"],
                     "speedup": None if detail is None else detail["speedup"],
                     "error": report if detail is None else _first_errors(detail),
+                    "thread_check": None if detail is None else detail["thread_check"],
                     "n": n,
                     "seed": seed,
+                    "cleanup": cleanup,
                 })  # fmt: skip
             head = f"[dev_eval] waited {started - requested:.1f}s in the queue, ran {ended - started:.1f}s."
             return f"{head}\n{report}"
@@ -246,7 +270,7 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
             continue
         digest = hashlib.sha256(source).hexdigest()
         if digest not in cache:
-            cache[digest] = await _dev_eval(c, source, i)
+            cache[digest] = await _dev_eval(state, c, source, i)
         results.append(replace(cache[digest], candidate=c))
     best = pick_best(results)
     selected_source = None
