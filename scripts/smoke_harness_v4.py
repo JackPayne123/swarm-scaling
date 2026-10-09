@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 import yaml
@@ -84,14 +85,20 @@ def selected_solvers(logs: Path, task: str) -> dict[str, str]:
     return found
 
 
-def docker(task: str, work: Path, *cmd: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+def docker(task: str, work: Path, *cmd: str, timeout: int = 1800) -> subprocess.CompletedProcess | None:
+    """Run one container; None if it ran past `timeout` (then only that container, by its name, is killed)."""
+    name = f"smoke-v4-{uuid.uuid4().hex[:12]}"
     # --init: the timed python must not be PID 1, which ignores the SIGSTOP the reference check pauses it with
-    run = ["docker", "run", "--rm", "--init", *CHECKER_LIMITS, "-v", f"{work}:/work", image(task), *cmd]
-    return subprocess.run(run, capture_output=True, text=True, timeout=timeout)
+    run = ["docker", "run", "--rm", "--init", "--name", name, *CHECKER_LIMITS, "-v", f"{work}:/work", image(task), *cmd]
+    try:
+        return subprocess.run(run, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        subprocess.run(["docker", "kill", name], capture_output=True)
+        return None
 
 
-def threads_part(logs: Path, n: int) -> None:
-    for task in TASKS:
+def threads_part(logs: Path, n: int, tasks: list[str]) -> None:
+    for task in tasks:
         work = Path(tempfile.mkdtemp(prefix=f"smoke-v4-{task}-"))
         (work / "dev").mkdir()
         (work / "solvers").mkdir()
@@ -104,8 +111,13 @@ def threads_part(logs: Path, n: int) -> None:
         print(f"\n== {task}: {len(solvers)} solvers, n={n}")
         for name, source in solvers.items():
             (work / "solvers" / f"{name}.py").write_text(source)
+            # spinners can slow a BLAS reference ~25x on a Mac (319 s for 100 calls), so fewer instances there
+            n_run = min(n, 3) if name == "reference+spinners" else n
             proc = docker(task, work, "python", "/work/dev/dev_eval.py", f"/work/solvers/{name}.py",
-                          "--n", str(n), "--json-out", f"/work/{name}.json")  # fmt: skip
+                          "--n", str(n_run), "--json-out", f"/work/{name}.json")  # fmt: skip
+            if proc is None:
+                print(f"  TIMEOUT {name}: dev_eval ran past 1800 s")
+                continue
             try:
                 r = json.loads((work / f"{name}.json").read_text())
             except FileNotFoundError:
@@ -147,6 +159,9 @@ def verifier_part() -> None:
         cmd = "mkdir -p /app /logs/verifier && cp /work/solver.py /app/solver.py && cp -r /work/tests /tests && " \
               "pytest /tests/test_outputs.py -rA -s; cat /logs/verifier/reward.txt"  # fmt: skip
         proc = docker(task, work, "sh", "-c", cmd, timeout=3600)
+        if proc is None:
+            print(f"\n== verifier, {name}: TIMEOUT after 3600 s")
+            continue
         lines = [ln for ln in (proc.stdout + proc.stderr).splitlines()
                  if "Thread check" in ln or "Reference inflation" in ln or "the reference ran" in ln or ln.startswith(("Validity", "Raw Speedup", "Final Reward"))]  # fmt: skip
         print(f"\n== verifier, {name} (expect Validity: {name == 'reference'}):")
@@ -201,9 +216,10 @@ if __name__ == "__main__":
     p.add_argument("--part", choices=("threads", "verifier", "cleanup", "all"), default="all")
     p.add_argument("--logs", type=Path, default=Path.home() / "projects/swarm-scaling/logs", help="pilot-3 eval logs")
     p.add_argument("--n", type=int, default=10, help="dev instances per dev_eval run")
+    p.add_argument("--tasks", nargs="+", default=list(TASKS), help="threads part: these tasks only")
     args = p.parse_args()
     if args.part in ("threads", "all"):
-        threads_part(args.logs, args.n)
+        threads_part(args.logs, args.n, args.tasks)
     if args.part in ("verifier", "all"):
         verifier_part()
     if args.part in ("cleanup", "all"):
