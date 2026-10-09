@@ -89,11 +89,12 @@ def test_thread_cpu_metadata_does_not_count_library_pools_the_reference_uses() -
 def test_the_scoring_verifier_runs_the_same_check() -> None:
     patched = with_thread_guard(seed_with_offset(VERIFIER.read_text()))
     compile(patched, "test_outputs.py", "exec")
-    # the reference timed alone on every problem, before the solver fixture imports the solver
-    assert "    _ALONE = time_reference(task.solve, problems, NUM_REPEATS)\n    _GUARD = ThreadGuard()\n    return problems\n" in patched
+    # the alone-timing process starts before the solver fixture imports the solver
+    assert "    _ALONE_TIMER = AloneTimer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS)\n" in patched
+    assert "        _ALONE.append(_ALONE_TIMER.time(n=PROBLEM_SIZE, random_seed=_take_seed_offset() + i))\n" in patched
     assert patched.count("_GUARD.before_reference()") == 2  # warmup and every timed reference call
     assert "        _WITH_SOLVER.append(t_baseline)\n" in patched
-    assert "        logger.error(reference_inflation_error(_WITH_SOLVER, _alone))\n        validity = False\n" in patched
+    assert "        logger.error(reference_inflation_error(_WITH_SOLVER, _ALONE))\n        validity = False\n" in patched
     with pytest.raises(ValueError):
         with_thread_guard(VERIFIER.read_text().replace("            _ = baseline_func(problem)\n", "", 1))
 
@@ -167,8 +168,8 @@ def load_dev_eval(tmp_path, monkeypatch, reference_solve: str):
 
 def test_a_solver_that_slows_the_reference_is_invalid_and_one_that_does_not_passes(tmp_path, monkeypatch) -> None:
     # The criterion is the harm: the reference, timed interleaved with the solver, against the same reference timed
-    # alone before the solver was imported. Here the "slowdown" is a flag the solver sets when imported (on Linux it
-    # is CPU contention from threads it leaves running), so the test does not depend on this machine's CPUs.
+    # alone in a process without the solver. Here the "slowdown" is a flag the solver sets in its own process (on
+    # Linux it is CPU contention from threads it leaves running), so the test does not depend on this machine's CPUs.
     monkeypatch.delattr("builtins._slow_reference", raising=False)
     dev_eval = load_dev_eval(tmp_path, monkeypatch, (
         "        time.sleep(0.004 if getattr(builtins, '_slow_reference', False) else 0.002)\n"

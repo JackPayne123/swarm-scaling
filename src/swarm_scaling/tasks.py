@@ -225,14 +225,15 @@ def seed_with_offset(test_outputs: str) -> str:
 # with_thread_guard: anchor -> replacement in the verifier, each anchor required exactly once.
 _GUARD_PATCHES = {
     _VERIFIER_IMPORT: _VERIFIER_IMPORT
-    + "from thread_guard import ThreadGuard, reference_inflation, reference_inflation_error, time_reference\n\n"
-    + "_GUARD = None  # set in problem_set, after the reference was timed alone and before the solver is imported\n"
-    + "_ALONE = []  # per problem: the reference's min timed call before the solver is imported (ns)\n"
+    + "from thread_guard import AloneTimer, ThreadGuard, reference_inflation, reference_inflation_error\n\n"
+    + "_GUARD = _ALONE_TIMER = None  # set in problem_set, before the solver is imported\n"
+    + "_ALONE = []  # per timed problem: the reference's min timed call alone, in the AloneTimer process (ns)\n"
     + "_WITH_SOLVER = []  # per timed problem: the reference's min timed call interleaved with the solver (ns)\n",
     '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n    return problems\n': (
         '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n'
-        "    global _GUARD, _ALONE\n"
-        "    _ALONE = time_reference(task.solve, problems, NUM_REPEATS)\n"
+        "    global _GUARD, _ALONE_TIMER\n"
+        "    _ALONE_TIMER = AloneTimer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS)\n"
+        "    task.solve(problems[0])\n"
         "    _GUARD = ThreadGuard()\n"
         "    return problems\n"
     ),
@@ -256,13 +257,14 @@ _GUARD_PATCHES = {
     "        total_time_baseline += t_baseline\n": (
         "        total_time_baseline += t_baseline\n"
         "        _WITH_SOLVER.append(t_baseline)\n"
+        "        _ALONE.append(_ALONE_TIMER.time(n=PROBLEM_SIZE, random_seed=_take_seed_offset() + i))\n"
     ),
     "    if validity and total_time_solver > 0:\n": (
-        "    _alone = _ALONE[: len(_WITH_SOLVER)]\n"
+        "    _ALONE_TIMER.close()\n"
         "    print(f\"Thread check: {_GUARD.summary()}\")\n"
-        "    print(f\"Reference inflation: {reference_inflation(_WITH_SOLVER, _alone)}\")\n"
-        "    if reference_inflation_error(_WITH_SOLVER, _alone) is not None:\n"
-        "        logger.error(reference_inflation_error(_WITH_SOLVER, _alone))\n"
+        "    print(f\"Reference inflation: {reference_inflation(_WITH_SOLVER, _ALONE)}\")\n"
+        "    if reference_inflation_error(_WITH_SOLVER, _ALONE) is not None:\n"
+        "        logger.error(reference_inflation_error(_WITH_SOLVER, _ALONE))\n"
         "        validity = False\n"
         "    if validity and total_time_solver > 0:\n"
     ),
@@ -313,11 +315,12 @@ def with_thread_guard(test_outputs: str) -> str:
     more than 15% slower than timed alone on the same instances before the solver was imported.
 
     Pilot 3: a solver that left spin-waiting threads running scored 3837x on dev_eval by slowing the reference.
-    Times the reference on every problem before the solver fixture imports the solver (one untimed and
-    NUM_REPEATS timed calls each, as the verifier times it), records the reference's per-instance minimum during
-    the interleaved timing, prints "Reference inflation: <ratio>" and the thread-CPU summary, and sets validity
-    False when the check fails, which the verifier scores 1.0 like any invalid run. Timing and the speedup
-    formula are unchanged. Needs thread_guard.py next to the verifier. Raises unless every anchor occurs once.
+    Starts thread_guard's AloneTimer before the solver fixture imports the solver; after each instance's
+    interleaved timing it times the reference alone on that instance (one untimed and NUM_REPEATS timed calls, in
+    the timer's process, the two processes never running at once). Prints "Reference inflation: <ratio>" and the
+    thread-CPU summary, and sets validity False when the check fails, which the verifier scores 1.0 like any
+    invalid run. Timing and the speedup formula are unchanged. Needs thread_guard.py and evaluator.py next to the
+    verifier. Raises unless every anchor occurs exactly once.
     """
     for anchor, replacement in _GUARD_PATCHES.items():
         if test_outputs.count(anchor) != 1:
