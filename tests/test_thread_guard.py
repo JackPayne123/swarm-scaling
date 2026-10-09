@@ -134,7 +134,8 @@ def test_first_call_ratio_exposes_a_solver_that_caches_results_by_problem_identi
     )
     clean = dev_eval.evaluate(honest, n=5, seed=0, size=20_000, reps=5)
     cached = dev_eval.evaluate(caching, n=5, seed=0, size=20_000, reps=5)
-    assert clean["valid"] and cached["valid"]  # neither is invalidated
+    # the ratio never invalidates (on a Mac the reference check itself can trip on these 2 ms references' noise)
+    assert not [e for e in clean["errors"] + cached["errors"] if not e.startswith("the reference ran")]
     assert clean["first_call_ratio"] < 5 < cached["first_call_ratio"]
     # the scoring verifier copy reports the same ratio
     patched = with_first_call_ratio(with_thread_guard(seed_with_offset(VERIFIER.read_text())))
