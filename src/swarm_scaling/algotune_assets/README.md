@@ -21,7 +21,10 @@ The dedicated machine runs one evaluation at a time. Calls from every agent work
 - Same check: your output goes to `is_solution` exactly as `solve` returns it, with no conversion. Return the types `is_solution` expects.
 - Same timing: per instance, one untimed warmup call of the reference and of your solver, then alternating timed calls of each (10 by default), minimum of each. Speedup is total reference time divided by total solver time.
 - Same thread check: a solver whose threads keep using CPU while the reference is being timed is scored invalid.
-- The final evaluation uses 100 instances. An invalid output or a solver slower than the reference scores 1.0, and a missing `/app/solver.py` scores 0.
+
+## How the final score is computed
+
+The final evaluation runs `/app/solver.py` on 100 instances: for each instance it calls the reference and your solver once untimed, checks that one output of your solver with `is_solution`, then times 10 alternating calls of each and keeps each one's minimum. The score is the sum of the 100 reference minimums divided by the sum of your solver's 100 minimums (one ratio of totals, not an average of per-instance speedups), and a ratio below 1.0 scores 1.0. If any instance's checked output is not a solution or your solver raises an exception, the evaluation stops there and the whole run scores 1.0, with no credit for the other instances; a run whose solver threads keep using CPU while the reference is being timed also scores 1.0. A missing `/app/solver.py`, or a `Solver` that cannot be imported or constructed, scores 0, and an evaluation still running after 3,600 seconds is stopped without a score.
 
 ## Notes
 
