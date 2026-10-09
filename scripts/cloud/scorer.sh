@@ -2,7 +2,7 @@
 # The remote scorer VM: one AWS instance running scripts/scorer_service.sh (branch remote-scorer), holding the
 # seed offset; agent VMs reach it on SCORER_PORT with a bearer token (see scorer-api.md).
 # Usage:
-#   scorer.sh up --ref <git-ref> [--machine m7a.8xlarge] [--hours 24] [-- <scorer_service.sh args, default --slots 2>]
+#   scorer.sh up --ref <git-ref> [--machine <AWS_FAMILY>.8xlarge: c7a in us-east-1, m7a in Sydney] [--hours 24] [-- <scorer_service.sh args, default --slots 2>]
 #     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
 #     checks out <git-ref>, starts the service detached, opens the port to this machine only, and waits for
 #     /health. State (URL, token, instance) goes to $SCORER_STATE (mode 600); run_sample.sh reads it for
@@ -25,7 +25,7 @@ load_state() {
 }
 
 up() {
-  local ref= mt=m7a.8xlarge hours=24 service_args=(--slots 2) seed_file=${SEED_OFFSET_FILE:-data/.algotune_seed_offset}
+  local ref= mt=$AWS_FAMILY.8xlarge hours=24 service_args=(--slots 2) seed_file=${SEED_OFFSET_FILE:-data/.algotune_seed_offset}
   while [ $# -gt 0 ]; do
     case $1 in
       --ref) ref=$2; shift 2 ;;

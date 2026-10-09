@@ -9,7 +9,7 @@ Usage:
 Plan file: one run per line, `name  cloud  machine  runner args...` (tab or space separated; the args are split like
 a shell would), blank lines and # comments ignored.
   cloud    gcp | aws | any (any: GCP first, AWS when GCP has no room)
-  machine  a machine type of that cloud (t2d-standard-16, m7a.4xlarge) or `auto`: the smallest type with at least
+  machine  a machine type of that cloud (t2d-standard-16, c7a.4xlarge) or `auto`: the smallest type with at least
            n x cpus_per_agent + 2 vCPUs (`--n`, default 1; `--cpus-per-agent`, default 4; +2 for the OS and Inspect)
 Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when every row is `--checker remote`
 (their agent VMs may fall back to other x86 families and US regions, see run_sample.sh), else min(T2D_CPUS, CPUS
@@ -37,16 +37,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = dict(re.findall(r"^(\w+)=([^\s$]+)", (ROOT / "scripts/cloud/common.sh").read_text(), re.M))
 GCLOUD = ["gcloud", f"--account={COMMON['GCP_ACCOUNT']}", f"--project={COMMON['GCP_PROJECT']}", "--quiet"]
-AWS_REGION = re.search(r"AWS_REGION=\$\{AWS_REGION:-([\w-]+)\}", (ROOT / "scripts/cloud/common.sh").read_text()).group(1)
+AWS_REGION, AWS_FAMILY = subprocess.run(  # common.sh decides both (env AWS_REGION overrides its default)
+    ["bash", "-c", 'source scripts/cloud/common.sh && echo "$AWS_REGION $AWS_FAMILY"'], cwd=ROOT, capture_output=True, text=True, check=True
+).stdout.split()
 AWS = ["aws", "--profile", COMMON["AWS_PROFILE_NAME"], "--region", AWS_REGION, "--output", "json"]
 TOOL = COMMON["TOOL_LABEL"]
 GCP_REGION = "us-central1"
 AWS_STANDARD_QUOTA = "L-1216C47A"  # Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances, vCPUs
 
-# Machine types `auto` picks from, smallest first. AWS: m7a because c7a is not offered in ap-southeast-2.
+# Machine types `auto` picks from, smallest first. AWS: c7a in us-east-1, m7a in ap-southeast-2 (no c7a there).
 MACHINES = {
     "gcp": ["t2d-standard-8", "t2d-standard-16", "t2d-standard-32"],
-    "aws": ["m7a.2xlarge", "m7a.4xlarge", "m7a.8xlarge"],
+    "aws": [f"{AWS_FAMILY}.2xlarge", f"{AWS_FAMILY}.4xlarge", f"{AWS_FAMILY}.8xlarge"],
 }
 AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32, "12xlarge": 48, "16xlarge": 64}
 
@@ -56,8 +58,10 @@ HOURLY_USD = {
     # GCP us-central1, third-party trackers July 2026; -8 is half of -16 (T2D is priced per vCPU and GB)
     "t2d-standard-8": 0.34, "t2d-standard-16": 0.68, "t2d-standard-32": 1.35,
     "e2-standard-8": 0.27,  # unverified
-    # AWS ap-southeast-2 Linux on-demand, AWS public price map published 2026-10-08
+    # AWS Linux on-demand, AWS public price map published 2026-10-08: ap-southeast-2
     "m7a.2xlarge": 0.5796, "m7a.4xlarge": 1.1592, "m7a.8xlarge": 2.3184,
+    # AWS us-east-1 Linux on-demand, same source
+    "c7a.2xlarge": 0.41056, "c7a.4xlarge": 0.82112, "c7a.8xlarge": 1.64224,
 }
 
 

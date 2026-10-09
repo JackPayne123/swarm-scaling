@@ -15,7 +15,7 @@ PLAN = """
 solo    gcp    auto     --arm independent --models mockllm/model --budget 10
 team2   any    auto     --arm team --n 2 --models mockllm/model --budget 10
 team4   aws    auto     --arm team --n 4 --cpus-per-agent=4 --models mockllm/model --budget 10
-fixed   aws    m7a.4xlarge --arm solo --models mockllm/model --budget 10
+fixed   aws    c7a.4xlarge --arm solo --models mockllm/model --budget 10
 """
 
 
@@ -24,15 +24,15 @@ def test_auto_sizes_by_agents_times_cpus_plus_two():
     rows = {r.name: r for r in fleet.parse_plan(PLAN)}
     assert fleet.machine_for(rows["solo"], "gcp") == "t2d-standard-8"
     assert fleet.machine_for(rows["team2"], "gcp") == "t2d-standard-16"
-    assert fleet.machine_for(rows["team4"], "aws") == "m7a.8xlarge"
-    assert fleet.machine_for(rows["fixed"], "aws") == "m7a.4xlarge"
+    assert fleet.machine_for(rows["team4"], "aws") == "c7a.8xlarge"
+    assert fleet.machine_for(rows["fixed"], "aws") == "c7a.4xlarge"
     assert rows["team2"].args[:4] == ["--arm", "team", "--n", "2"]
 
 
 def test_any_fills_gcp_first_then_aws():
     row = fleet.parse_plan(PLAN)[1]
     assert fleet.choose(row, {"gcp": 24, "aws": 32}) == ("gcp", "t2d-standard-16")
-    assert fleet.choose(row, {"gcp": 8, "aws": 32}) == ("aws", "m7a.4xlarge")
+    assert fleet.choose(row, {"gcp": 8, "aws": 32}) == ("aws", "c7a.4xlarge")
     assert fleet.choose(row, {"gcp": 8, "aws": 0}) is None  # e.g. the scorer holds the whole AWS quota
 
 
@@ -43,7 +43,7 @@ def test_explicit_cloud_never_spills_over():
 
 @pytest.mark.parametrize(
     "line",
-    ["x gcp m7a.4xlarge --n 1", "x azure auto --n 1", "x gcp auto --arm team --n 8 --models m", "a gcp auto\na aws auto"],
+    ["x gcp c7a.4xlarge --n 1", "x azure auto --n 1", "x gcp auto --arm team --n 8 --models m", "a gcp auto\na aws auto"],
 )
 def test_bad_plans_fail_before_anything_starts(line):
     """Wrong-cloud machine, unknown cloud, no type big enough (8 x 4 + 2 = 34 vCPUs), duplicate names."""
@@ -95,7 +95,7 @@ def test_dry_run_fills_gcp_then_aws_and_queues_the_rest():
     plan = fleet.dry_run(rows, {"gcp": 32, "aws": 16})
     assert plan == [
         ("t4", "gcp", "t2d-standard-32", "at launch"),
-        ("t2", "aws", "m7a.4xlarge", "at launch"),
+        ("t2", "aws", "c7a.4xlarge", "at launch"),
         ("s1", "gcp", "t2d-standard-8", "after t4"),
         ("s2", "gcp", "t2d-standard-8", "after t4"),
         ("s3", "gcp", "t2d-standard-8", "after t4"),

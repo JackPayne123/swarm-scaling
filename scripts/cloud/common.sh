@@ -24,10 +24,11 @@ REGISTRY=us-central1-docker.pkg.dev/swarm-scaling-jp/swarm-runner  # Artifact Re
 # TASK_IMAGE_NAME (the hb__ name the harness uses) and TASK_IMAGE_REF (registry@sha256 digest): build_image.sh publish
 [ -r "$(dirname "${BASH_SOURCE[0]}")/task-image.env" ] && source "$(dirname "${BASH_SOURCE[0]}")/task-image.env"
 
-# An org SCP denies EC2 in every region tried except ap-southeast-2 (checked 2026-10-09). c7a is not offered
-# there; m7a is the same EPYC Genoa generation with 1 vCPU per physical core.
+# us-east-1 since 2026-10-10 (the org SCP allows EC2 there now), with c7a. AWS_REGION=ap-southeast-2 selects Sydney,
+# which has no c7a; m7a there is the same EPYC Genoa generation, also 1 vCPU per physical core.
 AWS_PROFILE_NAME=personal
-AWS_REGION=${AWS_REGION:-ap-southeast-2}
+AWS_REGION=${AWS_REGION:-us-east-1}
+case $AWS_REGION in ap-southeast-2) AWS_FAMILY=m7a ;; *) AWS_FAMILY=c7a ;; esac  # scorer and `auto` agent types
 AWS_KEY_NAME=swarm-runner
 AWS_SG_SSH=swarm-runner-ssh
 AWS_SG_SCORER=swarm-scorer
@@ -36,7 +37,7 @@ UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64
 gc() { gcloud --account="$GCP_ACCOUNT" --project="$GCP_PROJECT" --quiet "$@"; }
 aw() { command aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION" --output text "$@"; }
 
-cloud_of() {  # cloud_of <machine-type>: AWS types have a dot (m7a.4xlarge), GCP types do not (t2d-standard-16)
+cloud_of() {  # cloud_of <machine-type>: AWS types have a dot (c7a.4xlarge), GCP types do not (t2d-standard-16)
   case $1 in *.*) echo aws ;; *) echo gcp ;; esac
 }
 
@@ -160,7 +161,7 @@ fallback_types() {  # fallback_types <machine-type>: it, then other x86 families
   if [ "$(cloud_of "$mt")" = gcp ]; then
     for f in t2d n2d c2d e2; do [ "$f-standard-${mt##*-}" = "$mt" ] || echo "$f-standard-${mt##*-}"; done
   else
-    for f in m7a c7a m6a c6a m7i c7i; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done
+    for f in c7a m7a m6a c6a m7i c7i; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done
   fi
 }
 

@@ -11,7 +11,8 @@
 #            for the same commit and digest (FORCE=1 rebuilds).
 # No seed offset or API key is ever on a build VM; the registry token is short-lived (1 h) and deleted after use.
 # The build VM is deleted on exit, success or not, and ends itself after 3 h regardless.
-#   BUILD_MACHINE_TYPE (default e2-standard-8 on GCP, m7a.2xlarge on AWS)
+#   BUILD_MACHINE_TYPE (default e2-standard-8 on GCP, <AWS_FAMILY>.2xlarge on AWS). To use the AWS image in another
+#   region, copy it (aws ec2 copy-image --copy-image-tags) instead of rebuilding: a rebuild would pull the same digest.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/cloud/common.sh
@@ -38,7 +39,7 @@ if [ "$what" != publish ]; then
     exit 0
   fi
 fi
-[ "$cloud" = gcp ] && mt=${BUILD_MACHINE_TYPE:-e2-standard-8} || mt=${BUILD_MACHINE_TYPE:-m7a.2xlarge}
+[ "$cloud" = gcp ] && mt=${BUILD_MACHINE_TYPE:-e2-standard-8} || mt=${BUILD_MACHINE_TYPE:-$AWS_FAMILY.2xlarge}
 
 VM_ID=
 tmp=$(mktemp -d)
