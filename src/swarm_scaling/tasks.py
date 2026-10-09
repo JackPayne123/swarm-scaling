@@ -466,7 +466,7 @@ def seed_verifier(sample, offset: int) -> Path:
 def task_names() -> dict[str, str]:
     """Harbor sample id (algotune/dst-type-ii-scipy-fftpack) -> AlgoTune task name (dst_type_II_scipy_fftpack)."""
     split = json.loads(SPLIT_PATH.read_text())
-    return {_harbor_name(n): n for names in split.values() for n in names}
+    return {_harbor_name(n): n for key in ("pilot", "heldout") for n in split[key]}
 
 
 def _harbor_name(task_name: str) -> str:

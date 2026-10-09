@@ -327,7 +327,7 @@ def cpu_model() -> str:
 
 
 def git_version(root: Path) -> str:
-    out = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
+    out = subprocess.run(["git", "-C", str(root), "describe", "--always", "--dirty"], capture_output=True, text=True)
     return out.stdout.strip() or "unknown"
 
 
@@ -356,7 +356,7 @@ def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, Ta
 
 
 def main() -> None:
-    from swarm_scaling.tasks import PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, SPLIT_PATH, _seed_offset, seed_offset_id
+    from swarm_scaling.tasks import PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_names
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="0.0.0.0")
@@ -376,8 +376,7 @@ def main() -> None:
         raise SystemExit(f"no seed offset: copy the experiment's {SEED_OFFSET_FILE.name} to {SEED_OFFSET_FILE} or set {SEED_OFFSET_ENV}")
     offset = _seed_offset()
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    split = json.loads(SPLIT_PATH.read_text())
-    tasks = prepare_tasks([n for names in split.values() for n in names], offset, args.work_dir)
+    tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
     cpusets = [f"{args.first_cpu + 8 * k}-{args.first_cpu + 8 * k + 7}" for k in range(args.slots)]
     scorer = Scorer(
         tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu_model(), git_version(PROJECT_ROOT),

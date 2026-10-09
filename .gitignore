@@ -17,3 +17,4 @@ research/sources/**
 !research/sources/openai/multiagent_charts.json
 grant/
 analysis/runs/
+data/.scorer/
