@@ -20,9 +20,10 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
-from inspect_ai import eval, task_with
-from inspect_ai.dataset import MemoryDataset
+from inspect_ai import Task, eval, task_with
+from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.log import read_eval_log
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.util import sandbox
@@ -60,18 +61,10 @@ def fmt(value: float | None) -> str:
     return f"{value:>10.4f}" if value is not None else f"{'-':>10}"
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
-    p.add_argument("--repeats", type=int, default=1, help="scorings per solver (to measure rescore noise)")
-    args = p.parse_args()
-
-    running = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split()
-    if running:
-        sys.exit(f"{len(running)} container(s) running; rescore needs Docker otherwise idle")
-
+def collect(files: list[Path]) -> tuple[list[dict], list[dict], set]:
+    """Rows to rescore (with the selected source), samples skipped for having none, seed offsets the logs used."""
     rows, skipped, offsets = [], [], set()
-    for f in eval_files(args.logs):
+    for f in files:
         log = read_eval_log(str(f))
         meta = log.eval.metadata or {}
         offsets.add(meta.get("algotune_seed_offset"))
@@ -83,24 +76,58 @@ def main() -> None:
                 "original_score": {k: v.value for k, v in (s.scores or {}).items()}.get("algotune_scorer"),
             }  # fmt: skip
             (rows if source else skipped).append({**info, "source": source})
+    return rows, skipped, offsets
+
+
+def build(rows: list[dict], offsets: set, task_for: Callable = algotune_task) -> tuple[Task, list[Sample]]:
+    """One rescore sample per row, copied from the task's own sample (verifier, seed offset, compose file).
+
+    Raises if the logs were scored with a different seed offset, since their scores would not be comparable.
+    """
+    samples: list[Sample] = []
+    for split in sorted({r["split"] for r in rows}):
+        task = task_for(split=split)
+        offset = task.metadata["algotune_seed_offset"]
+        if offsets - {offset}:
+            raise ValueError(f"logs were scored with seed offset(s) {sorted(offsets - {offset}, key=str)}, not this experiment's")
+        by_id = {s.id: s for s in task.dataset}
+        for r in (x for x in rows if x["split"] == split):
+            sample = by_id[r["task"]].model_copy(deep=True)
+            sample.id = f"{len(samples):03d}-{r['run']}-e{r['epoch']}"
+            sample.metadata["rescore"] = r
+            samples.append(sample)
+    return task, samples
+
+
+def result_row(sample) -> dict:
+    """One output row from a rescored sample: the input row (without source) plus score, validity, raw output."""
+    row = {k: v for k, v in sample.metadata["rescore"].items() if k != "source"}
+    score = (sample.scores or {}).get("algotune_scorer")
+    explanation = score.explanation if score else str(sample.error)
+    return {
+        **row, "repeat": sample.epoch, "rescore": score.value if score else None, "valid": validity(explanation or ""),
+        "checker": (score.metadata or {}).get("checker") if score else None, "verifier_output": explanation,
+    }  # fmt: skip
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
+    p.add_argument("--repeats", type=int, default=1, help="scorings per solver (to measure rescore noise)")
+    args = p.parse_args()
+
+    running = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split()
+    if running:
+        sys.exit(f"{len(running)} container(s) running; rescore needs Docker otherwise idle")
+
+    rows, skipped, offsets = collect(eval_files(args.logs))
     for r in skipped:
         print(f"skipped (no selected solver): {r['run']} {r['task']} epoch {r['epoch']}")
     if not rows:
         sys.exit("nothing to rescore")
+    task, samples = build(rows, offsets)
 
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    samples, offset = [], None
-    for split in sorted({r["split"] for r in rows}):
-        task = algotune_task(split=split)
-        offset = task.metadata["algotune_seed_offset"]
-        if offsets - {offset}:
-            sys.exit(f"logs were scored with seed offset(s) {sorted(offsets - {offset}, key=str)}, not this experiment's")
-        by_id = {s.id: s for s in task.dataset}
-        for i, r in enumerate(x for x in rows if x["split"] == split):
-            sample = by_id[r["task"]].model_copy(deep=True)
-            sample.id = f"{i:03d}-{r['run']}-e{r['epoch']}"
-            sample.metadata["rescore"] = r
-            samples.append(sample)
     (log,) = eval(
         task_with(task, dataset=MemoryDataset(samples), solver=install_selected()),
         model="mockllm/model",
@@ -114,15 +141,7 @@ def main() -> None:
 
     out = PROJECT_ROOT / "analysis" / "rescore" / f"{stamp}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    results = []
-    for s in read_eval_log(log.location).samples or []:
-        r = {k: v for k, v in s.metadata["rescore"].items() if k != "source"}
-        score = (s.scores or {}).get("algotune_scorer")
-        explanation = score.explanation if score else str(s.error)
-        results.append({
-            **r, "repeat": s.epoch, "rescore": score.value if score else None, "valid": validity(explanation or ""),
-            "checker": score.metadata.get("checker") if score else None, "verifier_output": explanation,
-        })  # fmt: skip
+    results = [result_row(s) for s in read_eval_log(log.location).samples or []]
     with out.open("w") as fh:
         for r in results:
             fh.write(json.dumps(r) + "\n")
