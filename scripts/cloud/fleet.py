@@ -11,8 +11,10 @@ a shell would), blank lines and # comments ignored.
   cloud    gcp | aws | any (any: GCP first, AWS when GCP has no room)
   machine  a machine type of that cloud (t2d-standard-16, m7a.4xlarge) or `auto`: the smallest type with at least
            n x cpus_per_agent + 2 vCPUs (`--n`, default 1; `--cpus-per-agent`, default 4; +2 for the OS and Inspect)
-Free vCPUs per cloud are read once at launch: GCP min(T2D_CPUS, CPUS in us-central1, CPUS_ALL_REGIONS) left,
-AWS the on-demand standard quota (service-quotas) minus every running instance's vCPUs (a scorer VM included).
+Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when every row is `--checker remote`
+(their agent VMs may fall back to other x86 families and US regions, see run_sample.sh), else min(T2D_CPUS, CPUS
+in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
+instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
 empty cloud fails at once. Each run's output goes to logs/<name>/driver.log and its progress to
 logs/<name>/cloud-status. Run a long plan under bgjob (--grace 60) and caffeinate.
@@ -136,11 +138,19 @@ def run_json(cmd: list[str]) -> dict | list:
     return json.loads(out.stdout)
 
 
-def gcp_free() -> int:
+def is_remote(args: list[str]) -> bool:
+    return "--checker=remote" in args or any(a == "--checker" and b == "remote" for a, b in zip(args, args[1:]))
+
+
+def gcp_free(t2d_only: bool) -> int:
+    """Free GCP vCPUs. Remote-checker agent VMs may fall back to any x86 family and US region, so only the global
+    CPU quota binds them; local-checker runs need T2D in us-central1."""
     region = run_json([*GCLOUD, "compute", "regions", "describe", GCP_REGION, "--format=json"])
     project = run_json([*GCLOUD, "compute", "project-info", "describe", "--format=json"])
     quotas = {q["metric"]: q["limit"] - q["usage"] for q in region["quotas"]}
     glob = {q["metric"]: q["limit"] - q["usage"] for q in project["quotas"]}
+    if not t2d_only:
+        return int(glob["CPUS_ALL_REGIONS"])
     return int(min(quotas["T2D_CPUS"], quotas["CPUS"], glob["CPUS_ALL_REGIONS"]))
 
 
@@ -200,7 +210,7 @@ def plan(args: argparse.Namespace) -> None:
     if used := [r.name for r in rows if status_path(r.name).exists()]:
         raise SystemExit(f"run names already used (logs/<name>/cloud-status exists): {used}")
     script = ["--script", args.script] if args.script else []
-    free = {"gcp": gcp_free(), "aws": aws_free()}
+    free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
     print(f"{len(rows)} runs, ref {args.ref}; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']}", flush=True)
 
     def launch(row: Row, machine: str) -> int:

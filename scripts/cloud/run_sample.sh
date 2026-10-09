@@ -9,8 +9,12 @@
 #   copied to the local logs/<name>/ (VM output in vm.log) and the VM is deleted, on failure too.
 #   With `--checker remote` in the runner args the VM gets no seed offset; its env carries SCORER_URL and
 #   SCORER_TOKEN from the running scorer (scorer.sh up), and its IP is allowed on the scorer port for the run.
+#   Such a VM times nothing, so when <machine-type> has no capacity or quota anywhere it may get another x86
+#   family with the same vCPUs, in any US zone (CREATE_FALLBACK, common.sh); cloud-status records what it got.
+#   Every VM must hold the task image pulled by TASK_IMAGE_REF (task-image.env), as the scorer does; a run
+#   stops before starting otherwise.
 #   Progress is appended to logs/<name>/cloud-status as "<UTC time> <state> <detail>": created (cloud, zone,
-#   machine), host (CPU model), running, copied, deleted (delete-requested when stopped by a signal), exit.
+#   machine), host (CPU model, task image), running, copied, deleted (delete-requested on a signal), exit.
 #   The exit status is the run's (or 1-2 when the infrastructure failed first).
 # Env: MAX_RUN_HOURS (default 8; the VM ends itself after this), POLL_S (default 60), SEED_OFFSET_FILE (default
 #   data/.algotune_seed_offset), KEEP_VM=1 (debugging: do not delete), and GCP_ZONES / CREATE_ROUNDS /
@@ -25,7 +29,7 @@ if [ "${1:-}" = --script ]; then
   shift 2
 fi
 if [ $# -lt 4 ] || [ "$4" != -- ]; then
-  sed -n '2,18p' "$0" >&2
+  sed -n '2,21p' "$0" >&2
   exit 2
 fi
 name=$1 mt=$2 ref=$3
@@ -47,9 +51,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --checker=remote) remote=1 ;;
   esac
 done
+[ -n "${TASK_IMAGE_REF:-}" ] || { echo "no scripts/cloud/task-image.env (build_image.sh publish)" >&2; exit 2; }
 if [ "$remote" = 0 ]; then
   [ -r "$seed_file" ] || { echo "no seed offset at $seed_file (set SEED_OFFSET_FILE)" >&2; exit 2; }
 else
+  export CREATE_FALLBACK=1
+  [ "$(scorer_field task_image 2>/dev/null)" = "$TASK_IMAGE_REF" ] ||
+    { echo "the scorer runs task image '$(scorer_field task_image 2>/dev/null)', not $TASK_IMAGE_REF" >&2; exit 2; }
   scorer_url=$(scorer_field url) && scorer_token=$(scorer_field token) || { echo "--checker remote but no scorer is up (scorer.sh up)" >&2; exit 2; }
   curl -sf --max-time 20 -H "Authorization: Bearer $scorer_token" "$scorer_url/health" >/dev/null ||
     { echo "scorer at $scorer_url does not answer /health" >&2; exit 2; }
@@ -130,14 +138,15 @@ fi
 
 vm_create "$cloud" "$(vm_name "$name")" "$mt" "$max_hours" agent runner
 created=$?
-[ -n "$VM_ID" ] && note created "vm=$VM_ID cloud=$cloud zone=$ZONE machine=$mt max_hours=$max_hours checker=$([ "$remote" = 1 ] && echo remote || echo local)"
+[ -n "$VM_ID" ] && note created "vm=$VM_ID cloud=$cloud zone=$ZONE machine=$MACHINE requested=$mt max_hours=$max_hours checker=$([ "$remote" = 1 ] && echo remote || echo local)"
 [ "$created" = 0 ] || exit 1
 if [ "$remote" = 1 ]; then
   scorer_allow "$VM_IP" "$VM" || exit 1
   allowed=$VM_IP
 fi
 vm_wait_ssh || exit 1
-note host "cpu=$(vm_cpu_model)"
+vm_task_image_ok || { note image-mismatch "$TASK_IMAGE_NAME on the VM is not $TASK_IMAGE_REF"; exit 1; }
+note host "cpu=$(vm_cpu_model) task_image=$TASK_IMAGE_REF"
 vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" &&
   vm_put "${uploads[@]}" scripts/cloud/vm_run.sh swarm-upload/ &&
   vm_exec "sudo bash swarm-upload/vm_run.sh start $(printf '%q ' "$name" "$ref" "$script" "${args[@]}")" || exit 1

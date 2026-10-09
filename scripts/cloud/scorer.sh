@@ -3,7 +3,7 @@
 # seed offset; agent VMs reach it on SCORER_PORT with a bearer token (see scorer-api.md).
 # Usage:
 #   scorer.sh up --ref <git-ref> [--machine m7a.8xlarge] [--hours 24] [-- <scorer_service.sh args, default --slots 2>]
-#     Generates a fresh token, creates the VM from the runner AMI, uploads the seed offset and token (mode 600),
+#     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
 #     checks out <git-ref>, starts the service detached, opens the port to this machine only, and waits for
 #     /health. State (URL, token, instance) goes to $SCORER_STATE (mode 600); run_sample.sh reads it for
 #     `--checker remote` runs and opens the port to each agent VM's IP for that run.
@@ -56,6 +56,7 @@ up() {
   echo "created $VM_ID ($mt) in $ZONE, $VM_IP"
   ip=$(my_ip) && scorer_allow "$ip" operator || exit 1
   vm_wait_ssh || exit 1
+  vm_task_image_ok || { echo "$TASK_IMAGE_NAME on the scorer is not $TASK_IMAGE_REF" >&2; exit 1; }
   cpu=$(vm_cpu_model)
   vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" && vm_put "$tmp/env" "$tmp/seed_offset" swarm-upload/ || exit 1
   # shellcheck disable=SC2016
@@ -89,12 +90,12 @@ EOF
     mkdir -p "$(dirname "$SCORER_STATE")"
     python3 -c 'import json, sys; json.dump(dict(zip(sys.argv[2::2], sys.argv[3::2])), open(sys.argv[1], "w"), indent=2)' "$SCORER_STATE" \
       cloud aws instance_id "$VM_ID" zone "$ZONE" ip "$VM_IP" url "http://$VM_IP:$SCORER_PORT" token "$token" \
-      ref "$ref" machine "$mt" cpu "$cpu" started "$(date -u +%FT%TZ)"
+      ref "$ref" machine "$mt" cpu "$cpu" task_image "$TASK_IMAGE_REF" started "$(date -u +%FT%TZ)"
   )
   local i
   for i in $(seq 1 60); do
     if out=$(health); then
-      echo "scorer up at http://$VM_IP:$SCORER_PORT ($mt, $cpu): $out" | cut -c1-600
+      echo "scorer up at http://$VM_IP:$SCORER_PORT ($mt, $cpu, task image $TASK_IMAGE_REF): $out" | cut -c1-700
       return 0
     fi
     sleep 5
@@ -110,6 +111,7 @@ status() {
     echo "no scorer state ($SCORER_STATE)"
   else
     echo "scorer $VM_ID ($(scorer_field machine), $(scorer_field cpu)) at $(scorer_field url), ref $(scorer_field ref), since $(scorer_field started): $(vm_state)"
+    echo "task image $(scorer_field task_image)"
     health | cut -c1-600 || echo "/health did not answer"
   fi
   aw ec2 describe-instances --filters "Name=tag:tool,Values=$TOOL_LABEL" Name=tag:role,Values=scorer \

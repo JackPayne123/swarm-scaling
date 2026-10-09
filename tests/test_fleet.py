@@ -77,3 +77,14 @@ def test_schedule_respects_free_vcpus_and_starts_queued_rows_as_room_frees():
 def test_schedule_fails_rows_that_never_fit():
     rows = fleet.parse_plan("big aws auto --n 4\n")  # needs 32 vCPUs; the scorer holds the AWS quota
     assert fleet.schedule(rows, {"gcp": 24, "aws": 0}, lambda row, machine: 0) == {"big": 1}
+
+
+def test_gcp_room_is_the_global_quota_only_when_every_row_uses_the_remote_scorer(monkeypatch):
+    """Remote-checker agent VMs may fall back to any x86 family and US region; local-checker runs time on T2D."""
+    region = {"quotas": [{"metric": "T2D_CPUS", "limit": 24, "usage": 0}, {"metric": "CPUS", "limit": 200, "usage": 0}]}
+    project = {"quotas": [{"metric": "CPUS_ALL_REGIONS", "limit": 32, "usage": 0}]}
+    monkeypatch.setattr(fleet, "run_json", lambda cmd: region if "regions" in cmd else project)
+    rows = fleet.parse_plan("a gcp auto --checker remote\nb any auto --checker=remote\n")
+    assert fleet.gcp_free(t2d_only=not all(fleet.is_remote(r.args) for r in rows)) == 32
+    rows.append(fleet.parse_plan("c gcp auto --arm solo\n")[0])
+    assert fleet.gcp_free(t2d_only=not all(fleet.is_remote(r.args) for r in rows)) == 24

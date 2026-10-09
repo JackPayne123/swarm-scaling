@@ -20,6 +20,9 @@ GCP_PROJECT=swarm-scaling-jp
 # Zones tried in order when a create fails (T2D stockouts are per zone).
 GCP_ZONES=${GCP_ZONES:-"us-central1-a us-central1-b us-central1-c us-central1-f"}
 IMAGE_FAMILY=swarm-scaling-runner
+REGISTRY=us-central1-docker.pkg.dev/swarm-scaling-jp/swarm-runner  # Artifact Registry; build VMs pull with a 1 h token
+# TASK_IMAGE_NAME (the hb__ name the harness uses) and TASK_IMAGE_REF (registry@sha256 digest): build_image.sh publish
+[ -r "$(dirname "${BASH_SOURCE[0]}")/task-image.env" ] && source "$(dirname "${BASH_SOURCE[0]}")/task-image.env"
 
 # An org SCP denies EC2 in every region tried except ap-southeast-2 (checked 2026-10-09). c7a is not offered
 # there; m7a is the same EPYC Genoa generation with 1 vCPU per physical core.
@@ -83,6 +86,10 @@ vm_wait_ssh() {  # up to ~5 min for sshd and (GCP) the guest agent's key install
   return 1
 }
 
+vm_task_image_ok() {  # does the VM's hb__ image come from TASK_IMAGE_REF (pulled by that digest)?
+  vm_exec "sudo docker image inspect '$TASK_IMAGE_NAME' --format '{{json .RepoDigests}}'" 2>/dev/null | grep -qF "\"$TASK_IMAGE_REF\""
+}
+
 vm_cpu_model() { vm_exec "lscpu | sed -n 's/^Model name: *//p'" 2>/dev/null | head -n 1; }
 
 vm_state() {  # prints the VM's state (GCP status or EC2 state), or "gone"
@@ -121,39 +128,68 @@ vm_delete_detached() {  # vm_delete_detached <log file>: starts the delete in it
 }
 
 # vm_create <cloud> <name> <machine-type> <max-run-hours> <role> <runner|base>
-# runner = the newest image this tooling built; base = stock Ubuntu 24.04 LTS x86_64 (for building that image).
-# Tries every zone; when all are out of that machine type, waits CREATE_WAIT_S (default 120) and tries again,
-# up to CREATE_ROUNDS (default 5) rounds. Sets VM_ID/ZONE when the VM exists, also when the create reported a
-# failure (so the caller can still delete it). The VM ends itself after <max-run-hours>, with its disk.
+# runner = the newest VM image this tooling built around TASK_IMAGE_REF; base = stock Ubuntu 24.04 LTS x86_64.
+# Tries every zone (GCP_ZONES on GCP, every AZ offering the type on AWS). With CREATE_FALLBACK=1 (agent VMs of
+# --checker remote runs, which time nothing) it then tries the other x86 families of the same vCPU count
+# (fallback_types) and, on GCP, every US zone offering them, treating quota errors like stockouts. When nothing
+# is free it waits CREATE_WAIT_S (default 120) and tries again, up to CREATE_ROUNDS (default 5) rounds. Sets
+# VM_ID/ZONE/MACHINE when the VM exists, also when the create reported a failure (so the caller can still
+# delete it). The VM ends itself after <max-run-hours>, with its disk.
 vm_create() {
-  CLOUD=$1 VM=$2 VM_ID= ZONE= VM_IP=
-  local mt=$3 hours=$4 role=$5 image=$6 round
+  CLOUD=$1 VM=$2 VM_ID= ZONE= VM_IP= MACHINE=
+  local mt=$3 hours=$4 role=$5 image=$6 round t types
+  types=("$mt")
+  [ "${CREATE_FALLBACK:-0}" = 1 ] && types=($(fallback_types "$mt"))
   for round in $(seq 1 "${CREATE_ROUNDS:-5}"); do
-    if [ "$CLOUD" = gcp ]; then _gcp_create "$mt" "$hours" "$role" "$image"; else _aws_create "$mt" "$hours" "$role" "$image"; fi
-    case $? in
-      0) return 0 ;;
-      2) [ "$round" -lt "${CREATE_ROUNDS:-5}" ] && sleep "${CREATE_WAIT_S:-120}" ;;  # every zone out of stock
-      *) return 1 ;;
-    esac
+    for t in "${types[@]}"; do
+      if [ "$CLOUD" = gcp ]; then _gcp_create "$t" "$hours" "$role" "$image"; else _aws_create "$t" "$hours" "$role" "$image"; fi
+      case $? in
+        0) MACHINE=$t; return 0 ;;
+        2) ;;  # no capacity (or, with fallback, no quota) for this type anywhere tried
+        *) MACHINE=$t; return 1 ;;
+      esac
+    done
+    [ "$round" -lt "${CREATE_ROUNDS:-5}" ] && sleep "${CREATE_WAIT_S:-120}"
   done
   return 1
 }
 
-_stockout() {  # does this create error mean "no capacity in that zone"?
+fallback_types() {  # fallback_types <machine-type>: it, then other x86 families with the same vCPU count
+  local mt=$1 f
+  echo "$mt"
+  if [ "$(cloud_of "$mt")" = gcp ]; then
+    for f in t2d n2d c2d e2; do [ "$f-standard-${mt##*-}" = "$mt" ] || echo "$f-standard-${mt##*-}"; done
+  else
+    for f in m7a c7a m6a c6a m7i c7i; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done
+  fi
+}
+
+_no_capacity() {  # does this create error mean "nothing free here" (with fallback: also "no quota here")?
   case $1 in
     *RESOURCE_POOL_EXHAUSTED* | *ZONE_RESOURCE* | *"does not have enough resources"* | *InsufficientInstanceCapacity*) return 0 ;;
+    *QUOTA_EXCEEDED* | *"Quota '"* | *VcpuLimitExceeded* | *"is not supported in your requested Availability Zone"*)
+      [ "${CREATE_FALLBACK:-0}" = 1 ] && return 0 ;;
   esac
   return 1
 }
 
-_gcp_create() {  # one round over GCP_ZONES; returns 0 created, 1 failed, 2 every zone out of stock
-  local mt=$1 hours=$2 role=$3 image=$4 zone out flags
+_gcp_create() {  # one pass over the zones for <mt>; returns 0 created, 1 failed, 2 nothing free
+  local mt=$1 hours=$2 role=$3 image=$4 zone zones out flags dtag
   if [ "$image" = runner ]; then
-    flags=(--image-family "$IMAGE_FAMILY" --image-project "$GCP_PROJECT")
+    dtag=${TASK_IMAGE_REF##*sha256:}
+    flags=(--image "$(gc compute images list --filter="family=$IMAGE_FAMILY AND labels.task-image=${dtag:0:12}" \
+      --sort-by=~creationTimestamp --limit 1 --format="value(name)")" --image-project "$GCP_PROJECT")
+    [ -n "${flags[1]}" ] || { echo "no GCE image built around $TASK_IMAGE_REF (build_image.sh gcp)" >&2; return 1; }
   else
     flags=(--image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud)
   fi
-  for zone in $GCP_ZONES; do
+  zones=$GCP_ZONES
+  if [ "${CREATE_FALLBACK:-0}" = 1 ]; then  # every US zone offering the type, us-central1 first
+    zones=$(gc compute machine-types list --filter="name=$mt AND zone:us-" --format="value(zone)" | sort | awk '/^us-central1/ {print; next} {rest = rest $0 "\n"} END {printf "%s", rest}')
+  fi
+  local full=  # a region whose quota for this family is used up: its other zones are skipped
+  for zone in $zones; do
+    [ "${zone%-*}" = "$full" ] && continue
     if out=$(gc compute instances create "$VM" --zone "$zone" --machine-type "$mt" "${flags[@]}" \
       --boot-disk-type pd-balanced --boot-disk-size "${DISK_GB}GB" \
       --labels "tool=$TOOL_LABEL,run=$VM,role=$role" --no-service-account --no-scopes \
@@ -167,8 +203,11 @@ _gcp_create() {  # one round over GCP_ZONES; returns 0 created, 1 failed, 2 ever
       VM_ID=$VM ZONE=$zone
       return 1
     fi
-    _stockout "$out" || { echo "create $VM in $zone failed: $out" >&2; return 1; }
-    echo "$zone has no $mt available" >&2
+    _no_capacity "$out" || { echo "create $VM ($mt) in $zone failed: $out" >&2; return 1; }
+    case $out in
+      *QUOTA_EXCEEDED* | *"Quota '"*) full=${zone%-*}; echo "${zone%-*}: no quota for $mt" >&2 ;;
+      *) echo "$zone: no $mt available" >&2 ;;
+    esac
   done
   return 2
 }
@@ -192,19 +231,23 @@ aws_ensure_access() {  # key pair and SSH security group (port 22 from this mach
 }
 
 _aws_create() {  # one round over the default subnets of zones offering <mt>; returns 0 / 1 / 2 like _gcp_create
-  local mt=$1 hours=$2 role=$3 image=$4 ami azs sgs subnet az out userdata tags init
+  local mt=$1 hours=$2 role=$3 image=$4 ami azs sgs subnet az out userdata tags init dtag
   sgs=$(aws_ensure_access) || return 1
   [ "$role" = scorer ] && sgs="$sgs $(aws_scorer_sg)"
   if [ "$image" = runner ]; then
-    ami=$(aw ec2 describe-images --owners self --filters "Name=tag:tool,Values=$TOOL_LABEL" Name=state,Values=available \
-      --query 'sort_by(Images, &CreationDate)[-1].ImageId')
+    dtag=${TASK_IMAGE_REF##*sha256:}
+    ami=$(aw ec2 describe-images --owners self --filters "Name=tag:tool,Values=$TOOL_LABEL" "Name=tag:task-image,Values=${dtag:0:12}" \
+      Name=state,Values=available --query 'sort_by(Images, &CreationDate)[-1].ImageId')
   else
     ami=$(aw ssm get-parameter --name "$UBUNTU_AMI_PARAM" --query Parameter.Value)
   fi
   case $ami in ami-*) ;; *) echo "no $image AMI found ($ami)" >&2; return 1 ;; esac
   azs=$(aw ec2 describe-instance-type-offerings --location-type availability-zone --filters "Name=instance-type,Values=$mt" \
     --query 'InstanceTypeOfferings[].Location' | tr '\t' ',')
-  [ -n "$azs" ] || { echo "$mt is not offered in $AWS_REGION" >&2; return 1; }
+  if [ -z "$azs" ]; then
+    echo "$mt is not offered in $AWS_REGION" >&2
+    [ "${CREATE_FALLBACK:-0}" = 1 ] && return 2 || return 1
+  fi
   # The backstop: shut down after <hours>; instance-initiated shutdown terminates the instance.
   userdata=$(mktemp)
   printf '#!/bin/bash\nshutdown -h +%d\n' $((hours * 60)) > "$userdata"
@@ -227,8 +270,8 @@ _aws_create() {  # one round over the default subnets of zones offering <mt>; re
       return 0
     fi
     out=$VM_ID VM_ID=
-    _stockout "$out" || { echo "create $VM in $az failed: $out" >&2; rm -f "$userdata"; return 1; }
-    echo "$az has no $mt available" >&2
+    _no_capacity "$out" || { echo "create $VM ($mt) in $az failed: $out" >&2; rm -f "$userdata"; return 1; }
+    echo "$az: no $mt available" >&2
   done < <(aw ec2 describe-subnets --filters Name=default-for-az,Values=true "Name=availability-zone,Values=$azs" \
     --query 'Subnets[].[SubnetId,AvailabilityZone]')
   rm -f "$userdata"

@@ -1,9 +1,13 @@
 #!/bin/bash
-# Provisions the base-image VM (runs there as root; build_image.sh copies and runs it). Each step is skipped
+# Provisions an image-build VM (runs there as root; build_image.sh copies and runs it). Each step is skipped
 # when already done, so a rerun on the same VM resumes.
-# Usage: vm_setup.sh <repo-url> <remote-repo> <git-ref>
+# Usage: vm_setup.sh <repo-url> <remote-repo> <git-ref> build
+#        vm_setup.sh <repo-url> <remote-repo> <git-ref> <image-name> <registry-ref@sha256:...>
+#   build: build the task image from its Dockerfile (once, for build_image.sh publish).
+#   otherwise: pull the published image by digest and tag it <image-name>, the hb__ name the harness uses. The
+#   registry token is read from ~$SUDO_USER/swarm-upload/registry_token, used once and deleted.
 set -euo pipefail
-url=$1 repo=$2 ref=$3
+url=$1 repo=$2 ref=$3 mode=$4
 export DEBIAN_FRONTEND=noninteractive
 
 command -v docker >/dev/null || curl -fsSL https://get.docker.com | sh
@@ -33,9 +37,22 @@ print(*sorted(builds)[0])
 ' | tail -n 1)
 read -r image context <<< "$built"
 echo "image=$image context=$context"
-docker image inspect "$image" >/dev/null 2>&1 || docker build --quiet -t "$image" "$context"
-docker builder prune -af >/dev/null
-# The Dockerfile pins no versions, so record what this build installed.
+if [ "$mode" = build ]; then
+  docker image inspect "$image" >/dev/null 2>&1 || docker build --quiet -t "$image" "$context"
+  docker builder prune -af >/dev/null
+else
+  [ "$image" = "$mode" ] || { echo "the dataset's image is $image, but $mode was published" >&2; exit 1; }
+  registry_ref=$5
+  token=/home/$SUDO_USER/swarm-upload/registry_token
+  if ! docker image inspect "$image" --format '{{join .RepoDigests " "}}' 2>/dev/null | grep -qF "$registry_ref"; then
+    docker login -u oauth2accesstoken --password-stdin "https://${registry_ref%%/*}" < "$token"
+    docker pull --quiet "$registry_ref"
+    docker logout "https://${registry_ref%%/*}"
+    docker tag "$registry_ref" "$image"
+  fi
+  rm -rf "$(dirname "$token")"
+fi
+# The Dockerfile pins no versions, so record what the image holds.
 docker run --rm --network none "$image" pip freeze > /opt/swarm-image-pip-freeze.txt
-docker image ls "$image" --format 'built {{.Repository}} {{.Size}}'
+docker image ls "$image" --format 'image {{.Repository}} {{.Size}}'
 apt-get clean
