@@ -2,39 +2,35 @@
 
 Usage: uv run python scripts/run_cost.py <log.eval | dir> [...]
 
-Prices are USD per 1M tokens (swarm_scaling.prices, shared with the dollar budget). Cache multipliers:
-Anthropic's published 0.1x input for cache reads and 1.25x for 5-minute cache writes; Google and
-DeepSeek cache-read rates are not checked and use CACHE_READ_FALLBACK (stated in the output).
-Check against the provider's billing before relying on totals.
+Prices and cache multipliers come from swarm_scaling.prices, the table the dollar budget meters with (cache reads
+at each model's multiple of input, cache writes at 1.25x input, 1-hour writes at 2x). The log's per-model totals do
+not split cache writes by TTL, so writes count as 5-minute except the 1-hour writes reported in the raw responses
+the log kept (Anthropic's usage.cache_creation; Inspect keeps the raw call for only some model events, and the
+output says for how many). Check against the provider's billing before relying on totals.
 """
 
 import sys
+from collections import Counter
 from pathlib import Path
 
 from inspect_ai.log import read_eval_log
 
-from swarm_scaling.prices import PRICES
-
-ANTHROPIC_CACHE_READ, ANTHROPIC_CACHE_WRITE = 0.10, 1.25
-CACHE_READ_FALLBACK = 0.25  # unchecked providers: upper end of the 10-25% range used in PLAN.md
+from swarm_scaling.prices import usage_cost
 
 
-def model_cost(model: str, u: dict) -> tuple[float, str]:
-    key = next((k for k in PRICES if k in model), None)
-    if key is None:
-        return float("nan"), f"no price for {model}"
-    p_in, p_out = PRICES[key]
-    anthropic = "claude" in model
-    read_mult = ANTHROPIC_CACHE_READ if anthropic else CACHE_READ_FALLBACK
-    write_mult = ANTHROPIC_CACHE_WRITE if anthropic else 1.0
-    cost = (
-        u.get("input_tokens", 0) * p_in
-        + u.get("input_tokens_cache_read", 0) * p_in * read_mult
-        + u.get("input_tokens_cache_write", 0) * p_in * write_mult
-        + u.get("output_tokens", 0) * p_out
-    ) / 1e6
-    note = "" if anthropic else f"cache read assumed {read_mult:.0%} of input"
-    return cost, note
+def one_hour_writes(path: Path) -> tuple[Counter, Counter, Counter]:
+    """Per model: 1-hour cache-write tokens seen in logged raw responses, model calls, calls with a raw response."""
+    writes, calls, seen = Counter(), Counter(), Counter()
+    for sample in read_eval_log(str(path)).samples or []:
+        for e in sample.events:
+            if e.event != "model":
+                continue
+            calls[e.model] += 1
+            usage = ((e.call.response or {}) if e.call is not None else {}).get("usage") or {}
+            if "cache_creation" in usage:
+                seen[e.model] += 1
+                writes[e.model] += (usage["cache_creation"] or {}).get("ephemeral_1h_input_tokens") or 0
+    return writes, calls, seen
 
 
 if __name__ == "__main__":
@@ -45,11 +41,16 @@ if __name__ == "__main__":
     total = 0.0
     for path in paths:
         log = read_eval_log(str(path), header_only=True)
+        writes_1h, calls, seen = one_hour_writes(path)
         for model, usage in (log.stats.model_usage or {}).items():
             u = usage.model_dump(exclude_none=True)
-            cost, note = model_cost(model, u)
+            try:
+                cost, note = usage_cost(model, u, writes_1h[model]), ""
+            except ValueError:
+                cost, note = float("nan"), f"no price for {model}"
             total += cost if cost == cost else 0.0
             print(f"{path.parent.name}/{path.name[:19]} {model}: ${cost:.3f}  "
                   f"in={u.get('input_tokens', 0):,} cache_r={u.get('input_tokens_cache_read', 0):,} "
-                  f"cache_w={u.get('input_tokens_cache_write', 0):,} out={u.get('output_tokens', 0):,} {note}")
+                  f"cache_w={u.get('input_tokens_cache_write', 0):,} (1h seen {writes_1h[model]:,}; TTL split known "
+                  f"for {seen[model]} of {calls[model]} calls) out={u.get('output_tokens', 0):,} {note}")
     print(f"TOTAL ${total:.2f}")

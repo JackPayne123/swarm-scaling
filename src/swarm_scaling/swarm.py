@@ -120,9 +120,9 @@ def swarm(
         budget_type: What per_agent_tokens meters: "all" (default since 2026-10-08: input incl. cached
             plus output, so models that think or re-read differently are matched on what they consume),
             "output" (Ord's unit), an Inspect formula over input/output, or "cost": US dollars at
-            swarm_scaling.prices (fresh input, cache writes at 1.25x and reads at 0.1x input, output incl.
-            reasoning), metered per call by Inspect's cost_limit; an unpriced model is refused. Inspect
-            meters Anthropic writes it sent with the 1-hour cache TTL at 2x input, as Anthropic bills them.
+            swarm_scaling.prices (fresh input, cache writes at 1.25x input or 2x for the 1-hour TTL, cache
+            reads at the model's multiple of input, e.g. 0.05x for Opus 5.5, output incl. reasoning), metered
+            per call by Inspect's cost_limit; an unpriced model is refused.
         deliverable: What counts as a solution, stated to agents as a fact (task-specific), e.g.
             AlgoTune: a file named solver.py. Candidates are found by this name, so state it.
         cpu_sample_interval: Seconds between container CPU samples (Docker only); the summary in

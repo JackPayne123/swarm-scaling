@@ -167,7 +167,7 @@ def test_token_limit_stops_one_agent_while_others_continue(tmp_path: Path) -> No
 
 def test_dollar_budget_meters_each_call_at_its_price_and_cache_rates(tmp_path: Path, monkeypatch) -> None:
     # Models differ in price and caching, so budgets match on dollars: cache writes 1.25x input, reads 0.1x.
-    monkeypatch.setitem(prices.PRICES, "mockllm/model", (2.0, 10.0))  # $ per 1M input, output
+    monkeypatch.setitem(prices.PRICES, "mockllm/model", (2.0, 10.0, 0.1))  # $ per 1M input, output; read 0.1x
     usage = ModelUsage(
         input_tokens=1000, input_tokens_cache_write=2000, input_tokens_cache_read=10_000, output_tokens=500
     )
