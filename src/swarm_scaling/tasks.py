@@ -5,6 +5,7 @@ import math
 import os
 import secrets
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Literal
@@ -44,12 +45,10 @@ LOG_DIR = PROJECT_ROOT / "logs"
 VERIFIER_DIR = SPLIT_PATH.parent / ".algotune_verifier"
 # Generated compose files, one per sample (see algotune_task). Gitignored.
 COMPOSE_DIR = SPLIT_PATH.parent / ".algotune_compose"
-DOCKER_VM_CPUS = 16  # Docker Desktop's VM on this Mac; the agent box and the checker each get half
-CHECKER_MEMORY_MB = 8192
-AGENT_MEMORY_MB = 12288  # agent box when one sample runs at a time (task.toml says 16 GB)
-DOCKER_VM_MEMORY_MB = 23_492  # MemTotal of the Docker VM (24,056,148 kB, measured 2026-10-09)
-# The VM's own use with no container running (970 MiB measured 2026-10-09), idle checkers and margin.
-DOCKER_VM_RESERVE_MB = 1536
+CHECKER_CPUS = 8
+CHECKER_MEMORY_MB = 8192  # the verifier's measured peak is 4.2 GiB (dst-type-ii-scipy-fftpack, 2026-10-09)
+# Left for the Docker host itself (970 MiB measured on the Mac's Docker VM with no containers, 2026-10-09).
+HOST_HEADROOM_MB = 2048
 
 # Inserted into the verifier copy. The offset travels as a file in /tests (copied in only at scoring), not as an
 # environment variable (visible in /proc/self/environ to the solver), and the file is read and deleted while the
@@ -268,35 +267,62 @@ def _seed_offset(path: Path = SEED_OFFSET_FILE, log_dir: Path = LOG_DIR) -> int:
     return offset
 
 
-def add_checker(config: ComposeConfig) -> None:
-    """Add the `checker` service: a copy of `default` that only the dev_eval tool and final selection use.
+def docker_host() -> tuple[int, int]:
+    """The Docker host's CPU count and memory in MiB (`docker info`), read when the task is built."""
+    out = subprocess.run(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"docker info failed: {out.stderr.strip()}")
+    cpus, memory = out.stdout.split()
+    return int(cpus), int(memory) // 2**20
 
-    The two are pinned to disjoint CPUs of the Docker VM (default 0..n-1, checker n..2n-1, n = the
-    default's cpus), so agent work in the default box cannot disturb the checker's timings. Final
-    scoring runs in the checker too (algotune_scorer), on the same CPUs and thread settings.
+
+def box_resources(cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int) -> dict:
+    """CPUs, cpusets and memory limits of the agent box and the checker on a Docker host of this size.
+
+    Every agent gets the same CPUs: the agent box has cpus_per_agent x n_agents CPUs (0..A-1), the checker
+    CHECKER_CPUS (A..A+7), so agent work cannot disturb the checker's timings. Only one checker times at a
+    time (CHECKER_LOCK), so the `parallel` agent boxes share the host memory left after one checker and
+    HOST_HEADROOM_MB. With parallel > 1 the agent boxes share cpuset 0..A-1 and the checkers A..A+7.
+    """
+    if min(cpus_per_agent, n_agents, parallel) < 1:
+        raise ValueError("cpus_per_agent, n_agents and parallel must be >= 1")
+    agent_cpus = cpus_per_agent * n_agents
+    if agent_cpus + CHECKER_CPUS > host_cpus:
+        raise ValueError(
+            f"{n_agents} agents x {cpus_per_agent} CPUs + {CHECKER_CPUS} checker CPUs = {agent_cpus + CHECKER_CPUS} "
+            f"CPUs, but the Docker host has {host_cpus}"
+        )
+    agent_memory_mb = (host_memory_mb - CHECKER_MEMORY_MB - HOST_HEADROOM_MB) // parallel
+    if agent_memory_mb < 1024:
+        raise ValueError(f"only {agent_memory_mb} MiB per agent box on a host with {host_memory_mb} MiB")
+    return {
+        "cpus_per_agent": cpus_per_agent,
+        "agent_cpus": agent_cpus,
+        "agent_cpuset": f"0-{agent_cpus - 1}",
+        "checker_cpus": CHECKER_CPUS,
+        "checker_cpuset": f"{agent_cpus}-{agent_cpus + CHECKER_CPUS - 1}",
+        "agent_memory_mb": agent_memory_mb,
+        "checker_memory_mb": CHECKER_MEMORY_MB,
+        "docker_host_cpus": host_cpus,
+        "docker_host_memory_mb": host_memory_mb,
+    }
+
+
+def add_checker(config: ComposeConfig, resources: dict) -> None:
+    """Add the `checker` service, a copy of `default` that only the dev_eval tool, final selection and scoring use.
+
+    Pins both boxes to their cpusets from `box_resources` and sets their CPU and memory limits.
     ComposeService has no cpuset field; extras set after construction reach the generated YAML.
     """
     default = config.services["default"]
-    n = int(default.cpus or 0)
-    if not 0 < 2 * n <= DOCKER_VM_CPUS:
-        raise ValueError(f"cannot pin two boxes of {default.cpus} CPUs inside {DOCKER_VM_CPUS} CPUs")
+    default.cpus = float(resources["agent_cpus"])
+    default.mem_limit = f"{resources['agent_memory_mb']}m"
     checker = default.model_copy(deep=True)
-    # Two 12 GB boxes would fill the 24.6 GB Docker VM; one dev_eval process needs far less.
-    checker.mem_limit = f"{CHECKER_MEMORY_MB}m"
-    default.__pydantic_extra__["cpuset"] = f"0-{n - 1}"
-    checker.__pydantic_extra__["cpuset"] = f"{n}-{2 * n - 1}"
+    checker.cpus = float(resources["checker_cpus"])
+    checker.mem_limit = f"{resources['checker_memory_mb']}m"
+    default.__pydantic_extra__["cpuset"] = resources["agent_cpuset"]
+    checker.__pydantic_extra__["cpuset"] = resources["checker_cpuset"]
     config.services[CHECKER] = checker
-
-
-def agent_memory_mb(parallel: int) -> int:
-    """Agent box memory limit (MiB) when `parallel` samples run at once.
-
-    Only one checker runs a timed evaluation at a time (CHECKER_LOCK), so the agent boxes share what is
-    left of the VM after its own use and one busy checker at its full limit.
-    """
-    if parallel < 1:
-        raise ValueError("parallel must be >= 1")
-    return min(AGENT_MEMORY_MB, (DOCKER_VM_MEMORY_MB - DOCKER_VM_RESERVE_MB - CHECKER_MEMORY_MB) // parallel)
 
 
 def _harbor_name(task_name: str) -> str:
@@ -307,16 +333,18 @@ def _harbor_name(task_name: str) -> str:
 @task
 def algotune_task(
     split: Literal["pilot", "heldout"],
-    override_cpus: int | None = 8,
-    override_memory_mb: int | None = AGENT_MEMORY_MB,  # task.toml says 16 GB; Docker Desktop has 24 GB
+    cpus_per_agent: int = 4,
+    n_agents: int = 1,
+    parallel: int = 1,
 ) -> Task:
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
     Every sample gets the dev toolkit (`algotune_setup`, a Task.setup step that still runs when
     `--solver` replaces the default agent) and a sandbox without network, plus a `checker` service
     (`add_checker`) on its own CPUs for the dev_eval tool, final selection and scoring. The scorer is
-    Harbor's, run in the checker, with the AlgoTune metrics added. Defaults to 8 CPUs and 12 GB (task.toml
-    asks for 16 GB; Docker has 24 GB).
+    Harbor's, run in the checker, with the AlgoTune metrics added. CPUs and memory come from `box_resources`
+    for the Docker host this runs against (cpus_per_agent x n_agents CPUs for the agent box, 8 for the
+    checker, `parallel` samples at once) and are recorded in the task metadata.
 
     The verifier scores on seeds `offset + i` instead of `i` (`seed_with_offset`) and marks a run invalid when
     solver threads use CPU while the reference is timed (`with_thread_guard`). The offset reaches the
@@ -324,11 +352,12 @@ def algotune_task(
     before importing the solver, and is recorded in the task metadata. The hub dataset is pinned (ALGOTUNE_REF).
     """
     names = json.loads(SPLIT_PATH.read_text())[split]
+    resources = box_resources(cpus_per_agent, n_agents, parallel, *docker_host())
     base = algotune(
         ref=ALGOTUNE_REF,
         dataset_task_names=[_harbor_name(n) for n in names],
-        override_cpus=override_cpus,
-        override_memory_mb=override_memory_mb,
+        override_cpus=resources["agent_cpus"],
+        override_memory_mb=resources["agent_memory_mb"],
     )
     offset = _seed_offset()
     for sample in base.dataset:
@@ -343,7 +372,7 @@ def algotune_task(
         if service.image:
             service.build = None
             service.__pydantic_extra__["x-local"] = True
-        add_checker(config)
+        add_checker(config, resources)
         # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an
         # inline ComposeConfig when reading them, which rejects cpuset (only x- extras are allowed), so every
         # log would be unreadable. The YAML is what Inspect would generate; it is also kept in sample metadata.
@@ -367,5 +396,8 @@ def algotune_task(
         sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))
         sample.metadata["tests_dir"] = str(seeded_dir)
     return task_with(
-        base, setup=algotune_setup(), scorer=algotune_scorer(), metadata={**(base.metadata or {}), "algotune_seed_offset": offset}
+        base,
+        setup=algotune_setup(),
+        scorer=algotune_scorer(),
+        metadata={**(base.metadata or {}), "algotune_seed_offset": offset, **resources},
     )

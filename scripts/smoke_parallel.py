@@ -3,7 +3,7 @@
 Run from the worktree, with nothing else using Docker:
     cd ~/projects/swarm-scaling-pilot2 && uv run python scripts/smoke_parallel.py
 
-Settings match `runner --parallel 4`: max_samples = max_sandboxes = 4, agent boxes at agent_memory_mb(4).
+Settings match `runner --parallel 4`: max_samples = max_sandboxes = 4, agent boxes at box_resources' memory for 4.
 Each agent writes a solver wrapping the reference (it prints its CPU affinity and hostname when imported),
 runs the reference on dev problems in its own box, and calls dev_eval. Checks from the log: the four samples
 ran concurrently; no two timed checker runs (dev_eval calls, finalize evaluations, final scoring) overlapped;
@@ -20,7 +20,7 @@ from inspect_ai.util import sandbox
 
 from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize
 from swarm_scaling.swarm import swarm
-from swarm_scaling.tasks import agent_memory_mb, algotune_task
+from swarm_scaling.tasks import algotune_task
 
 PARALLEL = 4
 SOLVER = '''import importlib.util, os, socket
@@ -122,7 +122,7 @@ if __name__ == "__main__":
         scripted(write, ("python", {"code": LOCAL_WORK}), ("dev_eval", {"path": path, "n": 3}), ("submit", {"answer": "done"}))
     ]
     (log,) = eval(
-        algotune_task(split="pilot", override_memory_mb=agent_memory_mb(PARALLEL)),
+        algotune_task(split="pilot", parallel=PARALLEL),
         solver=swarm(models=agents, per_agent_tokens=200_000, finalize=finalize, agent_tools=algotune_agent_tools,
                      final_path=SOLVER_PATH, budget_warnings=()),
         model="mockllm/model",

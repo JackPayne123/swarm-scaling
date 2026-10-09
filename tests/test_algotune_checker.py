@@ -21,7 +21,7 @@ from inspect_ai.util._sandbox.events import SandboxEnvironmentProxy
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import swarm as swarm_module
 from swarm_scaling.swarm import Candidate
-from swarm_scaling.tasks import add_checker, algotune_scorer
+from swarm_scaling.tasks import add_checker, algotune_scorer, box_resources
 
 
 def ok(stdout: str = "") -> ExecResult[str]:
@@ -89,21 +89,27 @@ def boxes(monkeypatch: pytest.MonkeyPatch) -> dict[str, FakeBox]:
     return boxes
 
 
-def test_checker_is_a_twin_of_the_agent_box_on_its_own_cpus() -> None:
-    # Agent work must not share CPUs with the checker's timings, and the checker must time on as
-    # many CPUs as final scoring, in the same image, with no network.
+def test_every_agent_gets_the_same_cpus_and_the_checker_its_own_eight() -> None:
+    # Agent work must not share CPUs with the checker's timings, the checker must time on as many CPUs as
+    # final scoring, and a team's agents together get cpus_per_agent each, not one fixed box for any team size.
+    team4 = box_resources(cpus_per_agent=4, n_agents=4, parallel=1, host_cpus=32, host_memory_mb=128_000)
+    assert (team4["agent_cpuset"], team4["checker_cpuset"]) == ("0-15", "16-23")
+    assert team4["agent_memory_mb"] == 128_000 - 8192 - 2048
+    assert box_resources(4, 1, 2, 16, 23_492)["agent_memory_mb"] == (23_492 - 8192 - 2048) // 2
+    with pytest.raises(ValueError, match="the Docker host has 16"):
+        box_resources(cpus_per_agent=4, n_agents=4, parallel=1, host_cpus=16, host_memory_mb=128_000)
+
     default = ComposeService(image="hb__x", cpus=8.0, mem_limit="12288m", network_mode="none")
     default.__pydantic_extra__["x-local"] = True
     config = ComposeConfig(services={"default": default})
-    add_checker(config)
+    add_checker(config, team4)
     dumped = config.model_dump(mode="json", by_alias=True, exclude_none=True)["services"]
-    assert dumped["default"]["cpuset"] == "0-7" and dumped["checker"]["cpuset"] == "8-15"
-    assert dumped["checker"]["mem_limit"] == "8192m"
-    assert {k: v for k, v in dumped["checker"].items() if k not in ("cpuset", "mem_limit")} == {
-        k: v for k, v in dumped["default"].items() if k not in ("cpuset", "mem_limit")
+    assert {k: dumped["default"][k] for k in ("cpus", "cpuset", "mem_limit")} == {"cpus": 16.0, "cpuset": "0-15", "mem_limit": "117760m"}
+    assert {k: dumped["checker"][k] for k in ("cpus", "cpuset", "mem_limit")} == {"cpus": 8.0, "cpuset": "16-23", "mem_limit": "8192m"}
+    same = ("cpus", "cpuset", "mem_limit")
+    assert {k: v for k, v in dumped["checker"].items() if k not in same} == {
+        k: v for k, v in dumped["default"].items() if k not in same
     }
-    with pytest.raises(ValueError):
-        add_checker(ComposeConfig(services={"default": ComposeService(image="hb__x", cpus=12.0)}))
 
 
 @pytest.mark.asyncio

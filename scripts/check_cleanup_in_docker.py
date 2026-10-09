@@ -20,7 +20,7 @@ def scripted(*calls: tuple[str, dict]):
 
 
 if __name__ == "__main__":
-    task = algotune_task(split="pilot", override_cpus=8, override_memory_mb=12288)
+    task = algotune_task(split="pilot", n_agents=2)
     # agent_0 leaves a background process behind; cleanup must kill it inside the
     # container and leave the container itself running for scoring.
     leaver = scripted(

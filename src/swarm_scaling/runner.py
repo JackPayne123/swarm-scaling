@@ -26,7 +26,7 @@ from inspect_ai import eval
 
 from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize
 from swarm_scaling.swarm import swarm
-from swarm_scaling.tasks import LOG_DIR, agent_memory_mb, algotune_task
+from swarm_scaling.tasks import LOG_DIR, algotune_task
 
 ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (measured as the dev_eval tool measures)"
 ALGOTUNE_DELIVERABLE = (
@@ -95,6 +95,8 @@ def main() -> None:
                    help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
     p.add_argument("--parallel", type=int, default=1,
                    help="samples (incl. epochs) run at once; timed checker runs stay one at a time, agent boxes get less memory")
+    p.add_argument("--cpus-per-agent", type=int, default=4,
+                   help="agent box CPUs = this x agents in the sample; the checker has 8 more (the Docker host must have both)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -104,7 +106,6 @@ def main() -> None:
         p.error("a token budget must be a whole number")
     budget = args.budget if args.budget_type == "cost" else int(args.budget)
     config = arm_config(args.arm, models, args.n, budget, args.mult)
-    memory_mb = agent_memory_mb(args.parallel)
     metadata = {
         "arm": args.arm,
         "n": args.n,
@@ -122,7 +123,7 @@ def main() -> None:
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
         "parallel": args.parallel,
-        "agent_memory_mb": memory_mb,
+        "cpus_per_agent": args.cpus_per_agent,  # cpusets and memory limits: algotune_task adds them to the log metadata
         "launched_at": time.time(),
     }
     log_dir = LOG_DIR / args.name
@@ -131,7 +132,8 @@ def main() -> None:
 
     wait_for_docker_images()
     logs = eval(
-        algotune_task(split=args.split, override_memory_mb=memory_mb),
+        algotune_task(split=args.split, cpus_per_agent=args.cpus_per_agent, n_agents=len(config["models"]),
+                      parallel=args.parallel),
         solver=swarm(
             models=config["models"],
             per_agent_tokens=config["per_agent_tokens"],
