@@ -35,6 +35,9 @@ def _iso(ts: float) -> str:
 MESSAGE_PREVIEW_CHARS = 2000
 DELIVERY_CHARS = 8000
 
+# Why an agent ended (its end_reason: "submitted" or the limit type), as its teammates are told.
+FINISH_REASONS = {"submitted": "submitted", "token": "budget used", "cost": "budget used", "time": "time limit"}
+
 
 @dataclass
 class Message:
@@ -176,6 +179,30 @@ class Team:
     def set_status(self, agent_id: str, status: AgentStatus) -> None:
         self.agents[agent_id].status = status
         self._notify()
+
+    def finish(self, agent_id: str, end_reason: str | None, notify: bool) -> None:
+        """Mark an agent finished; with `notify` (messaging arms), tell every teammate still running.
+
+        The notice goes through the normal message channel (sender "system"), so it arrives after a
+        teammate's next tool result or ends its wait_for_message. Finished agents get nothing, as with
+        any message.
+        """
+        if notify:
+            why = FINISH_REASONS.get(end_reason or "", "stopped")
+            msg = Message(
+                sender="system",
+                sender_model=None,
+                to="all",
+                text=f"{agent_id} has finished ({why}) and will not read further messages.",
+                sent_at=time.time(),
+                id=f"m{len(self.messages)}",
+                summary=f"{agent_id} finished",
+            )
+            self.messages[msg.id] = msg
+            for rec in self.others(agent_id):
+                if rec.status != "finished":
+                    rec.inbox.append(msg)
+        self.set_status(agent_id, "finished")
 
     def others(self, agent_id: str) -> list[AgentRecord]:
         return [a for a in self.agents.values() if a.agent_id != agent_id]

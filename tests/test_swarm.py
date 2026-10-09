@@ -194,6 +194,36 @@ def test_dollar_budget_meters_each_call_at_its_price_and_cache_rates(tmp_path: P
         swarm(models=["openai/unpriced-model"], per_agent_tokens=5, budget_type="cost")
 
 
+def test_teammates_still_running_are_told_when_an_agent_finishes_and_why(tmp_path: Path) -> None:
+    # Pilot 3: final broadcasts went to agents that had already finished, and senders kept waiting on them.
+    light = ModelUsage(input_tokens=9, output_tokens=1, total_tokens=10)
+    heavy = ModelUsage(input_tokens=1900, output_tokens=100, total_tokens=2000)
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(call("submit", usage=light, answer="done")),
+                scripted(call("bash", usage=light, command="sleep 0.5"), call("bash", usage=heavy, command="true")),
+                scripted(call("bash", usage=light, command="sleep 1.5"), call("submit", usage=light, answer="done")),
+            ],
+            per_agent_tokens=1500,
+            budget_type="all",
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    agents = swarm_meta(log)["agents"]
+    assert agents["agent_1"]["limit_hit"] == "token"
+    assert agents["agent_0"]["messages_received"] == []  # finished first: told nothing
+    assert [m["text"] for m in agents["agent_1"]["messages_received"]] == [
+        "agent_0 has finished (submitted) and will not read further messages."
+    ]
+    assert [m["text"] for m in agents["agent_2"]["messages_received"]] == [
+        "agent_0 has finished (submitted) and will not read further messages.",
+        "agent_1 has finished (budget used) and will not read further messages.",
+    ]
+    assert "agent_1 has finished (budget used)" in str(tool_events(log, "bash")[-1].result)
+
+
 def test_wait_for_message_returns_when_all_others_finished(tmp_path: Path) -> None:
     log = run_swarm(
         tmp_path,
@@ -204,7 +234,7 @@ def test_wait_for_message_returns_when_all_others_finished(tmp_path: Path) -> No
         ),
     )
     (wait,) = tool_events(log, "wait_for_message")
-    assert "finished or is also waiting" in str(wait.result)
+    assert "agent_0 has finished (submitted)" in str(wait.result)  # the finish notice ends the wait
     assert swarm_meta(log)["agents"]["agent_1"]["wall_s"] < 10
 
 

@@ -245,7 +245,7 @@ def swarm(
                 rec.tokens = {"metered": round(budget.usage, 6) if budget_type == "cost" else int(budget.usage)}
                 if usage is not None:
                     rec.tokens.update(usage.model_dump(exclude_none=True))
-                team.set_status(agent_id, "finished")
+                team.finish(agent_id, rec.end_reason, notify=messaging)
             return agent_state
 
         cpu = CpuMonitor(cpu_sample_interval) if baseline_pids is not None else None
