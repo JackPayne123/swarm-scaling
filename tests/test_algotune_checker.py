@@ -1,19 +1,24 @@
 """The AlgoTune checker container: dev_eval and final selection run there, never in the agents' box.
 
-Sandboxes are in-memory fakes (no Docker): "default" is the agents' box, "checker" fakes dev_eval.py.
+Sandboxes are in-memory fakes (no Docker): "default" is the agents' box, "checker" fakes dev_eval.py
+(or the verifier, in the scoring test).
 """
 
+import contextvars
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import anyio
 import pytest
+from inspect_ai.scorer import Target
 from inspect_ai.util import ComposeConfig, ComposeService, ExecResult
+from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbox_environments_context_var
 
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling.swarm import Candidate
-from swarm_scaling.tasks import add_checker
+from swarm_scaling.tasks import add_checker, algotune_scorer
 
 
 def ok(stdout: str = "") -> ExecResult[str]:
@@ -162,3 +167,77 @@ async def test_finalize_times_in_the_checker_and_only_the_selected_solver_reache
     await devkit.algotune_finalize(state, candidates)
     assert "/app/solver.py" not in agent_box.files
     assert state.metadata["finalize"]["selected"] is None
+
+
+@pytest.mark.asyncio
+async def test_timed_checker_runs_never_overlap_across_samples(monkeypatch, tmp_path) -> None:
+    # Parallel samples' checkers share CPUs 8-15: one sample's dev_eval must wait for another's finalize.
+    (tmp_path / "evaluator.py").write_text("class Task: ...")
+    current: contextvars.ContextVar[dict[str, FakeBox]] = contextvars.ContextVar("boxes")
+    monkeypatch.setattr(devkit, "sandbox", lambda name=None: current.get()[name or "default"])
+    intervals: list[tuple[float, float]] = []
+
+    class TimedChecker(FakeChecker):
+        async def exec(self, cmd: list[str], **kwargs) -> ExecResult[str]:
+            start = time.monotonic()
+            result = await super().exec(cmd, **kwargs)
+            intervals.append((start, time.monotonic()))
+            return result
+
+    finishing = {"default": FakeBox({f"/app/agents/agent_{i}/solver.py": f"speedup={i + 1}" for i in range(3)}),
+                 devkit.CHECKER: TimedChecker()}  # fmt: skip
+    working = {"default": FakeBox({"/app/agents/agent_0/try.py": "speedup=2"}), devkit.CHECKER: TimedChecker()}
+    candidates = [Candidate(f"agent_{i}", "m", f"/app/agents/agent_{i}", "", float(i), "final_workspace") for i in range(3)]
+    meta = {"tests_dir": str(tmp_path), "harbor_config": {"metadata": {"algotune_problem_size": 7}}}
+    working_state = SimpleNamespace(metadata={})
+
+    async def finalize() -> None:
+        current.set(finishing)
+        await devkit.algotune_finalize(SimpleNamespace(metadata=dict(meta)), candidates)
+
+    async def dev_eval() -> None:
+        current.set(working)
+        await anyio.sleep(0.01)  # arrives while the other sample's finalize holds the queue
+        await devkit.algotune_agent_tools(working_state)("agent_0")[0](path="/app/agents/agent_0/try.py")
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(finalize)
+        tg.start_soon(dev_eval)
+
+    assert len(intervals) == 4
+    ordered = sorted(intervals)
+    assert all(a_end <= b_start for (_, a_end), (b_start, _) in zip(ordered, ordered[1:]))
+    assert working_state.metadata["checker"]["calls"][0]["queue_wait_s"] > 0.03  # waited behind other evaluations
+
+
+@pytest.mark.asyncio
+async def test_final_scoring_runs_in_the_checker_holding_the_lock(tmp_path) -> None:
+    # The verifier times the solver: it must run on the checker's CPUs, behind the same queue as every other timing.
+    (tmp_path / "test.sh").write_text("#!/bin/bash\n")
+    (tmp_path / "seed_offset").write_text("1234567\n")
+    seen: dict[str, object] = {}
+
+    class VerifierBox(FakeBox):
+        async def exec(self, cmd: list[str], **kwargs) -> ExecResult[str]:
+            if cmd[:2] == ["sh", "-c"] and "/tests/test.sh" in cmd[2]:
+                seen["locked"] = devkit.CHECKER_LOCK.locked()
+                seen["offset"] = "/tests/seed_offset" in self.files
+                solver = self.files.get(devkit.SOLVER_PATH)
+                self.files["/logs/verifier/reward.txt"] = "2.5" if solver == b"speedup=2.5" else "0"
+            return await super().exec(cmd, **kwargs)
+
+    agent_box = FakeBox({devkit.SOLVER_PATH: b"speedup=2.5"})
+    checker = VerifierBox()
+    sandbox_environments_context_var.set({"default": agent_box, devkit.CHECKER: checker})
+    sandbox_default_context_var.set("default")
+    state = SimpleNamespace(
+        metadata={"tests_dir": str(tmp_path), "test_path": str(tmp_path / "test.sh"), "verifier_timeout_sec": 60}
+    )
+
+    result = await algotune_scorer()(state, Target(""))
+
+    assert result.value == 2.5
+    assert seen == {"locked": True, "offset": True}
+    assert not any(p.startswith("/tests") for p in agent_box.files)
+    assert agent_box.execs == []  # nothing ran in the agents' box
+    assert result.metadata["checker"]["started_at"] <= result.metadata["checker"]["ended_at"]

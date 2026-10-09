@@ -26,7 +26,7 @@ from inspect_ai import eval
 
 from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize
 from swarm_scaling.swarm import swarm
-from swarm_scaling.tasks import LOG_DIR, algotune_task
+from swarm_scaling.tasks import LOG_DIR, agent_memory_mb, algotune_task
 
 ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (measured as the dev_eval tool measures)"
 ALGOTUNE_DELIVERABLE = (
@@ -89,12 +89,15 @@ def main() -> None:
     p.add_argument("--reasoning-effort", default=None, help="explicit reasoning effort for every model (e.g. high)")
     p.add_argument("--tool-style", default="default", choices=("default", "claude_code"),
                    help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
+    p.add_argument("--parallel", type=int, default=1,
+                   help="samples (incl. epochs) run at once; timed checker runs stay one at a time, agent boxes get less memory")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     config = arm_config(args.arm, models, args.n, args.budget, args.mult)
+    memory_mb = agent_memory_mb(args.parallel)
     metadata = {
         "arm": args.arm,
         "n": args.n,
@@ -111,6 +114,8 @@ def main() -> None:
         "tool_style": args.tool_style,
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
+        "parallel": args.parallel,
+        "agent_memory_mb": memory_mb,
         "launched_at": time.time(),
     }
     log_dir = LOG_DIR / args.name
@@ -119,7 +124,7 @@ def main() -> None:
 
     wait_for_docker_images()
     logs = eval(
-        algotune_task(split=args.split),
+        algotune_task(split=args.split, override_memory_mb=memory_mb),
         solver=swarm(
             models=config["models"],
             per_agent_tokens=config["per_agent_tokens"],
@@ -143,8 +148,8 @@ def main() -> None:
         metadata=metadata,
         max_retries=args.max_retries,
         timeout=args.request_timeout,
-        max_samples=1,
-        max_sandboxes=1,
+        max_samples=args.parallel,
+        max_sandboxes=args.parallel,
         display="none",
     )
     for log in logs:

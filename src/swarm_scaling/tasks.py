@@ -5,6 +5,7 @@ import math
 import os
 import secrets
 import shutil
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -12,10 +13,10 @@ import yaml
 from inspect_ai import Task, task, task_with
 from inspect_ai.scorer import Metric, SampleScore, Score, Scorer, Target, mean, metric, scorer
 from inspect_ai.solver import TaskState
-from inspect_ai.util import ComposeConfig, SandboxEnvironmentSpec
+from inspect_ai.util import ComposeConfig, SandboxEnvironmentSpec, sandbox, sandbox_default
 from inspect_harbor import algotune, harbor_scorer
 
-from swarm_scaling.algotune_devkit import CHECKER, algotune_setup
+from swarm_scaling.algotune_devkit import CHECKER, CHECKER_LOCK, SOLVER_PATH, algotune_setup
 
 SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json"
 
@@ -38,6 +39,10 @@ VERIFIER_DIR = SPLIT_PATH.parent / ".algotune_verifier"
 COMPOSE_DIR = SPLIT_PATH.parent / ".algotune_compose"
 DOCKER_VM_CPUS = 16  # Docker Desktop's VM on this Mac; the agent box and the checker each get half
 CHECKER_MEMORY_MB = 8192
+AGENT_MEMORY_MB = 12288  # agent box when one sample runs at a time (task.toml says 16 GB)
+DOCKER_VM_MEMORY_MB = 23_492  # MemTotal of the Docker VM (24,056,148 kB, measured 2026-10-09)
+# The VM's own use with no container running (970 MiB measured 2026-10-09), idle checkers and margin.
+DOCKER_VM_RESERVE_MB = 1536
 
 # Inserted into the verifier copy. The offset travels as a file in /tests (copied in only at scoring), not as an
 # environment variable (visible in /proc/self/environ to the solver), and the file is read and deleted while the
@@ -85,14 +90,44 @@ def mean_log_speedup() -> Metric:
     return compute
 
 
+async def _copy_solver_to_checker() -> None:
+    """Put the agent box's /app/solver.py (the selected candidate, or none) at the same path in the checker."""
+    checker = sandbox(CHECKER)
+    removed = await checker.exec(["rm", "-f", SOLVER_PATH])
+    if not removed.success:
+        raise RuntimeError(f"could not clear {SOLVER_PATH} in the checker: {removed.stderr}")
+    try:
+        source = await sandbox().read_file(SOLVER_PATH, text=False)
+    except FileNotFoundError:
+        return  # nothing was selected: the verifier finds no solver and scores 0, as in the agent box
+    await checker.write_file(SOLVER_PATH, source)
+
+
 @scorer(metrics=[mean(), harmonic_mean_speedup(), mean_log_speedup()])
 def algotune_scorer() -> Scorer:
-    """Harbor's scorer unchanged (Score.value stays the raw reward), plus the log speedup in metadata."""
+    """Harbor's scorer run in the checker container (Score.value stays the raw reward), plus the log speedup.
+
+    The selected /app/solver.py is copied from the agent box into the checker, then Harbor's scorer runs with
+    the checker as the default sandbox, so its /tests copy (with the seed_offset file), verifier run and reward
+    read all happen there, on the checker's CPUs. CHECKER_LOCK is held throughout, so no other timed run in
+    the process overlaps the verifier. Queue wait and run times go in metadata["checker"].
+    The selected solver was already evaluated in the checker by finalize, also as a single file.
+    """
     verify = harbor_scorer()
 
     async def score(state: TaskState, target: Target) -> Score:
-        result = await verify(state, target)
-        result.metadata = {**(result.metadata or {}), "log_speedup": math.log(_speedup(result.as_float()))}
+        requested = time.time()
+        async with CHECKER_LOCK:
+            started = time.time()
+            await _copy_solver_to_checker()
+            with sandbox_default(CHECKER):
+                result = await verify(state, target)
+            ended = time.time()
+        result.metadata = {
+            **(result.metadata or {}),
+            "log_speedup": math.log(_speedup(result.as_float())),
+            "checker": {"queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended},
+        }
         return result
 
     return score
@@ -170,8 +205,8 @@ def add_checker(config: ComposeConfig) -> None:
     """Add the `checker` service: a copy of `default` that only the dev_eval tool and final selection use.
 
     The two are pinned to disjoint CPUs of the Docker VM (default 0..n-1, checker n..2n-1, n = the
-    default's cpus), so agent work in the default box cannot disturb the checker's timings, and the
-    checker times on as many CPUs as final scoring (which runs in the default box after the agents stop).
+    default's cpus), so agent work in the default box cannot disturb the checker's timings. Final
+    scoring runs in the checker too (algotune_scorer), on the same CPUs and thread settings.
     ComposeService has no cpuset field; extras set after construction reach the generated YAML.
     """
     default = config.services["default"]
@@ -186,6 +221,17 @@ def add_checker(config: ComposeConfig) -> None:
     config.services[CHECKER] = checker
 
 
+def agent_memory_mb(parallel: int) -> int:
+    """Agent box memory limit (MiB) when `parallel` samples run at once.
+
+    Only one checker runs a timed evaluation at a time (CHECKER_LOCK), so the agent boxes share what is
+    left of the VM after its own use and one busy checker at its full limit.
+    """
+    if parallel < 1:
+        raise ValueError("parallel must be >= 1")
+    return min(AGENT_MEMORY_MB, (DOCKER_VM_MEMORY_MB - DOCKER_VM_RESERVE_MB - CHECKER_MEMORY_MB) // parallel)
+
+
 def _harbor_name(task_name: str) -> str:
     """AlgoTune's snake_case name to the Harbor hub slug."""
     return "algotune/" + task_name.replace("_", "-").lower()
@@ -195,14 +241,15 @@ def _harbor_name(task_name: str) -> str:
 def algotune_task(
     split: Literal["pilot", "heldout"],
     override_cpus: int | None = 8,
-    override_memory_mb: int | None = 12288,  # task.toml says 16 GB; Docker Desktop has 24 GB
+    override_memory_mb: int | None = AGENT_MEMORY_MB,  # task.toml says 16 GB; Docker Desktop has 24 GB
 ) -> Task:
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
     Every sample gets the dev toolkit (`algotune_setup`, a Task.setup step that still runs when
     `--solver` replaces the default agent) and a sandbox without network, plus a `checker` service
-    (`add_checker`) on its own CPUs for the dev_eval tool and final selection. The scorer is Harbor's
-    with the AlgoTune metrics added. Defaults to 8 CPUs and 12 GB (task.toml asks for 16 GB; Docker has 24 GB).
+    (`add_checker`) on its own CPUs for the dev_eval tool, final selection and scoring. The scorer is
+    Harbor's, run in the checker, with the AlgoTune metrics added. Defaults to 8 CPUs and 12 GB (task.toml
+    asks for 16 GB; Docker has 24 GB).
 
     The verifier scores on seeds `offset + i` instead of `i` (`seed_with_offset`). The offset reaches the
     container only at scoring time, as a `seed_offset` file in the copied /tests that the verifier deletes

@@ -2,9 +2,11 @@
 
 `algotune_setup()` runs before any agent and installs /app/dev in the agent box and the checker.
 `algotune_agent_tools()` gives every agent the dev_eval tool, which runs dev_eval.py in the
-checker container (tasks.py), one evaluation at a time per sample.
+checker container (tasks.py).
 `algotune_finalize()` runs after the agents, evaluates every candidate solver on fixed dev
 instances in the checker and installs the fastest correct one as /app/solver.py in the agent box.
+Every timed run in a checker (dev_eval calls, finalize evaluations, final scoring in tasks.py) holds
+CHECKER_LOCK, so across all samples running in this process only one is timed at any moment.
 """
 
 import hashlib
@@ -29,6 +31,9 @@ SOLVER_PATH = "/app/solver.py"
 CHECKER = "checker"
 CHECK_DIR = "/app/checks"  # in the checker: a fresh directory per evaluation
 DEV_EVAL_TIMEOUT_S = 900  # per dev_eval tool call, run time only (not the queue wait)
+
+# One queue for the whole process: parallel samples' checkers share CPUs 8-15, so their timings must not overlap.
+CHECKER_LOCK = anyio.Lock()  # waiters are served in arrival order (FIFO)
 
 # Selection runs on its own dev instances: dev_eval's default seeds start at 0, these start far away.
 FINAL_DEV_SEED = 50_000
@@ -132,26 +137,32 @@ def _first_errors(detail: dict) -> str:
 
 async def _dev_eval(candidate: Candidate, source: bytes, index: int) -> DevResult:
     args = ["--n", str(FINAL_DEV_N), "--seed", str(FINAL_DEV_SEED)]
-    detail, report = await run_dev_eval(source, f"{CHECK_DIR}/final_{index}", args, FINAL_TIMEOUT_S)
+    requested = time.time()
+    async with CHECKER_LOCK:
+        started = time.time()
+        detail, report = await run_dev_eval(source, f"{CHECK_DIR}/final_{index}", args, FINAL_TIMEOUT_S)
+        ended = time.time()
+    timing = {"queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended}
     if detail is None:
-        return DevResult(candidate, False, None, error=report)
+        return DevResult(candidate, False, None, error=report, detail=timing)
     return DevResult(
         candidate,
         detail["valid"],
         detail["speedup"],
         error=_first_errors(detail),
-        detail={k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s")},
+        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s")}, **timing},
     )
 
 
 class Checker:
     """The dev_eval tool for every agent of one sample: one evaluation at a time in the checker, in call order.
 
+    Calls queue on CHECKER_LOCK, shared with every other sample in the process, so the queue wait
+    includes other samples' dev_eval calls, finalize evaluations and final scoring.
     Every call is recorded in state.metadata["checker"]["calls"] (who, when, queue wait, run time, result).
     """
 
     def __init__(self, state: TaskState) -> None:
-        self.lock = anyio.Lock()  # waiters are served in arrival order (FIFO)
         self.calls: list[dict[str, Any]] = []
         state.metadata["checker"] = {"calls": self.calls}
 
@@ -182,7 +193,7 @@ class Checker:
             if size is not None:
                 args += ["--size", str(size)]
             requested = time.time()
-            async with self.lock:
+            async with CHECKER_LOCK:
                 started = time.time()
                 run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
                 detail, report = await run_dev_eval(source, run_dir, args, DEV_EVAL_TIMEOUT_S)
@@ -215,7 +226,8 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
     """Evaluate every candidate, copy the fastest correct solver to /app/solver.py, record all results.
 
     Evaluations run in the checker container after every agent has stopped, so no agent work shares
-    their CPUs. Reinstalls the toolkit first so the check is the packaged one.
+    their CPUs, and each holds CHECKER_LOCK, so no other sample's timed run overlaps it.
+    Reinstalls the toolkit first so the check is the packaged one.
     Candidates with identical solver.py text share one evaluation. Any /app/solver.py an agent wrote is
     removed first (agents are told it has no effect), so nothing is installed when no candidate is correct.
     """
