@@ -76,7 +76,7 @@ class FakeChecker(FakeBox):
         errors = [] if valid else ["instance 0: is_solution returned False"]
         self.files[out] = json.dumps({
             "valid": valid, "speedup": speedup, "n_invalid": len(errors), "errors": errors,
-            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0, "thread_check": None, "first_call_ratio": 1.0,
+            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0, "thread_check": None, "first_call_ratio": 1.0, "reference_inflation": 1.0,
         })  # fmt: skip
         return ok(f"speedup: {speedup}x")
 

@@ -125,6 +125,7 @@ def job_script(job: Job) -> str:
 def parse_score(stdout: str, reward_text: str | None) -> dict:
     validity = re.search(r"^Validity: (True|False)$", stdout, re.M)
     ratio = re.search(r"^First-call ratio: (\S+)$", stdout, re.M)
+    inflation = re.search(r"^Reference inflation: (\S+)$", stdout, re.M)
     if reward_text is None:
         raise JobError("the verifier wrote no reward.txt")
     return {
@@ -132,6 +133,7 @@ def parse_score(stdout: str, reward_text: str | None) -> dict:
         "valid": None if validity is None else validity.group(1) == "True",
         "verifier_stdout": stdout[-OUTPUT_CHARS:],
         "first_call_ratio": float(ratio.group(1)) if ratio and ratio.group(1) != "None" else None,
+        "reference_inflation": float(inflation.group(1)) if inflation and inflation.group(1) != "None" else None,
         "scoring_timeout": False,
     }
 
@@ -171,7 +173,7 @@ def docker_runner(docker: str = "docker", memory: str = "8g", cpus: int = 8, wor
             if job.kind == "score":
                 if timed_out:  # the harness's timeout semantics: no speedup, flagged
                     return {"score": 1.0, "valid": None, "verifier_stdout": (stdout_s + stderr_s)[-OUTPUT_CHARS:],
-                            "first_call_ratio": None, "scoring_timeout": True}, output  # fmt: skip
+                            "first_call_ratio": None, "reference_inflation": None, "scoring_timeout": True}, output  # fmt: skip
                 reward = out / "reward.txt"
                 return parse_score(stdout_s + stderr_s, reward.read_text() if reward.exists() else None), output
             if timed_out:

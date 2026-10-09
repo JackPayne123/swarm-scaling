@@ -150,10 +150,12 @@ def algotune_scorer() -> Scorer:
                     timed_out = True
             ended = time.time()
         ratio = re.search(r"^First-call ratio: (\S+)$", result.explanation or "", re.M)
+        inflation = re.search(r"^Reference inflation: (\S+)$", result.explanation or "", re.M)
         result.metadata = {
             **(result.metadata or {}),
             "scoring_timeout": timed_out,
             "first_call_ratio": float(ratio.group(1)) if ratio and ratio.group(1) != "None" else None,
+            "reference_inflation": float(inflation.group(1)) if inflation and inflation.group(1) != "None" else None,
             "log_speedup": math.log(_speedup(result.as_float())),
             "checker": {
                 "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
@@ -174,13 +176,15 @@ async def _remote_score(state: TaskState) -> Score:
         source = await sandbox().read_file(SOLVER_PATH, text=False)
     except FileNotFoundError:
         return Score(value=0.0, explanation=f"no {SOLVER_PATH}", metadata={
-            "log_speedup": 0.0, "scoring_timeout": False, "first_call_ratio": None, "checker": None,
+            "log_speedup": 0.0, "scoring_timeout": False, "first_call_ratio": None, "reference_inflation": None,
+            "checker": None,
         })  # fmt: skip
     try:
         rec = await scorer_client.run_job(scorer_job(state, "score", source))
     except TimeoutError as ex:  # the service did not end the job in time: score as a verifier timeout
         return Score(value=1.0, explanation=str(ex), metadata={
-            "log_speedup": 0.0, "scoring_timeout": True, "first_call_ratio": None, "checker": None,
+            "log_speedup": 0.0, "scoring_timeout": True, "first_call_ratio": None, "reference_inflation": None,
+            "checker": None,
         })  # fmt: skip
     if rec["status"] != "done":
         raise RuntimeError(f"scorer job {rec['job_id']} failed: {rec['error']}")
@@ -192,6 +196,7 @@ async def _remote_score(state: TaskState) -> Score:
             "log_speedup": math.log(_speedup(r["score"])),
             "scoring_timeout": r["scoring_timeout"],
             "first_call_ratio": r["first_call_ratio"],
+            "reference_inflation": r.get("reference_inflation"),
             "checker": remote_timing(rec),
         },
     )
@@ -220,12 +225,14 @@ def seed_with_offset(test_outputs: str) -> str:
 # with_thread_guard: anchor -> replacement in the verifier, each anchor required exactly once.
 _GUARD_PATCHES = {
     _VERIFIER_IMPORT: _VERIFIER_IMPORT
-    + "from thread_guard import ThreadGuard\n\n"
-    + "_GUARD = None  # set in problem_set: after an untimed reference call, before the solver is imported\n",
+    + "from thread_guard import ThreadGuard, reference_inflation, reference_inflation_error, time_reference\n\n"
+    + "_GUARD = None  # set in problem_set, after the reference was timed alone and before the solver is imported\n"
+    + "_ALONE = []  # per problem: the reference's min timed call before the solver is imported (ns)\n"
+    + "_WITH_SOLVER = []  # per timed problem: the reference's min timed call interleaved with the solver (ns)\n",
     '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n    return problems\n': (
         '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n'
-        "    global _GUARD\n"
-        "    task.solve(problems[0])\n"
+        "    global _GUARD, _ALONE\n"
+        "    _ALONE = time_reference(task.solve, problems, NUM_REPEATS)\n"
         "    _GUARD = ThreadGuard()\n"
         "    return problems\n"
     ),
@@ -246,10 +253,16 @@ _GUARD_PATCHES = {
         "            end_b = time.perf_counter_ns()\n"
         "            _GUARD.after_reference(end_b - start_b)\n"
     ),
+    "        total_time_baseline += t_baseline\n": (
+        "        total_time_baseline += t_baseline\n"
+        "        _WITH_SOLVER.append(t_baseline)\n"
+    ),
     "    if validity and total_time_solver > 0:\n": (
-        "    logger.info(f\"Thread check: {_GUARD.summary()}\")\n"
-        "    if _GUARD.error() is not None:\n"
-        "        logger.error(_GUARD.error())\n"
+        "    _alone = _ALONE[: len(_WITH_SOLVER)]\n"
+        "    print(f\"Thread check: {_GUARD.summary()}\")\n"
+        "    print(f\"Reference inflation: {reference_inflation(_WITH_SOLVER, _alone)}\")\n"
+        "    if reference_inflation_error(_WITH_SOLVER, _alone) is not None:\n"
+        "        logger.error(reference_inflation_error(_WITH_SOLVER, _alone))\n"
         "        validity = False\n"
         "    if validity and total_time_solver > 0:\n"
     ),
@@ -296,13 +309,15 @@ def with_first_call_ratio(test_outputs: str) -> str:
 
 
 def with_thread_guard(test_outputs: str) -> str:
-    """The verifier with thread_guard.py's check: a solver whose threads use CPU during reference timing is invalid.
+    """The verifier with thread_guard.py's reference check: invalid when the reference, timed with the solver, is
+    more than 15% slower than timed alone on the same instances before the solver was imported.
 
     Pilot 3: a solver that left spin-waiting threads running scored 3837x on dev_eval by slowing the reference.
-    Adds one untimed reference call (on the first problem, before the solver is imported, so the threads the
-    reference starts count as its own), wraps every reference call in the guard, and sets validity False when
-    the check fails, which the verifier scores 1.0 like any invalid run. Timing and the speedup formula are
-    unchanged. Needs thread_guard.py next to the verifier. Raises unless every anchor occurs exactly once.
+    Times the reference on every problem before the solver fixture imports the solver (one untimed and
+    NUM_REPEATS timed calls each, as the verifier times it), records the reference's per-instance minimum during
+    the interleaved timing, prints "Reference inflation: <ratio>" and the thread-CPU summary, and sets validity
+    False when the check fails, which the verifier scores 1.0 like any invalid run. Timing and the speedup
+    formula are unchanged. Needs thread_guard.py next to the verifier. Raises unless every anchor occurs once.
     """
     for anchor, replacement in _GUARD_PATCHES.items():
         if test_outputs.count(anchor) != 1:

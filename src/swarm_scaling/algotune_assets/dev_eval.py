@@ -5,7 +5,8 @@
 Mirrors the final evaluation: the same instance generator, the same is_solution check, the same
 interleaved timing (one untimed warmup of the reference and the solver, then `reps` alternating timed
 calls of each, minimum per instance, speedup = total reference time / total solver time), and the same
-thread check (thread_guard.py: a solver whose threads keep using CPU while the reference is timed is invalid).
+reference check (thread_guard.py: invalid when the reference, timed with the solver, is more than 15% slower
+than when timed on the same instances before the solver is imported).
 Dev instances come from seeds the final evaluation does not use.
 """
 
@@ -23,7 +24,7 @@ import time
 import traceback
 from pathlib import Path
 
-from thread_guard import ThreadGuard  # next to this file
+from thread_guard import ThreadGuard, reference_inflation, reference_inflation_error, time_reference  # next to this file
 
 DEV_DIR = Path(__file__).resolve().parent
 SEED_OFFSET = 10_000
@@ -45,11 +46,13 @@ def timed_ns(fn, problem) -> int:
 def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict:
     result = {"solver": str(solver_path), "n": n, "seed": seed, "size": size, "reps": reps,
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
-              "total_reference_s": None, "thread_check": None, "first_call_ratio": None, "errors": []}
+              "total_reference_s": None, "thread_check": None, "first_call_ratio": None,
+              "reference_inflation": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
-    # One untimed reference call before the solver is imported, so the threads the reference starts are its own.
-    task.solve(task.generate_problem(n=size, random_seed=SEED_OFFSET + seed))
-    guard = ThreadGuard()
+    problems = [task.generate_problem(n=size, random_seed=SEED_OFFSET + seed + i) for i in range(n)]
+    # The reference timed alone, before the solver is imported: what it takes when nothing slows it.
+    alone = time_reference(task.solve, problems, reps)
+    guard = ThreadGuard()  # after reference calls, so the threads the reference starts are its own
     # Load the solver exactly as the final evaluation does: plain `pytest /tests/test_outputs.py`
     # puts neither this directory, the working directory nor the solver's own directory on sys.path.
     # Otherwise a solver that imports itself by name (e.g. numba cache=True) passes here and fails
@@ -63,8 +66,8 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
         return result
 
     total_solver = total_reference = total_first = 0
-    for i in range(n):
-        problem = task.generate_problem(n=size, random_seed=SEED_OFFSET + seed + i)
+    with_solver, alone_same = [], []  # reference mins, timed with the solver and alone, for the timed instances
+    for i, problem in enumerate(problems):
         try:
             guard.before_reference()
             task.solve(problem)
@@ -87,11 +90,15 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
         total_solver += min(solver_times)
         total_reference += min(reference_times)
         total_first += first_ns
+        with_solver.append(min(reference_times))
+        alone_same.append(alone[i])
 
     result["n_invalid"] = len(result["errors"])
     result["thread_check"] = guard.summary()
-    if guard.error() is not None:
-        result["errors"].insert(0, guard.error())
+    result["reference_inflation"] = reference_inflation(with_solver, alone_same)
+    inflation_error = reference_inflation_error(with_solver, alone_same)
+    if inflation_error is not None:
+        result["errors"].insert(0, inflation_error)
     result["valid"] = not result["errors"]
     if total_solver > 0:
         result["speedup"] = total_reference / total_solver

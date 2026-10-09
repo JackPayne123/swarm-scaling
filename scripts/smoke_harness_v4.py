@@ -6,8 +6,8 @@ Run from this worktree when nothing else is using Docker (each part starts conta
 
 threads   dev_eval.py, in each pilot-3 task image with the checker's limits (8 CPUs 8-15, 8 GB, no network), on:
           the reference solver (expect valid, not flagged), the reference plus 4 native spinning threads
-          (expect "solver threads kept running"), and every solver pilot 3 selected for that task, read from
-          the eval logs (expect valid; their solver-thread CPU is printed to calibrate thread_guard's threshold).
+          (expect "the reference ran ... slower"), and every solver pilot 3 selected for that task, read from
+          the eval logs (expect not flagged; reference_inflation and solver-thread CPU are printed).
 verifier  our patched verifier (seed offset + thread check) for generalized-eigenvalues-real on the reference
           solver (expect Validity: True) and the spinning one (expect the thread error and Validity: False).
 cleanup   one AlgoTune sample through Inspect with a scripted mockllm agent whose solver starts a detached
@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 from swarm_scaling.algotune_devkit import ASSETS
-from swarm_scaling.tasks import COMPOSE_DIR, VERIFIER_DIR, with_thread_guard
+from swarm_scaling.tasks import COMPOSE_DIR, VERIFIER_DIR, seed_with_offset, with_first_call_ratio, with_thread_guard
 
 TASKS = ("cvar-projection", "dst-type-ii-scipy-fftpack", "generalized-eigenvalues-real")
 CHECKER_LIMITS = ["--network", "none", "--cpus", "8", "--cpuset-cpus", "8-15", "--memory", "8g"]
@@ -64,7 +64,7 @@ subprocess.Popen(["sleep", "600"], start_new_session=True)  # outlives this proc
 
 def image(task: str) -> str:
     compose = yaml.safe_load((COMPOSE_DIR / f"algotune_{task}-compose.yaml").read_text())
-    return compose["services"]["checker"]["image"]
+    return compose["services"]["default"]["image"]
 
 
 def problem_size(task: str) -> int:
@@ -111,10 +111,20 @@ def threads_part(logs: Path, n: int) -> None:
                 print(f"  {name}: NO RESULT (exit {proc.returncode}) {proc.stderr[-400:]}")
                 continue
             expect = "flagged" if name == "reference+spinners" else "not flagged"
-            flagged = any(e.startswith("solver threads kept running") for e in r["errors"])
+            flagged = any(e.startswith("the reference ran") for e in r["errors"])
             verdict = "OK" if flagged == (expect == "flagged") else "UNEXPECTED"
             print(f"  {verdict} {name}: expect {expect}; valid={r['valid']} speedup={r['speedup']} "
-                  f"thread_check={r['thread_check']} errors={[e.splitlines()[-1] for e in r['errors'][:2]]}")  # fmt: skip
+                  f"reference_inflation={r['reference_inflation']} thread_check={r['thread_check']} errors={[e.splitlines()[-1] for e in r['errors'][:2]]}")  # fmt: skip
+
+
+def hub_tests(task: str) -> Path:
+    """The task's unpatched Harbor tests directory in the local hub cache."""
+    from inspect_harbor import algotune
+
+    from swarm_scaling.tasks import ALGOTUNE_REF
+
+    (sample,) = algotune(ref=ALGOTUNE_REF, dataset_task_names=[f"algotune/{task}"]).dataset
+    return Path(sample.metadata["tests_dir"])
 
 
 def verifier_part() -> None:
@@ -123,20 +133,21 @@ def verifier_part() -> None:
         work = Path(tempfile.mkdtemp(prefix="smoke-v4-verifier-"))
         tests = work / "tests"
         tests.mkdir()
-        seeded = VERIFIER_DIR / f"algotune_{task}"
-        shutil.copy(seeded / "evaluator.py", tests)
+        hub = hub_tests(task)
+        shutil.copy(hub / "evaluator.py", tests)
         shutil.copy(ASSETS / "thread_guard.py", tests)
-        # the cached copy already has the seed patch; a made-up offset, not the experiment's secret one
-        (tests / "test_outputs.py").write_text(with_thread_guard((seeded / "test_outputs.py").read_text()))
+        # all of our patches, from the hub copy; a made-up offset, not the experiment's secret one
+        patched = with_first_call_ratio(with_thread_guard(seed_with_offset((hub / "test_outputs.py").read_text())))
+        (tests / "test_outputs.py").write_text(patched)
         (tests / "seed_offset").write_text("1234567\n")
         (work / "dev").mkdir()
-        shutil.copy(seeded / "evaluator.py", work / "dev" / "reference_task.py")
+        shutil.copy(hub / "evaluator.py", work / "dev" / "reference_task.py")
         (work / "solver.py").write_text(source)
         cmd = "mkdir -p /app /logs/verifier && cp /work/solver.py /app/solver.py && cp -r /work/tests /tests && " \
               "pytest /tests/test_outputs.py -rA -s; cat /logs/verifier/reward.txt"  # fmt: skip
         proc = docker(task, work, "sh", "-c", cmd, timeout=3600)
         lines = [ln for ln in (proc.stdout + proc.stderr).splitlines()
-                 if "Thread check" in ln or "solver threads" in ln or ln.startswith(("Validity", "Raw Speedup", "Final Reward"))]  # fmt: skip
+                 if "Thread check" in ln or "Reference inflation" in ln or "the reference ran" in ln or ln.startswith(("Validity", "Raw Speedup", "Final Reward"))]  # fmt: skip
         print(f"\n== verifier, {name} (expect Validity: {name == 'reference'}):")
         print("\n".join(f"  {ln}" for ln in lines) or proc.stdout[-1500:])
 

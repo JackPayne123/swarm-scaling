@@ -51,7 +51,8 @@ DEV_TOOLKIT_NOTE = (
     "measures its speedup the way the final evaluation does. It runs on a separate, dedicated machine, one "
     "evaluation at a time: calls from every agent working on this task wait in one queue, and each result "
     "says how long it waited. Timings you take in your own container are affected by whatever else is "
-    "running there. A solver whose threads keep using CPU while the reference is being timed is scored invalid."
+    "running there. A run in which the reference, timed alongside your solver, is more than 15% slower than when "
+    "timed alone on the same instances is scored invalid."
 )
 
 
@@ -221,7 +222,7 @@ async def _dev_eval(state: TaskState, candidate: Candidate, source: bytes, index
         detail["valid"],
         detail["speedup"],
         error=_first_errors(detail),
-        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check", "first_call_ratio")}, **timing},
+        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check", "first_call_ratio", "reference_inflation")}, **timing},
     )
 
 
@@ -276,6 +277,7 @@ class Checker:
                 "error": report if detail is None else _first_errors(detail),
                 "thread_check": None if detail is None else detail["thread_check"],
                 "first_call_ratio": None if detail is None else detail["first_call_ratio"],
+                "reference_inflation": None if detail is None else detail["reference_inflation"],
                 "n": n,
                 "seed": seed,
             })  # fmt: skip

@@ -140,7 +140,7 @@ async def test_remote_backend_sends_dev_eval_finalize_and_scoring_to_the_service
             return {"score": speedup, "valid": True, "verifier_stdout": f"Validity: True\nFinal Reward (Score): {speedup}",
                     "first_call_ratio": 1.1, "scoring_timeout": False}, ""  # fmt: skip
         result = {"valid": True, "speedup": speedup, "n_invalid": 0, "errors": [], "total_solver_s": 1.0,
-                  "total_reference_s": speedup, "thread_check": None, "first_call_ratio": 1.2}  # fmt: skip
+                  "total_reference_s": speedup, "thread_check": None, "first_call_ratio": 1.2, "reference_inflation": 1.0}  # fmt: skip
         return result, f"speedup: {speedup}x"
 
     scorer = serve(run, slots=2)
