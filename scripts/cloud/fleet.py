@@ -1,7 +1,7 @@
 """Run a plan of samples on GCP and AWS VMs (one VM each, via run_sample.sh), show live VMs and cost, clean up.
 
 Usage:
-  uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N]
+  uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--dry-run]
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
   uv run python scripts/cloud/fleet.py scorer up|down|status [args]   (scripts/cloud/scorer.sh)
@@ -205,8 +205,39 @@ def schedule(rows: list[Row], free: dict[str, int], launch, max_runs: int = 0) -
     return results
 
 
+def dry_run(rows: list[Row], free: dict[str, int], max_runs: int = 0) -> list[tuple[str, str, str, str]]:
+    """What `schedule` would do, assuming runs end in the order they started (durations are unknown):
+    (name, cloud, machine, when) per row in start order; when = "at launch", "after <name>" or "never fits"."""
+    free = dict(free)
+    out, pending, running, after = [], list(rows), [], "at launch"
+    while pending:
+        for row in list(pending):
+            if max_runs and len(running) >= max_runs:
+                break
+            if pick := choose(row, free):
+                cloud, machine = pick
+                free[cloud] -= vcpus(machine)
+                pending.remove(row)
+                running.append((row.name, cloud, vcpus(machine)))
+                out.append((row.name, cloud, machine, after))
+        if not running:
+            out += [(row.name, "-", "-", "never fits") for row in pending]
+            break
+        name, cloud, n = running.pop(0)
+        free[cloud] += n
+        after = f"after {name}"
+    return out
+
+
 def plan(args: argparse.Namespace) -> None:
     rows = parse_plan(Path(args.plan).read_text())
+    if args.dry_run:
+        free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
+        print(f"{len(rows)} runs; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']} (nothing is launched)")
+        for i, (name, cloud, machine, when) in enumerate(dry_run(rows, free, args.max_runs), 1):
+            print(f"  {i:2} {name:30} {cloud:4} {machine:16} {when}")
+        print("Order after the first wave assumes runs end in the order they started.")
+        return
     if used := [r.name for r in rows if status_path(r.name).exists()]:
         raise SystemExit(f"run names already used (logs/<name>/cloud-status exists): {used}")
     script = ["--script", args.script] if args.script else []
@@ -313,9 +344,10 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("plan")
     pp.add_argument("plan")
-    pp.add_argument("--ref", required=True, help="git branch, tag or commit on GitHub")
+    pp.add_argument("--ref", required="--dry-run" not in sys.argv, help="git branch, tag or commit on GitHub")
     pp.add_argument("--script", help="run this script instead of the runner (see run_sample.sh)")
     pp.add_argument("--max-runs", type=int, default=0, help="cap on runs at once (default: only vCPU room)")
+    pp.add_argument("--dry-run", action="store_true", help="print where and in which order rows would start; launch nothing")
     pp.set_defaults(fn=plan)
     sub.add_parser("status").set_defaults(fn=status)
     pc = sub.add_parser("cleanup")

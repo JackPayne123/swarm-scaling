@@ -88,3 +88,15 @@ def test_gcp_room_is_the_global_quota_only_when_every_row_uses_the_remote_scorer
     assert fleet.gcp_free(t2d_only=not all(fleet.is_remote(r.args) for r in rows)) == 32
     rows.append(fleet.parse_plan("c gcp auto --arm solo\n")[0])
     assert fleet.gcp_free(t2d_only=not all(fleet.is_remote(r.args) for r in rows)) == 24
+
+
+def test_dry_run_fills_gcp_then_aws_and_queues_the_rest():
+    rows = fleet.parse_plan("t4 any auto --n 4\nt2 any auto --n 2\ns1 any auto\ns2 any auto\ns3 gcp auto\n")
+    plan = fleet.dry_run(rows, {"gcp": 32, "aws": 16})
+    assert plan == [
+        ("t4", "gcp", "t2d-standard-32", "at launch"),
+        ("t2", "aws", "m7a.4xlarge", "at launch"),
+        ("s1", "gcp", "t2d-standard-8", "after t4"),
+        ("s2", "gcp", "t2d-standard-8", "after t4"),
+        ("s3", "gcp", "t2d-standard-8", "after t4"),
+    ]
