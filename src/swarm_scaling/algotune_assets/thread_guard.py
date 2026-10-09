@@ -111,7 +111,7 @@ def reference_inflation_error(with_solver_ns: list[int], alone_ns: list[int]) ->
         return None
     return (
         f"the reference ran {ratio:.3f}x slower while timed with the solver: {sum(with_solver_ns) / 1e9:.4f} s "
-        f"interleaved with the solver vs {sum(alone_ns) / 1e9:.4f} s timed before the solver was imported, "
+        f"interleaved with the solver vs {sum(alone_ns) / 1e9:.4f} s timed alone in a process without the solver, "
         f"over the same {len(with_solver_ns)} instances (allowed {MAX_REFERENCE_INFLATION}x)"
     )
 

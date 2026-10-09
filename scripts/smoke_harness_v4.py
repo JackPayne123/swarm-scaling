@@ -8,8 +8,9 @@ threads   dev_eval.py, in each pilot-3 task image with the checker's limits (8 C
           the reference solver (expect valid, not flagged), the reference plus 4 native spinning threads
           (expect "the reference ran ... slower"), and every solver pilot 3 selected for that task, read from
           the eval logs (expect not flagged; reference_inflation and solver-thread CPU are printed).
-verifier  our patched verifier (seed offset + thread check) for generalized-eigenvalues-real on the reference
-          solver (expect Validity: True) and the spinning one (expect the thread error and Validity: False).
+verifier  our patched verifier (seed offset, reference check, first-call ratio; 10 instances instead of 100) for
+          generalized-eigenvalues-real on the reference solver (expect Validity: True) and the spinning one
+          (expect "the reference ran ... slower" and Validity: False).
 cleanup   one AlgoTune sample through Inspect with a scripted mockllm agent whose solver starts a detached
           `sleep 600` when imported: two dev_eval calls, a publish of daemon.py, finalize and scoring. Expect
           each timed checker run after the first to report "killed 1", and the publish to say "saved as".
@@ -151,6 +152,9 @@ def verifier_part() -> None:
         shutil.copy(ASSETS / "thread_guard.py", tests)
         # all of our patches, from the hub copy; a made-up offset, not the experiment's secret one
         patched = with_first_call_ratio(with_thread_guard(seed_with_offset((hub / "test_outputs.py").read_text())))
+        # 10 instances instead of 100: the spinners slow this BLAS reference ~25x on a Mac (smoke only)
+        assert patched.count("NUM_TEST_INSTANCES = 100") == 1
+        patched = patched.replace("NUM_TEST_INSTANCES = 100", "NUM_TEST_INSTANCES = 10")
         (tests / "test_outputs.py").write_text(patched)
         (tests / "seed_offset").write_text("1234567\n")
         (work / "dev").mkdir()

@@ -190,4 +190,4 @@ def test_a_solver_that_slows_the_reference_is_invalid_and_one_that_does_not_pass
     monkeypatch.setattr("builtins._slow_reference", False, raising=False)  # removed again at teardown
     bad = dev_eval.evaluate(slowing, n=3, seed=0, size=100, reps=3)
     assert not bad["valid"] and bad["reference_inflation"] > 1.5
-    assert bad["errors"][0].startswith("the reference ran") and "timed before the solver was imported" in bad["errors"][0]
+    assert bad["errors"][0].startswith("the reference ran") and "timed alone in a process without the solver" in bad["errors"][0]
