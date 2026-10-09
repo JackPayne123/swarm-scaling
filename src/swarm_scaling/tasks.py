@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -120,6 +121,9 @@ def algotune_scorer() -> Scorer:
     solver left running competes with the verifier or sees /tests. Queue wait, run times and the cleanup
     result go in metadata["checker"].
     The selected solver was already evaluated in the checker by finalize, also as a single file.
+    A verifier that times out scores 1.0 (no speedup, as an invalid run) with metadata["scoring_timeout"] True,
+    instead of failing the eval. metadata["first_call_ratio"] is the verifier's first-call ratio
+    (`with_first_call_ratio`; None when nothing was timed).
     """
     verify = harbor_scorer()
 
@@ -130,10 +134,19 @@ def algotune_scorer() -> Scorer:
             cleanup = await end_checker_processes(state)
             await _copy_solver_to_checker()
             with sandbox_default(CHECKER):
-                result = await verify(state, target)
+                try:
+                    result = await verify(state, target)
+                    timed_out = False
+                except TimeoutError:  # Inspect raises it when the verifier exceeds verifier_timeout_sec
+                    timeout_s = state.metadata.get("verifier_timeout_sec", 600)  # harbor_scorer's default
+                    result = Score(value=1.0, explanation=f"verifier timeout after {timeout_s:g} s")
+                    timed_out = True
             ended = time.time()
+        ratio = re.search(r"^First-call ratio: (\S+)$", result.explanation or "", re.M)
         result.metadata = {
             **(result.metadata or {}),
+            "scoring_timeout": timed_out,
+            "first_call_ratio": float(ratio.group(1)) if ratio and ratio.group(1) != "None" else None,
             "log_speedup": math.log(_speedup(result.as_float())),
             "checker": {
                 "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
@@ -201,6 +214,45 @@ _GUARD_PATCHES = {
         "    if validity and total_time_solver > 0:\n"
     ),
 }
+
+
+# with_first_call_ratio: anchor -> replacement, each anchor required exactly once.
+_FIRST_CALL_PATCHES = {
+    "        warmup_sol = solver_func(problem)\n": (
+        "        _first_start = time.perf_counter_ns()\n"
+        "        warmup_sol = solver_func(problem)\n"
+        "        _first_ns = time.perf_counter_ns() - _first_start\n"
+    ),
+    "    return min(solver_timings), min(baseline_timings)\n": (
+        "    _FIRST_CALLS.append((_first_ns, min(solver_timings)))\n"
+        "    return min(solver_timings), min(baseline_timings)\n"
+    ),
+    "def _write_reward(speedup: float) -> None:\n": (
+        "_FIRST_CALLS = []  # (untimed first solver call, min timed solver call) per instance, in ns\n\n\n"
+        "def _first_call_ratio():\n"
+        "    timed = sum(m for _, m in _FIRST_CALLS)\n"
+        "    return sum(f for f, _ in _FIRST_CALLS) / timed if timed else None\n\n\n"
+        "def _write_reward(speedup: float) -> None:\n"
+    ),
+    '    print(f"Final Reward (Score): {final_score:.4f}")\n': (
+        '    print(f"Final Reward (Score): {final_score:.4f}")\n'
+        '    print(f"First-call ratio: {_first_call_ratio()}")\n'
+    ),
+}
+
+
+def with_first_call_ratio(test_outputs: str) -> str:
+    """The verifier also reports the first-call ratio: sum of untimed first solver calls / sum of min timed calls.
+
+    A solver that caches results by problem identity is slow on the first (checked) call and fast on the timed
+    repeats, so its ratio is large. The ratio is only reported (verifier output, score metadata), never scored.
+    Raises unless every anchor occurs exactly once.
+    """
+    for anchor, replacement in _FIRST_CALL_PATCHES.items():
+        if test_outputs.count(anchor) != 1:
+            raise ValueError(f"expected exactly one {anchor!r} in the AlgoTune verifier")
+        test_outputs = test_outputs.replace(anchor, replacement)
+    return test_outputs
 
 
 def with_thread_guard(test_outputs: str) -> str:
@@ -390,7 +442,7 @@ def algotune_task(
         shutil.rmtree(seeded_dir, ignore_errors=True)
         shutil.copytree(tests_dir, seeded_dir)
         test_outputs = seeded_dir / "test_outputs.py"
-        test_outputs.write_text(with_thread_guard(seed_with_offset(test_outputs.read_text())))
+        test_outputs.write_text(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text()))))
         shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
         (seeded_dir / "seed_offset").write_text(f"{offset}\n")
         sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))

@@ -120,11 +120,13 @@ def main() -> None:
     for a, (st, en) in spans.items():
         busy = sum(e2 - s2 for s2, e2 in model_intervals[a])
         rec = sw["agents"][a]
+        received = rec.get("messages_received") or []
+        notices = sum(m.get("from") == "system" for m in received)  # finish notices, not peer messages
         summ.append(
             f"{a}: active {st:.0f}-{en:.0f}s ({en - st:.0f}s); model-call time {busy:.0f}s over "
             f"{len(model_intervals[a])} calls; end={rec.get('end_reason')}; tools={dict(tool_counts[a])}; "
             f"published={rec.get('candidates_published')}; msgs sent={len(rec.get('messages_sent') or [])} "
-            f"recv={len(rec.get('messages_received') or [])}"
+            f"recv={len(received) - notices} finish_notices={notices}"
         )
     if len(spans) > 1:
         (a1, (s1, e1)), (a2, (s2, e2)) = list(spans.items())[:2]

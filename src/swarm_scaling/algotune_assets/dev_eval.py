@@ -45,7 +45,7 @@ def timed_ns(fn, problem) -> int:
 def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict:
     result = {"solver": str(solver_path), "n": n, "seed": seed, "size": size, "reps": reps,
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
-              "total_reference_s": None, "thread_check": None, "errors": []}
+              "total_reference_s": None, "thread_check": None, "first_call_ratio": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
     # One untimed reference call before the solver is imported, so the threads the reference starts are its own.
     task.solve(task.generate_problem(n=size, random_seed=SEED_OFFSET + seed))
@@ -62,14 +62,16 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
         result["errors"].append("could not load Solver from the file:\n" + traceback.format_exc())
         return result
 
-    total_solver = total_reference = 0
+    total_solver = total_reference = total_first = 0
     for i in range(n):
         problem = task.generate_problem(n=size, random_seed=SEED_OFFSET + seed + i)
         try:
             guard.before_reference()
             task.solve(problem)
             guard.after_reference(None)
+            first_ns = time.perf_counter_ns()
             solution = solver.solve(problem)
+            first_ns = time.perf_counter_ns() - first_ns
             if not task.is_solution(problem, solution):
                 result["errors"].append(f"instance {i}: is_solution returned False")
                 continue
@@ -84,6 +86,7 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
             continue
         total_solver += min(solver_times)
         total_reference += min(reference_times)
+        total_first += first_ns
 
     result["n_invalid"] = len(result["errors"])
     result["thread_check"] = guard.summary()
@@ -92,6 +95,8 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict
     result["valid"] = not result["errors"]
     if total_solver > 0:
         result["speedup"] = total_reference / total_solver
+        # untimed first call / min timed call: large for a solver that caches results by problem identity
+        result["first_call_ratio"] = total_first / total_solver
         result["total_solver_s"] = total_solver / 1e9
         result["total_reference_s"] = total_reference / 1e9
     return result

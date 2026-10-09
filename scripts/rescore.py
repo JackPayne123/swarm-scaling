@@ -2,7 +2,7 @@
 
 For each sample in the given logs, takes state.metadata["finalize"]["selected_source"] and scores it again
 through the normal scoring path: `algotune_task` (same patched verifier, same secret seed offset) and
-`algotune_scorer` (copies /app/solver.py into the sample's checker and runs Harbor's verifier there, CPUs 8-15).
+`algotune_scorer` (copies /app/solver.py into the sample's checker and runs Harbor's verifier there, on its 8 CPUs).
 One sample at a time (max_samples = max_sandboxes = 1), each in fresh containers; refuses to start while any
 other container is running. Samples with no selected solver are skipped and listed.
 
@@ -10,6 +10,9 @@ other container is running. Samples with no selected solver are skipped and list
 
 Writes analysis/rescore/<timestamp>.jsonl (one row per sample and repeat, with the raw verifier output),
 the rescore eval log under logs/rescore/<timestamp>/, and prints a table.
+The table flags rows whose first-call ratio (verifier: untimed first solver call / min timed call, summed
+over instances) exceeds 5 for manual review: caching results by problem identity shows up there, as can a
+solver that compiles on its first call. Verifier timeouts score 1.0 and are flagged too.
 """
 
 import argparse
@@ -30,6 +33,10 @@ from inspect_ai.util import sandbox
 
 from swarm_scaling.algotune_devkit import SOLVER_PATH
 from swarm_scaling.tasks import LOG_DIR, PROJECT_ROOT, algotune_task
+
+# Untimed first solver call / min timed call, summed over instances. A solver that caches results by problem
+# identity shows a large ratio; so can one that compiles or initialises lazily on its first call. Review, not scored.
+REVIEW_FIRST_CALL_RATIO = 5.0
 
 
 @solver
@@ -104,9 +111,11 @@ def result_row(sample) -> dict:
     row = {k: v for k, v in sample.metadata["rescore"].items() if k != "source"}
     score = (sample.scores or {}).get("algotune_scorer")
     explanation = score.explanation if score else str(sample.error)
+    meta = (score.metadata or {}) if score else {}
     return {
         **row, "repeat": sample.epoch, "rescore": score.value if score else None, "valid": validity(explanation or ""),
-        "checker": (score.metadata or {}).get("checker") if score else None, "verifier_output": explanation,
+        "first_call_ratio": meta.get("first_call_ratio"), "scoring_timeout": meta.get("scoring_timeout"),
+        "checker": meta.get("checker"), "verifier_output": explanation,
     }  # fmt: skip
 
 
@@ -146,11 +155,17 @@ def main() -> None:
         for r in results:
             fh.write(json.dumps(r) + "\n")
 
-    print(f"\n{'run':48} {'arm':12} {'n':>2} {'ep':>3} {'rep':>3} {'original':>10} {'rescore':>10} {'ratio':>7} valid")
+    print(f"\n{'run':48} {'arm':12} {'n':>2} {'ep':>3} {'rep':>3} {'original':>10} {'rescore':>10} {'ratio':>7} "
+          f"{'1st-call':>9} valid")  # fmt: skip
     for r in sorted(results, key=lambda r: (r["run"], r["epoch"], r["repeat"])):
         orig, new = r["original_score"], r["rescore"]
         ratio = f"{new / orig:7.3f}" if orig and new is not None else f"{'':>7}"
-        print(f"{r['run']:48} {r['arm']:12} {r['n']:>2} {r['epoch']:>3} {r['repeat']:>3} {fmt(orig)} {fmt(new)} {ratio} {r['valid']}")
+        first = r["first_call_ratio"]
+        flags = ["REVIEW: first-call ratio > 5"] if first is not None and first > REVIEW_FIRST_CALL_RATIO else []
+        flags += ["SCORING TIMEOUT"] if r["scoring_timeout"] else []
+        first_s = f"{first:9.2f}" if first is not None else f"{'-':>9}"
+        print(f"{r['run']:48} {r['arm']:12} {r['n']:>2} {r['epoch']:>3} {r['repeat']:>3} {fmt(orig)} {fmt(new)} {ratio} "
+              f"{first_s} {r['valid']} {' '.join(flags)}")  # fmt: skip
     print(f"\nwrote {out} ({len(results)} rows; {len(skipped)} skipped)")
 
 

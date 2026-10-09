@@ -1,16 +1,17 @@
-"""The thread check (algotune_assets/thread_guard.py) used by dev_eval.py and our copy of the verifier.
+"""The thread check (algotune_assets/thread_guard.py) and first-call ratio of dev_eval.py and our verifier copy.
 
 Threads are faked (thread id -> CPU seconds, as /proc/self/task reports them), so this runs on macOS;
 scripts/smoke_thread_guard.py runs real solvers through dev_eval in the task image.
 """
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 from swarm_scaling.algotune_devkit import ASSETS
-from swarm_scaling.tasks import seed_with_offset, with_thread_guard
+from swarm_scaling.tasks import seed_with_offset, with_first_call_ratio, with_thread_guard
 
 spec = importlib.util.spec_from_file_location("thread_guard", ASSETS / "thread_guard.py")
 thread_guard = importlib.util.module_from_spec(spec)
@@ -96,3 +97,47 @@ def test_the_scoring_verifier_runs_the_same_check() -> None:
     assert "    if _GUARD.error() is not None:\n        logger.error(_GUARD.error())\n        validity = False\n" in patched
     with pytest.raises(ValueError):
         with_thread_guard(VERIFIER.read_text().replace("            _ = baseline_func(problem)\n", "", 1))
+
+
+def test_first_call_ratio_exposes_a_solver_that_caches_results_by_problem_identity(tmp_path, monkeypatch) -> None:
+    # Only the untimed first call's output is checked; a solver that remembers each problem object it has seen is
+    # slow once and near-free in every timed repeat. The ratio is reported for review, never scored.
+    monkeypatch.syspath_prepend(str(ASSETS))
+    monkeypatch.setattr(sys, "path", list(sys.path))  # evaluate() edits sys.path
+    spec = importlib.util.spec_from_file_location("dev_eval", ASSETS / "dev_eval.py")
+    dev_eval = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dev_eval)
+    (tmp_path / "reference_task.py").write_text(
+        "import random\n"
+        "class Task:\n"
+        "    def generate_problem(self, n, random_seed):\n"
+        "        return [random.Random(random_seed).random() for _ in range(n)]\n"
+        "    def solve(self, problem):\n"
+        "        return sorted(problem)\n"
+        "    def is_solution(self, problem, solution):\n"
+        "        return solution == sorted(problem)\n"
+    )
+    monkeypatch.setattr(dev_eval, "DEV_DIR", tmp_path)
+    monkeypatch.setattr(dev_eval, "ThreadGuard", lambda: thread_guard.ThreadGuard(read=lambda: {MAIN: 0.0}))  # no /proc
+    honest = tmp_path / "honest.py"
+    honest.write_text("class Solver:\n    def solve(self, problem):\n        return sorted(problem)\n")
+    caching = tmp_path / "caching.py"
+    caching.write_text(
+        "import time\n"
+        "class Solver:\n"
+        "    def __init__(self):\n"
+        "        self.seen = {}\n"
+        "    def solve(self, problem):\n"
+        "        if id(problem) not in self.seen:\n"
+        "            time.sleep(0.01)\n"
+        "            self.seen[id(problem)] = sorted(problem)\n"
+        "        return self.seen[id(problem)]\n"
+    )
+    clean = dev_eval.evaluate(honest, n=5, seed=0, size=20_000, reps=5)
+    cached = dev_eval.evaluate(caching, n=5, seed=0, size=20_000, reps=5)
+    assert clean["valid"] and cached["valid"]  # neither is invalidated
+    assert clean["first_call_ratio"] < 5 < cached["first_call_ratio"]
+    # the scoring verifier copy reports the same ratio
+    patched = with_first_call_ratio(with_thread_guard(seed_with_offset(VERIFIER.read_text())))
+    compile(patched, "test_outputs.py", "exec")
+    assert '    print(f"First-call ratio: {_first_call_ratio()}")\n' in patched

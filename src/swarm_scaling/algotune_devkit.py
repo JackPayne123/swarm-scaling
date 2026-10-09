@@ -170,7 +170,7 @@ async def _dev_eval(state: TaskState, candidate: Candidate, source: bytes, index
         detail["valid"],
         detail["speedup"],
         error=_first_errors(detail),
-        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check")}, **timing},
+        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check", "first_call_ratio")}, **timing},
     )
 
 
@@ -230,6 +230,7 @@ class Checker:
                     "speedup": None if detail is None else detail["speedup"],
                     "error": report if detail is None else _first_errors(detail),
                     "thread_check": None if detail is None else detail["thread_check"],
+                    "first_call_ratio": None if detail is None else detail["first_call_ratio"],
                     "n": n,
                     "seed": seed,
                     "cleanup": cleanup,

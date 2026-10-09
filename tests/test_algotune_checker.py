@@ -76,7 +76,7 @@ class FakeChecker(FakeBox):
         errors = [] if valid else ["instance 0: is_solution returned False"]
         self.files[out] = json.dumps({
             "valid": valid, "speedup": speedup, "n_invalid": len(errors), "errors": errors,
-            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0, "thread_check": None,
+            "total_solver_s": 1.0, "total_reference_s": speedup or 1.0, "thread_check": None, "first_call_ratio": 1.0,
         })  # fmt: skip
         return ok(f"speedup: {speedup}x")
 
@@ -283,3 +283,28 @@ async def test_final_scoring_runs_in_the_checker_holding_the_lock(tmp_path) -> N
     assert not any(p.startswith("/tests") for p in agent_box.files)
     assert agent_box.execs == []  # nothing ran in the agents' box
     assert result.metadata["checker"]["started_at"] <= result.metadata["checker"]["ended_at"]
+
+
+@pytest.mark.asyncio
+async def test_a_verifier_timeout_scores_as_no_speedup_instead_of_failing_the_eval(tmp_path) -> None:
+    # An uncaught timeout would end the whole eval run (fail_on_error) and lose every other sample's log.
+    (tmp_path / "test.sh").write_text("#!/bin/bash\n")
+    (tmp_path / "seed_offset").write_text("1234567\n")
+
+    class SlowVerifierBox(FakeBox):
+        async def exec(self, cmd: list[str], **kwargs) -> ExecResult[str]:
+            if cmd[:2] == ["sh", "-c"] and "/tests/test.sh" in cmd[2]:
+                raise TimeoutError("Command timed out")
+            return await super().exec(cmd, **kwargs)
+
+    sandbox_environments_context_var.set({"default": FakeBox({devkit.SOLVER_PATH: b"x"}), devkit.CHECKER: SlowVerifierBox()})
+    sandbox_default_context_var.set("default")
+    state = SimpleNamespace(
+        metadata={"tests_dir": str(tmp_path), "test_path": str(tmp_path / "test.sh"), "verifier_timeout_sec": 3600}
+    )
+
+    result = await algotune_scorer()(state, Target(""))
+
+    assert result.value == 1.0 and result.explanation == "verifier timeout after 3600 s"
+    assert result.metadata["scoring_timeout"] is True and result.metadata["log_speedup"] == 0.0
+    assert not devkit.CHECKER_LOCK.locked()
