@@ -157,6 +157,20 @@ class AloneTimer:
         self.proc.wait(timeout=60)
 
 
+def _pause(pid: int) -> None:
+    """SIGSTOP `pid` and wait until the kernel reports it stopped. Fails loudly if it never stops: the init process
+    of a PID namespace (e.g. `docker run image python ...` without --init) ignores SIGSTOP from inside it, and the
+    alone timing would then silently compete with whatever the solver left running."""
+    os.kill(pid, signal.SIGSTOP)
+    for _ in range(200):
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+        if stat[stat.rindex(")") + 2] in "Tt":
+            return
+        time.sleep(0.005)
+    raise RuntimeError(f"process {pid} did not stop (is it PID 1 of its namespace? run the container with --init)")
+
+
 def _alone_child(reference_path: str, reps: int, pause_parent: bool) -> None:
     import importlib.util
 
@@ -167,7 +181,7 @@ def _alone_child(reference_path: str, reps: int, pause_parent: bool) -> None:
     for line in sys.stdin:
         problem = task.generate_problem(**json.loads(line))
         if pause_parent:
-            os.kill(parent, signal.SIGSTOP)
+            _pause(parent)
         try:
             (ns,) = time_reference(task.solve, [problem], reps)
         finally:

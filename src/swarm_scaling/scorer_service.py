@@ -148,7 +148,7 @@ def docker_runner(docker: str = "docker", memory: str = "8g", cpus: int = 8, wor
             out.mkdir()
             out.chmod(0o777)  # the container writes as root
             cmd = [
-                docker, "run", "--rm", "-i", "--name", name, "--network", "none", "--cpuset-cpus", cpuset,
+                docker, "run", "--rm", "-i", "--init", "--name", name, "--network", "none", "--cpuset-cpus", cpuset,
                 "--cpus", str(cpus), "--memory", memory, "-w", "/app", "-v", f"{out}:/out",
                 # the toolkit, as in the local checker (solvers may load /app/dev/reference_task.py); no secrets
                 "-v", f"{job.task.dev_dir}:/app/dev:ro",

@@ -124,7 +124,7 @@ def test_a_job_past_its_timeout_has_only_its_own_container_killed(tmp_path) -> N
     kills = [c for c in calls if c[0] == "kill"]
     assert kills == [["kill", "scorer-j1"], ["kill", "scorer-j2"]]
     first = calls[0]
-    assert first[:3] == ["run", "--rm", "-i"] and first[first.index("--network") + 1] == "none"
+    assert first[:4] == ["run", "--rm", "-i", "--init"] and first[first.index("--network") + 1] == "none"
     assert first[first.index("--cpuset-cpus") + 1] == "8-15" and first[first.index("--cpus") + 1] == "8"
     assert first[first.index("--memory") + 1] == "8g"
     # the seeded verifier (with the offset file) goes in through stdin, never as a mount a solver could read

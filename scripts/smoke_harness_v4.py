@@ -85,7 +85,8 @@ def selected_solvers(logs: Path, task: str) -> dict[str, str]:
 
 
 def docker(task: str, work: Path, *cmd: str, timeout: int = 1800) -> subprocess.CompletedProcess:
-    run = ["docker", "run", "--rm", *CHECKER_LIMITS, "-v", f"{work}:/work", image(task), *cmd]
+    # --init: the timed python must not be PID 1, which ignores the SIGSTOP the reference check pauses it with
+    run = ["docker", "run", "--rm", "--init", *CHECKER_LIMITS, "-v", f"{work}:/work", image(task), *cmd]
     return subprocess.run(run, capture_output=True, text=True, timeout=timeout)
 
 
