@@ -22,17 +22,22 @@ from inspect_ai.model import (
     ContentText,
     GenerateConfig,
     Model,
+    ModelInfo,
     get_model,
+    get_model_info,
+    set_model_info,
 )
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.tool import Tool, ToolDef, bash, python, update_plan
-from inspect_ai.util import LimitExceededError, collect, sandbox, token_limit
+from inspect_ai.util import LimitExceededError, collect, cost_limit, sandbox, token_limit
 from inspect_ai.util import time_limit as wall_clock_limit
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
 
+from swarm_scaling.prices import budget_cost
 from swarm_scaling.team import (
     Team,
     ToolStyle,
+    budget_amount,
     list_candidates_tool,
     publish_candidate_tool,
     read_message_tool,
@@ -89,6 +94,7 @@ def swarm(
     tool_style: ToolStyle = "default",
     agent_tools: AgentTools | None = None,
     final_path: str | None = None,
+    candidate_file: str | None = None,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -99,7 +105,7 @@ def swarm(
 
     Args:
         models: One model id (or Model) per agent; len(models) = N. N = 1 is the solo arm.
-        per_agent_tokens: Hard per-agent token budget (Inspect token_limit, all tokens).
+        per_agent_tokens: Hard per-agent budget in budget_type's unit: US dollars for "cost", else tokens.
         messaging: Give agents send_message / wait_for_message and inject replies.
         registry: Give agents publish_candidate / list_candidates and a shared registry.
         workspace_root: Private dirs at {root}/agents/agent_{i}, registry at {root}/registry.
@@ -113,7 +119,10 @@ def swarm(
             "the fastest correct candidate on the dev inputs").
         budget_type: What per_agent_tokens meters: "all" (default since 2026-10-08: input incl. cached
             plus output, so models that think or re-read differently are matched on what they consume),
-            "output" (Ord's unit), or an Inspect formula over input/output.
+            "output" (Ord's unit), an Inspect formula over input/output, or "cost": US dollars at
+            swarm_scaling.prices (fresh input, cache writes at 1.25x and reads at 0.1x input, output incl.
+            reasoning), metered per call by Inspect's cost_limit; an unpriced model is refused. Inspect
+            meters Anthropic writes it sent with the 1-hour cache TTL at 2x input, as Anthropic bills them.
         deliverable: What counts as a solution, stated to agents as a fact (task-specific), e.g.
             AlgoTune: a file named solver.py. Candidates are found by this name, so state it.
         cpu_sample_interval: Seconds between container CPU samples (Docker only); the summary in
@@ -126,6 +135,8 @@ def swarm(
         agent_tools: Task-specific tools given to every agent in every arm (AlgoTune: dev_eval).
         final_path: Where finalize writes the chosen answer (AlgoTune: /app/solver.py), stated to
             agents so they know that writing it themselves has no effect.
+        candidate_file: Name a published single file is saved under in its registry entry (AlgoTune:
+            solver.py, the name finalize looks for). None keeps the file's own name.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -135,6 +146,9 @@ def swarm(
             "independent arm: run N separate single-agent samples and resample them into teams; "
             "agents in one container share a filesystem and are not independent"
         )
+    if budget_type == "cost":
+        for m in models:
+            budget_cost(str(m))  # unpriced model: refuse before any sandbox starts
     agent_ids = [f"agent_{i}" for i in range(n)]
     model_names = [m if isinstance(m, str) else m.name for m in models]
     messaging = messaging and n > 1
@@ -150,7 +164,7 @@ def swarm(
         if setup is not None:
             state = await setup(state, generate)
 
-        team = Team(agent_ids, model_names, workspace_root, reveal_model_family, tool_style)
+        team = Team(agent_ids, model_names, workspace_root, reveal_model_family, tool_style, candidate_file)
         dirs = [team.registry_dir] + [a.private_dir for a in team.agents.values()]
         mk = await sandbox().exec(["mkdir", "-p", *dirs])
         if not mk.success:
@@ -162,8 +176,15 @@ def swarm(
 
         async def run_agent(agent_id: str, model: str | Model) -> AgentState | None:
             rec = team.agents[agent_id]
-            tokens = token_limit(per_agent_tokens, type=budget_type)
-            limits = [tokens]
+            agent_model = resolve_model(model)
+            if budget_type == "cost":
+                _price_for_budget(agent_model)
+                budget = cost_limit(per_agent_tokens)
+                tokens = token_limit(None)  # no cap: records the token counts behind the dollars
+                limits = [budget, tokens]
+            else:
+                budget = tokens = token_limit(per_agent_tokens, type=budget_type)
+                limits = [budget]
             if time_limit is not None:
                 limits.append(wall_clock_limit(time_limit))
 
@@ -172,15 +193,15 @@ def swarm(
 
             extra = tools_for(agent_id) if tools_for is not None else []
             tools = _agent_tools(
-                team, agent_id, messaging, registry, budget_tool(tokens, budget_type), tool_style, extra
+                team, agent_id, messaging, registry, budget_tool(budget, budget_type), tool_style, extra
             )
             if budget_warnings:
                 # outermost, so the notice also follows message tools and deliveries
-                tools = [with_budget_notices(t, tokens, rec, budget_warnings, budget_type) for t in tools]
+                tools = [with_budget_notices(t, budget, rec, budget_warnings, budget_type) for t in tools]
             agent = react(
                 name=agent_id,
                 tools=tools,
-                model=resolve_model(model),
+                model=agent_model,
                 submit=AgentSubmit(tool=_submit_tool(submitted)),
                 compaction=CompactionEdit(),
             )
@@ -221,7 +242,7 @@ def swarm(
             finally:
                 rec.ended_at = time.time()
                 usage = getattr(tokens, "_usage", None)
-                rec.tokens = {"metered": int(tokens.usage)}
+                rec.tokens = {"metered": round(budget.usage, 6) if budget_type == "cost" else int(budget.usage)}
                 if usage is not None:
                     rec.tokens.update(usage.model_dump(exclude_none=True))
                 team.set_status(agent_id, "finished")
@@ -262,6 +283,7 @@ def swarm(
             "registry": registry,
             "workspace_root": workspace_root,
             "per_agent_tokens": per_agent_tokens,
+            "budget_type": budget_type,
             "time_limit": time_limit,
             "tool_style": tool_style,
             "budget_warnings": list(budget_warnings),
@@ -285,20 +307,34 @@ def swarm(
     return solve
 
 
+def _price_for_budget(model: Model) -> None:
+    """Make Inspect price `model`'s calls at swarm_scaling.prices, so its cost_limit meters the dollar budget.
+
+    Inspect records no cost at all for a model it has no price for, which would leave the budget unmetered,
+    so the registration is read back and must match.
+    """
+    cost = budget_cost(str(model))
+    info = get_model_info(model)  # keep its context window etc. when Inspect knows the model
+    set_model_info(str(model), (info or ModelInfo()).model_copy(update={"cost": cost}))
+    registered = get_model_info(model)
+    if registered is None or registered.cost != cost:
+        raise RuntimeError(f"Inspect does not price {model} at the budget's prices; its calls would go unmetered")
+
+
 def budget_tool(limit, budget_type: str) -> Tool:
-    """check_budget(): tokens used and remaining under this agent's own limit (no effect on the budget)."""
+    """check_budget(): budget used and remaining under this agent's own limit (no effect on the budget)."""
 
     async def execute() -> str:
         """Show how much of your token budget you have used and how much remains.
 
         You may stop at any time by submitting; you do not have to use the whole budget.
         """
-        used = int(limit.usage)
-        cap = int(limit.limit) if limit.limit is not None else None
-        unit = "output tokens" if budget_type == "output" else "tokens"
+        used, cap = limit.usage, limit.limit
+        unit = {"output": " output tokens", "cost": ""}.get(budget_type, " tokens")
         if cap is None:
-            return f"Used {used:,} {unit}; no limit."
-        return f"Used {used:,} of {cap:,} {unit}; {max(cap - used, 0):,} remaining."
+            return f"Used {budget_amount(used, budget_type)}{unit}; no limit."
+        left = budget_amount(max(cap - used, 0), budget_type)
+        return f"Used {budget_amount(used, budget_type)} of {budget_amount(cap, budget_type)}{unit}; {left} remaining."
 
     return ToolDef(execute, name="check_budget").as_tool()
 
@@ -367,7 +403,7 @@ def default_protocol_prompt(
     messaging: bool,
     registry: bool,
     selection_rule: str = DEFAULT_SELECTION_RULE,
-    budget_tokens: int = 0,
+    budget_tokens: float = 0,
     budget_type: str = "all",
     deliverable: str | None = None,
     budget_warnings: tuple[float, ...] = (),
@@ -454,6 +490,13 @@ def default_protocol_prompt(
     lines.append("")
     if budget_type == "output":
         lines.append(f"You have a budget of {budget_tokens:,} output tokens (everything you generate, including reasoning).")
+    elif budget_type == "cost":
+        lines.append(
+            f"You have a budget of ${budget_tokens:,.2f}, counting every model call at its API price: everything "
+            "sent to the model on each call (your conversation so far, tool results"
+            + (", messages you receive" if messaging else "")
+            + ") and everything it generates, including reasoning."
+        )
     else:
         lines.append(
             f"You have a budget of {budget_tokens:,} tokens, counting everything sent to and generated by "
@@ -602,9 +645,9 @@ class CpuMonitor:
         return summarise_cpu(self.samples)
 
 
-async def _confirmed_docker_container() -> str | None:
-    """Return None if the sandbox is positively a Linux Docker container, else why not."""
-    sb = sandbox()
+async def _confirmed_docker_container(name: str | None = None) -> str | None:
+    """Return None if the sandbox `name` (default: the agents' box) is positively a Linux Docker container, else why not."""
+    sb = sandbox(name)
     real = getattr(sb, "_sandbox", sb)
     if not isinstance(real, DockerSandboxEnvironment):
         return f"not a Docker sandbox ({type(real).__name__})"
@@ -614,12 +657,12 @@ async def _confirmed_docker_container() -> str | None:
     return None
 
 
-async def snapshot_container_pids() -> list[int] | None:
-    """PIDs running in the container before agents start; None outside a container."""
+async def snapshot_container_pids(name: str | None = None) -> list[int] | None:
+    """PIDs running in the container `name` before agents start; None outside a container."""
     try:
-        if await _confirmed_docker_container() is not None:
+        if await _confirmed_docker_container(name) is not None:
             return None
-        result = await sandbox().exec(["sh", "-c", _PID_SNAPSHOT], timeout=30)
+        result = await sandbox(name).exec(["sh", "-c", _PID_SNAPSHOT], timeout=30)
     except Exception:
         return None
     if not result.success:
@@ -627,7 +670,7 @@ async def snapshot_container_pids() -> list[int] | None:
     return [int(p) for p in result.stdout.split() if p.isdigit()]
 
 
-async def kill_agent_processes(baseline_pids: list[int] | None = None) -> str:
+async def kill_agent_processes(baseline_pids: list[int] | None = None, name: str | None = None) -> str:
     """Kill processes started during the swarm, but only inside a Docker container.
 
     Scoring runs in the same container and AlgoTune scoring is timing-sensitive,
@@ -642,10 +685,11 @@ async def kill_agent_processes(baseline_pids: list[int] | None = None) -> str:
 
     Processes in `baseline_pids` (snapshotted before the agents started) are spared,
     so the container's own processes survive. Without a baseline nothing is killed.
+    `name` picks the sandbox (default: the agents' box; AlgoTune also clears its checker before each timing).
     """
-    sb = sandbox()
+    sb = sandbox(name)
     try:
-        reason = await _confirmed_docker_container()
+        reason = await _confirmed_docker_container(name)
         if reason is not None:
             return f"skipped: {reason}"
         if baseline_pids is None:

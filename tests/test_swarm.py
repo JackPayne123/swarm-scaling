@@ -15,12 +15,14 @@ from inspect_ai.dataset import Sample
 from inspect_ai.event import ToolEvent
 from inspect_ai.log import EvalLog
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
+from inspect_ai.model._model_info import clear_model_info_cache
 from inspect_ai.tool import ToolDef
 from inspect_ai.util import ExecResult
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
 from inspect_ai.util._sandbox.events import SandboxEnvironmentProxy
 from inspect_ai.util._sandbox.local import LocalSandboxEnvironment
 
+from swarm_scaling import prices
 from swarm_scaling import swarm as swarm_module
 from swarm_scaling.swarm import Candidate, kill_agent_processes, snapshot_container_pids, swarm
 
@@ -163,6 +165,35 @@ def test_token_limit_stops_one_agent_while_others_continue(tmp_path: Path) -> No
     assert agents["agent_1"]["limit_hit"] is None
 
 
+def test_dollar_budget_meters_each_call_at_its_price_and_cache_rates(tmp_path: Path, monkeypatch) -> None:
+    # Models differ in price and caching, so budgets match on dollars: cache writes 1.25x input, reads 0.1x.
+    monkeypatch.setitem(prices.PRICES, "mockllm/model", (2.0, 10.0))  # $ per 1M input, output
+    usage = ModelUsage(
+        input_tokens=1000, input_tokens_cache_write=2000, input_tokens_cache_read=10_000, output_tokens=500
+    )
+    per_call = (1000 * 2.0 + 2000 * 2.5 + 10_000 * 0.2 + 500 * 10.0) / 1e6  # $0.014
+    try:
+        log = run_swarm(
+            tmp_path,
+            swarm(
+                models=[scripted(*[call("bash", usage=usage, command="true") for _ in range(5)])],
+                per_agent_tokens=0.03,  # dollars: the third call goes over
+                budget_type="cost",
+                workspace_root=str(tmp_path / "ws"),
+            ),
+        )
+    finally:
+        clear_model_info_cache()
+    agent = swarm_meta(log)["agents"]["agent_0"]
+    assert agent["limit_hit"] == "cost"
+    assert agent["tokens"]["metered"] == pytest.approx(3 * per_call)
+    assert agent["tokens"]["input_tokens_cache_read"] == 30_000
+    prompt = " ".join(m.text for m in log.samples[0].messages if m.role == "user")
+    assert "You have a budget of $0.03, counting every model call at its API price" in prompt
+    with pytest.raises(ValueError, match="no single price"):
+        swarm(models=["openai/unpriced-model"], per_agent_tokens=5, budget_type="cost")
+
+
 def test_wait_for_message_returns_when_all_others_finished(tmp_path: Path) -> None:
     log = run_swarm(
         tmp_path,
@@ -212,6 +243,37 @@ def test_publish_candidate_is_immutable_and_listed(tmp_path: Path) -> None:
     agents = swarm_meta(log)["agents"]
     assert agents["agent_0"]["candidates_published"] == ["agent_0-0"]
     assert agents["agent_1"]["candidates_read"] == ["agent_0-0"]
+
+
+def test_published_file_with_any_name_is_saved_under_the_candidate_name(tmp_path: Path) -> None:
+    # Pilot 3: 13 of 23 team publishes were files like v5.py, which finalize never found (it reads solver.py).
+    ws = tmp_path / "ws"
+    v5 = ws / "agents" / "agent_0" / "v5.py"
+    seen: list[list[Candidate]] = []
+
+    async def finalize(state, candidates):
+        seen.append(candidates)
+
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("bash", command=f"mkdir -p {v5.parent} && echo 'class Solver: ...' > {v5}"),
+                    call("publish_candidate", path=str(v5), note="v5"),
+                    submit(),
+                )
+            ],
+            per_agent_tokens=100_000,
+            workspace_root=str(ws),
+            finalize=finalize,
+            candidate_file="solver.py",
+        ),
+    )
+    (published,) = [c for c in seen[0] if c.kind == "published"]
+    assert (Path(published.path) / "solver.py").read_text() == "class Solver: ...\n"
+    (event,) = tool_events(log, "publish_candidate")
+    assert f"saved as {published.path}/solver.py" in str(event.result)
 
 
 def test_one_agent_raising_does_not_cancel_others(tmp_path: Path) -> None:

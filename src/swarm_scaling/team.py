@@ -146,11 +146,14 @@ class Team:
         workspace_root: str,
         reveal_model_family: bool = False,
         tool_style: ToolStyle = "default",
+        candidate_file: str | None = None,
     ) -> None:
         self.root = workspace_root.rstrip("/")
         self.registry_dir = f"{self.root}/registry"
         self.reveal_model_family = reveal_model_family
         self.tool_style = tool_style
+        # a published single file is saved under this name (AlgoTune: solver.py, the name finalize reads)
+        self.candidate_file = candidate_file
         self.agents: dict[str, AgentRecord] = {
             aid: AgentRecord(aid, name, f"{self.root}/agents/{aid}")
             for aid, name in zip(agent_ids, model_names, strict=True)
@@ -385,13 +388,14 @@ class Team:
         rec = self.agents[agent_id]
         entry_id = f"{agent_id}-{len(rec.published)}"
         dest = f"{self.registry_dir}/{entry_id}"
+        file_dest = f'"$dest"/{shlex.quote(self.candidate_file)}' if self.candidate_file else '"$dest"/'
         script = (
             "set -e\n"
             f"src={shlex.quote(path)}; dest={shlex.quote(dest)}\n"
             '[ -e "$src" ] || { echo "no such path: $src" >&2; exit 2; }\n'
             '[ -e "$dest" ] && { echo "registry entry exists: $dest" >&2; exit 3; }\n'
             'mkdir -p "$dest"\n'
-            'if [ -d "$src" ]; then cp -R "$src"/. "$dest"/; else cp "$src" "$dest"/; fi\n'
+            f'if [ -d "$src" ]; then cp -R "$src"/. "$dest"/; else cp "$src" {file_dest}; echo file; fi\n'
             'chmod -R a-w "$dest"\n'
         )
         result = await sandbox().exec(["sh", "-c", script], timeout=120)
@@ -411,7 +415,13 @@ class Team:
         await sandbox().write_file(
             f"{self.registry_dir}/{entry_id}.json", json.dumps(asdict(entry), indent=2)
         )
-        return f"Published {entry_id} at {dest} (read-only copy of {path})."
+        renamed = (
+            self.candidate_file is not None
+            and result.stdout.strip() == "file"
+            and path.rstrip("/").rsplit("/", 1)[-1] != self.candidate_file
+        )
+        saved_as = f", saved as {dest}/{self.candidate_file}" if renamed else ""
+        return f"Published {entry_id} at {dest} (read-only copy of {path}{saved_as})."
 
     def list_entries(self, agent_id: str) -> str:
         rec = self.agents[agent_id]
@@ -607,12 +617,17 @@ def with_delivery(tool: Tool, team: Team, agent_id: str) -> Tool:
     return _rewrap(tdef, execute)
 
 
+def budget_amount(value: float, budget_type: str) -> str:
+    """A budget quantity as agents see it: dollars for a cost budget ("$1.25"), else a token count ("1,250")."""
+    return f"${value:,.2f}" if budget_type == "cost" else f"{int(value):,}"
+
+
 def with_budget_notices(
     tool: Tool, limit: Any, rec: AgentRecord, thresholds: tuple[float, ...], budget_type: str = "all"
 ) -> Tool:
     """Wrap a tool so a notice is appended to its result when the agent's usage passes a threshold.
 
-    `limit` is the agent's own token limit (``.usage``, ``.limit``). Each threshold is announced
+    `limit` is the agent's own token or cost limit (``.usage``, ``.limit``). Each threshold is announced
     once; when several are passed at once only the highest is announced.
     """
     tdef = ToolDef(tool)
@@ -622,15 +637,16 @@ def with_budget_notices(
         result = await inner(**kwargs)
         if limit.limit is None:
             return result
-        used, cap = int(limit.usage), int(limit.limit)
+        used, cap = limit.usage, limit.limit
         # usage only grows, so every threshold up to the last one announced is done
         done = max((n["threshold"] for n in rec.budget_notices), default=0.0)
         passed = [t for t in thresholds if t > done and used >= t * cap]
         if not passed:
             return result
         rec.budget_notices.append({"threshold": max(passed), "used": used, "at": time.time()})
-        unit = "output-token" if budget_type == "output" else "token"
-        notice = f"[budget] You have used {used * 100 // cap}% of your {unit} budget ({used:,} of {cap:,})."
+        unit = {"output": "output-token ", "cost": ""}.get(budget_type, "token ")
+        amounts = f"{budget_amount(used, budget_type)} of {budget_amount(cap, budget_type)}"
+        notice = f"[budget] You have used {int(used * 100 // cap)}% of your {unit}budget ({amounts})."
         return _append_messages(result, notice)
 
     return _rewrap(tdef, execute)

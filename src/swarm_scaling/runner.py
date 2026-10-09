@@ -11,7 +11,7 @@ Every arm can save candidates (registry=True); only team/registry arms share the
 Usage (keys from scripts/env.sh):
   source scripts/env.sh
   uv run python -m swarm_scaling.runner --arm solo --models openai-api/zai/glm-5.3-flash \\
-      --budget 300000 --sample algotune/cvar-projection --name pilot-solo-glm
+      --budget 5 --sample algotune/cvar-projection --name pilot-solo-glm   # $5 per agent
 """
 
 from __future__ import annotations
@@ -31,12 +31,13 @@ from swarm_scaling.tasks import LOG_DIR, agent_memory_mb, algotune_task
 ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (measured as the dev_eval tool measures)"
 ALGOTUNE_DELIVERABLE = (
     "a file named solver.py defining class Solver with a solve method, as the task describes "
-    "(only files named solver.py are considered, in a published candidate or your working directory)"
+    "(a published file is saved as solver.py; in a published folder or your working directory, "
+    "only a file named solver.py is considered)"
 )
 ARMS = ("solo", "independent", "team", "registry")
 
 
-def arm_config(arm: str, models: list[str], n: int, budget: int, mult: int) -> dict:
+def arm_config(arm: str, models: list[str], n: int, budget: float, mult: int) -> dict:
     """Swarm settings for one arm; validates the combination."""
     if arm not in ARMS:
         raise ValueError(f"arm must be one of {ARMS}")
@@ -78,14 +79,17 @@ def main() -> None:
     p.add_argument("--arm", required=True, choices=ARMS)
     p.add_argument("--models", required=True, help="comma-separated; a mixed team cycles through them")
     p.add_argument("--n", type=int, default=1, help="agents in one container (team/registry arms)")
-    p.add_argument("--budget", type=int, required=True, help="base per-agent token budget b")
+    p.add_argument("--budget", type=float, required=True,
+                   help="base per-agent budget b: US dollars with --budget-type cost (default), else tokens")
     p.add_argument("--mult", type=int, default=1, help="solo arm: budget multiplier (1, 2, 4, 8)")
     p.add_argument("--split", default="pilot", choices=("pilot", "heldout"))
     p.add_argument("--sample", action="append", help="sample id(s); default: the whole split")
     p.add_argument("--epochs", type=int, default=1, help="repeats per sample")
     p.add_argument("--time-limit", type=int, default=3600, help="per-agent wall-clock seconds")
     p.add_argument("--name", required=True, help="run name; logs go to logs/<name>/")
-    p.add_argument("--budget-type", default="all", help='what --budget meters: "all" (default: input incl. cached + output) or "output"')
+    p.add_argument("--budget-type", default="cost",
+                   help='what --budget meters: "cost" (default: dollars at swarm_scaling.prices), '
+                        '"all" (input incl. cached + output tokens) or "output"')
     p.add_argument("--reasoning-effort", default=None, help="explicit reasoning effort for every model (e.g. high)")
     p.add_argument("--tool-style", default="default", choices=("default", "claude_code"),
                    help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
@@ -96,13 +100,16 @@ def main() -> None:
     args = p.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    config = arm_config(args.arm, models, args.n, args.budget, args.mult)
+    if args.budget_type != "cost" and not args.budget.is_integer():
+        p.error("a token budget must be a whole number")
+    budget = args.budget if args.budget_type == "cost" else int(args.budget)
+    config = arm_config(args.arm, models, args.n, budget, args.mult)
     memory_mb = agent_memory_mb(args.parallel)
     metadata = {
         "arm": args.arm,
         "n": args.n,
         "models": config["models"],
-        "budget_b": args.budget,
+        "budget_b": budget,
         "mult": args.mult,
         "per_agent_tokens": config["per_agent_tokens"],
         "budget_type": args.budget_type,
@@ -138,6 +145,7 @@ def main() -> None:
             tool_style=args.tool_style,
             agent_tools=algotune_agent_tools,
             final_path=SOLVER_PATH,
+            candidate_file="solver.py",
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

@@ -2,7 +2,7 @@
 
 Usage: uv run python scripts/run_cost.py <log.eval | dir> [...]
 
-Prices are USD per 1M tokens (list prices from Artificial Analysis, 2026-10-06). Cache multipliers:
+Prices are USD per 1M tokens (swarm_scaling.prices, shared with the dollar budget). Cache multipliers:
 Anthropic's published 0.1x input for cache reads and 1.25x for 5-minute cache writes; Google and
 DeepSeek cache-read rates are not checked and use CACHE_READ_FALLBACK (stated in the output).
 Check against the provider's billing before relying on totals.
@@ -13,16 +13,8 @@ from pathlib import Path
 
 from inspect_ai.log import read_eval_log
 
-PRICES = {  # model substring -> (input, output)
-    "claude-opus-5-5": (4.0, 20.0),
-    "claude-sonnet-5-5": (2.0, 10.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "gpt-6.1-sol": (2.0, 10.0),
-    "gpt-6-luna": (0.10, 0.50),
-    "gemini-3.8-flash": (0.75, 3.75),
-    "deepseek-v4.1-flash": (0.30, 1.20),
-    "glm-5.3-flash": (0.15, 0.50),
-}
+from swarm_scaling.prices import PRICES
+
 ANTHROPIC_CACHE_READ, ANTHROPIC_CACHE_WRITE = 0.10, 1.25
 CACHE_READ_FALLBACK = 0.25  # unchecked providers: upper end of the 10-25% range used in PLAN.md
 
