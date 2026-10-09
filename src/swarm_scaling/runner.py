@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -98,6 +99,8 @@ def main() -> None:
                    help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
     p.add_argument("--parallel", type=int, default=1,
                    help="samples (incl. epochs) run at once; timed checker runs stay one at a time, agent boxes get less memory")
+    p.add_argument("--checker", default="local", choices=("local", "remote"),
+                   help="remote: every timed run goes to the scorer service at SCORER_URL (token SCORER_TOKEN)")
     p.add_argument("--cpus-per-agent", type=int, default=4,
                    help="agent box CPUs = this x agents in the sample; the checker has 8 more (the Docker host must have both)")
     p.add_argument("--max-retries", type=int, default=3)
@@ -131,17 +134,19 @@ def main() -> None:
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
         "parallel": args.parallel,
-        "cpus_per_agent": args.cpus_per_agent,  # cpusets and memory limits: algotune_task adds them to the log metadata
+        "cpus_per_agent": args.cpus_per_agent,
+        "checker": args.checker,  # cpusets and memory limits: algotune_task adds them to the log metadata
         "launched_at": time.time(),
     }
     log_dir = LOG_DIR / args.name
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / "run.json").write_text(json.dumps({**metadata, "argv": vars(args)}, indent=2))
 
+    os.environ["SWARM_RUN_ID"] = args.name  # labels remote scorer jobs
     wait_for_docker_images()
     logs = eval(
         algotune_task(split=args.split, cpus_per_agent=args.cpus_per_agent, n_agents=len(config["models"]),
-                      parallel=args.parallel),
+                      parallel=args.parallel, checker_backend=args.checker),
         solver=swarm(
             models=config["models"],
             per_agent_tokens=config["per_agent_tokens"],

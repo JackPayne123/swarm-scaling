@@ -12,6 +12,7 @@ ends every checker process started since setup (`end_checker_processes`).
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.tool import Tool, ToolDef, ToolError
 from inspect_ai.util import sandbox
 
+from swarm_scaling import scorer_client
 from swarm_scaling.swarm import Candidate, kill_agent_processes, snapshot_container_pids
 
 ASSETS = Path(__file__).parent / "algotune_assets"
@@ -61,6 +63,8 @@ async def _install_toolkit(state: TaskState) -> None:
     box = sandbox()
     await box.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
     await box.write_file(f"{DEV_DIR}/README.md", (ASSETS / "README.md").read_text())
+    if remote(state):  # the scorer service holds its own copy
+        return
 
     checker = sandbox(CHECKER)
     await checker.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
@@ -75,8 +79,9 @@ def algotune_setup() -> Solver:
 
     async def setup(state: TaskState, generate: Generate) -> TaskState:
         await _install_toolkit(state)
-        # before any solver has run, so only the checker's own processes are spared later
-        state.metadata[CHECKER_PIDS] = await snapshot_container_pids(CHECKER)
+        if not remote(state):
+            # before any solver has run, so only the checker's own processes are spared later
+            state.metadata[CHECKER_PIDS] = await snapshot_container_pids(CHECKER)
         state.user_prompt.text += f"\n\n{DEV_TOOLKIT_NOTE}"
         return state
 
@@ -107,6 +112,58 @@ def pick_best(results: list[DevResult]) -> DevResult | None:
             r.candidate.path,
         ),
     )
+
+
+def remote(state: TaskState) -> bool:
+    """True when this sample's timed runs go to the remote scorer service (algotune_task checker_backend)."""
+    return state.metadata.get("checker_backend", "local") == "remote"
+
+
+def scorer_job(state: TaskState, kind: str, source: bytes, agent_id: str = "", **args: Any) -> dict:
+    """A scorer_service job for this sample."""
+    return {
+        "kind": kind,
+        "task": state.metadata["algotune_task_name"],
+        "solver_source": source.decode(errors="replace"),
+        "run_id": os.environ.get("SWARM_RUN_ID", ""),
+        "agent_id": agent_id,
+        "sample_id": f"{state.sample_id}/e{state.epoch}",
+        **args,
+    }
+
+
+def remote_timing(rec: dict) -> dict:
+    """Telemetry of a finished scorer job, in the shape of the local checker's plus where it ran."""
+    keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id")
+    return {k: rec.get(k) for k in keep}
+
+
+async def timed_dev_eval(
+    state: TaskState, kind: str, source: bytes, run_dir: str, agent_id: str, n: int, seed: int, reps: int = 10,
+    size: int | None = None, timeout: int = DEV_EVAL_TIMEOUT_S,
+) -> tuple[dict | None, str, dict]:
+    """One dev_eval run of `source`, locally in the checker or on the remote scorer: (result, report, timing).
+
+    Local: holds CHECKER_LOCK and first kills leftover checker processes. Remote: the service's FIFO queue and a
+    fresh container per job do both; the timing then also says which slot, host and CPU model ran it.
+    """
+    if remote(state):
+        rec = await scorer_client.run_job(scorer_job(state, kind, source, agent_id, n=n, seed=seed, reps=reps, size=size))
+        if rec["status"] == "done":
+            return rec["result"], rec["output"], remote_timing(rec)
+        return None, rec["error"], remote_timing(rec)
+    args = ["--n", str(n), "--seed", str(seed), "--reps", str(reps)] + (["--size", str(size)] if size is not None else [])
+    requested = time.time()
+    async with CHECKER_LOCK:
+        started = time.time()
+        cleanup = await end_checker_processes(state)
+        detail, report = await run_dev_eval(source, run_dir, args, timeout)
+        ended = time.time()
+    timing = {
+        "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended,
+        "run_s": round(ended - started, 3), "cleanup": cleanup,
+    }  # fmt: skip
+    return detail, report, timing
 
 
 async def end_checker_processes(state: TaskState) -> str:
@@ -153,16 +210,10 @@ def _first_errors(detail: dict) -> str:
 
 
 async def _dev_eval(state: TaskState, candidate: Candidate, source: bytes, index: int) -> DevResult:
-    args = ["--n", str(FINAL_DEV_N), "--seed", str(FINAL_DEV_SEED)]
-    requested = time.time()
-    async with CHECKER_LOCK:
-        started = time.time()
-        cleanup = await end_checker_processes(state)
-        detail, report = await run_dev_eval(source, f"{CHECK_DIR}/final_{index}", args, FINAL_TIMEOUT_S)
-        ended = time.time()
-    timing = {
-        "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
-    }
+    detail, report, timing = await timed_dev_eval(
+        state, "final_eval", source, f"{CHECK_DIR}/final_{index}", candidate.agent_id,
+        n=FINAL_DEV_N, seed=FINAL_DEV_SEED, timeout=FINAL_TIMEOUT_S,
+    )  # fmt: skip
     if detail is None:
         return DevResult(candidate, False, None, error=report, detail=timing)
     return DevResult(
@@ -210,32 +261,25 @@ class Checker:
                 source = await sandbox().read_file(path, text=False)
             except (FileNotFoundError, IsADirectoryError):
                 raise ToolError(f"no such file: {path}")
-            args = ["--n", str(n), "--seed", str(seed), "--reps", str(reps)]
-            if size is not None:
-                args += ["--size", str(size)]
             requested = time.time()
-            async with CHECKER_LOCK:
-                started = time.time()
-                run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
-                cleanup = await end_checker_processes(self.state)
-                detail, report = await run_dev_eval(source, run_dir, args, DEV_EVAL_TIMEOUT_S)
-                ended = time.time()
-                self.calls.append({
-                    "agent_id": agent_id,
-                    "path": path,
-                    "started_at": requested,  # when the call was made, before queueing
-                    "queue_wait_s": round(started - requested, 3),
-                    "run_s": round(ended - started, 3),
-                    "valid": None if detail is None else detail["valid"],
-                    "speedup": None if detail is None else detail["speedup"],
-                    "error": report if detail is None else _first_errors(detail),
-                    "thread_check": None if detail is None else detail["thread_check"],
-                    "first_call_ratio": None if detail is None else detail["first_call_ratio"],
-                    "n": n,
-                    "seed": seed,
-                    "cleanup": cleanup,
-                })  # fmt: skip
-            head = f"[dev_eval] waited {started - requested:.1f}s in the queue, ran {ended - started:.1f}s."
+            run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
+            detail, report, timing = await timed_dev_eval(
+                self.state, "dev_eval", source, run_dir, agent_id, n=n, seed=seed, reps=reps, size=size
+            )
+            self.calls.append({
+                "agent_id": agent_id,
+                "path": path,
+                **timing,
+                "started_at": requested,  # when the call was made, before queueing
+                "valid": None if detail is None else detail["valid"],
+                "speedup": None if detail is None else detail["speedup"],
+                "error": report if detail is None else _first_errors(detail),
+                "thread_check": None if detail is None else detail["thread_check"],
+                "first_call_ratio": None if detail is None else detail["first_call_ratio"],
+                "n": n,
+                "seed": seed,
+            })  # fmt: skip
+            head = f"[dev_eval] waited {timing['queue_wait_s']:.1f}s in the queue, ran {timing['run_s']:.1f}s."
             return f"{head}\n{report}"
 
         return ToolDef(execute, name="dev_eval").as_tool()

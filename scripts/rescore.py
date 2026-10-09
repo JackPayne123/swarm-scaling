@@ -8,6 +8,9 @@ other container is running. Samples with no selected solver are skipped and list
 
     cd ~/projects/swarm-scaling-pilot2 && uv run python scripts/rescore.py '../swarm-scaling/logs/pilot3-*' --repeats 2
 
+With --scorer URL (and SCORER_TOKEN set) every scoring is a job on the remote scorer service instead
+(scorer_service.py): all are queued at once and run on its slots; no local Docker and no eval log are used.
+
 Writes analysis/rescore/<timestamp>.jsonl (one row per sample and repeat, with the raw verifier output),
 the rescore eval log under logs/rescore/<timestamp>/, and prints a table.
 The table flags rows whose first-call ratio (verifier: untimed first solver call / min timed call, summed
@@ -18,6 +21,7 @@ solver that compiles on its first call. Verifier timeouts score 1.0 and are flag
 import argparse
 import glob
 import json
+import os
 import re
 import subprocess
 import sys
@@ -25,14 +29,16 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import anyio
 from inspect_ai import Task, eval, task_with
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.log import read_eval_log
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.util import sandbox
 
-from swarm_scaling.algotune_devkit import SOLVER_PATH
-from swarm_scaling.tasks import LOG_DIR, PROJECT_ROOT, algotune_task
+from swarm_scaling import scorer_client
+from swarm_scaling.algotune_devkit import SOLVER_PATH, remote_timing
+from swarm_scaling.tasks import LOG_DIR, PROJECT_ROOT, algotune_task, seed_offset_id, task_names
 
 # Untimed first solver call / min timed call, summed over instances. A solver that caches results by problem
 # identity shows a large ratio; so can one that compiles or initialises lazily on its first call. Review, not scored.
@@ -74,7 +80,8 @@ def collect(files: list[Path]) -> tuple[list[dict], list[dict], set]:
     for f in files:
         log = read_eval_log(str(f))
         meta = log.eval.metadata or {}
-        offsets.add(meta.get("algotune_seed_offset"))
+        # local runs record the offset; remote-scorer runs only its fingerprint
+        offsets.add(meta.get("algotune_seed_offset", meta.get("seed_offset_id")))
         for s in log.samples or []:
             source = (s.metadata.get("finalize") or {}).get("selected_source")
             info = {
@@ -119,38 +126,81 @@ def result_row(sample) -> dict:
     }  # fmt: skip
 
 
+def remote_results(rows: list[dict], offsets: set, repeats: int) -> list[dict]:
+    """Score every row `repeats` times as jobs on the remote scorer (SCORER_URL / SCORER_TOKEN), all queued at once.
+
+    Refuses logs scored with another seed offset than the service's (compared by fingerprint).
+    """
+    service = scorer_client.health()
+    ids = {o if isinstance(o, str) else seed_offset_id(o) for o in offsets}
+    if ids != {service["seed_offset_id"]}:
+        raise ValueError(f"logs were scored with seed offset id(s) {sorted(ids, key=str)}, the scorer uses {service['seed_offset_id']}")
+    names = task_names()
+    results: list[dict] = []
+
+    async def one(r: dict, repeat: int) -> None:
+        job = {
+            "kind": "score", "task": names[r["task"]], "solver_source": r["source"], "run_id": "rescore",
+            "agent_id": "", "sample_id": f"{r['run']}/{r['task']}/e{r['epoch']}",
+        }  # fmt: skip
+        rec = await scorer_client.run_job(job)
+        res = rec["result"] if rec["status"] == "done" else None
+        row = {k: v for k, v in r.items() if k != "source"}
+        results.append({
+            **row, "repeat": repeat, "rescore": res["score"] if res else None, "valid": res["valid"] if res else None,
+            "first_call_ratio": res["first_call_ratio"] if res else None,
+            "scoring_timeout": res["scoring_timeout"] if res else None, "checker": remote_timing(rec),
+            "verifier_output": res["verifier_stdout"] if res else rec["error"],
+        })  # fmt: skip
+
+    async def run_all() -> None:
+        async with anyio.create_task_group() as tg:
+            for r in rows:
+                for repeat in range(1, repeats + 1):
+                    tg.start_soon(one, r, repeat)
+
+    anyio.run(run_all)
+    return results
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
     p.add_argument("--repeats", type=int, default=1, help="scorings per solver (to measure rescore noise)")
+    p.add_argument("--scorer", help="score on the remote scorer service at this URL (token: SCORER_TOKEN)")
     args = p.parse_args()
 
-    running = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split()
-    if running:
-        sys.exit(f"{len(running)} container(s) running; rescore needs Docker otherwise idle")
+    if args.scorer:
+        os.environ["SCORER_URL"] = args.scorer
+    else:
+        running = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True, check=True).stdout.split()
+        if running:
+            sys.exit(f"{len(running)} container(s) running; rescore needs Docker otherwise idle")
 
     rows, skipped, offsets = collect(eval_files(args.logs))
     for r in skipped:
         print(f"skipped (no selected solver): {r['run']} {r['task']} epoch {r['epoch']}")
     if not rows:
         sys.exit("nothing to rescore")
-    task, samples = build(rows, offsets)
-
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    (log,) = eval(
-        task_with(task, dataset=MemoryDataset(samples), solver=install_selected()),
-        model="mockllm/model",
-        epochs=args.repeats,
-        max_samples=1,
-        max_sandboxes=1,
-        log_dir=str(LOG_DIR / "rescore" / stamp),
-        display="none",
-    )
-    print("status:", log.status, log.error or "", log.location)
+    if args.scorer:
+        results = remote_results(rows, offsets, args.repeats)
+    else:
+        task, samples = build(rows, offsets)
+        (log,) = eval(
+            task_with(task, dataset=MemoryDataset(samples), solver=install_selected()),
+            model="mockllm/model",
+            epochs=args.repeats,
+            max_samples=1,
+            max_sandboxes=1,
+            log_dir=str(LOG_DIR / "rescore" / stamp),
+            display="none",
+        )
+        print("status:", log.status, log.error or "", log.location)
+        results = [result_row(s) for s in read_eval_log(log.location).samples or []]
 
     out = PROJECT_ROOT / "analysis" / "rescore" / f"{stamp}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
-    results = [result_row(s) for s in read_eval_log(log.location).samples or []]
     with out.open("w") as fh:
         for r in results:
             fh.write(json.dumps(r) + "\n")

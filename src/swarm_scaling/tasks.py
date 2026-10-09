@@ -1,5 +1,6 @@
 """Task factories for the swarm-scaling experiments."""
 
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from inspect_ai.solver import TaskState
 from inspect_ai.util import ComposeConfig, SandboxEnvironmentSpec, sandbox, sandbox_default
 from inspect_harbor import algotune, harbor_scorer
 
+from swarm_scaling import scorer_client
 from swarm_scaling.algotune_devkit import (
     ASSETS,
     CHECKER,
@@ -25,6 +27,9 @@ from swarm_scaling.algotune_devkit import (
     SOLVER_PATH,
     algotune_setup,
     end_checker_processes,
+    remote,
+    remote_timing,
+    scorer_job,
 )
 
 SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json"
@@ -128,6 +133,8 @@ def algotune_scorer() -> Scorer:
     verify = harbor_scorer()
 
     async def score(state: TaskState, target: Target) -> Score:
+        if remote(state):
+            return await _remote_score(state)
         requested = time.time()
         async with CHECKER_LOCK:
             started = time.time()
@@ -155,6 +162,39 @@ def algotune_scorer() -> Scorer:
         return result
 
     return score
+
+
+async def _remote_score(state: TaskState) -> Score:
+    """algotune_scorer for the remote checker: one `score` job on the scorer service, scored as the local path does.
+
+    The service runs the same seeded verifier in a fresh container on a scorer slot and applies the same timeout
+    semantics (1.0 with scoring_timeout). No /app/solver.py scores 0 without a job, as the verifier would.
+    """
+    try:
+        source = await sandbox().read_file(SOLVER_PATH, text=False)
+    except FileNotFoundError:
+        return Score(value=0.0, explanation=f"no {SOLVER_PATH}", metadata={
+            "log_speedup": 0.0, "scoring_timeout": False, "first_call_ratio": None, "checker": None,
+        })  # fmt: skip
+    try:
+        rec = await scorer_client.run_job(scorer_job(state, "score", source))
+    except TimeoutError as ex:  # the service did not end the job in time: score as a verifier timeout
+        return Score(value=1.0, explanation=str(ex), metadata={
+            "log_speedup": 0.0, "scoring_timeout": True, "first_call_ratio": None, "checker": None,
+        })  # fmt: skip
+    if rec["status"] != "done":
+        raise RuntimeError(f"scorer job {rec['job_id']} failed: {rec['error']}")
+    r = rec["result"]
+    return Score(
+        value=r["score"],
+        explanation=r["verifier_stdout"],
+        metadata={
+            "log_speedup": math.log(_speedup(r["score"])),
+            "scoring_timeout": r["scoring_timeout"],
+            "first_call_ratio": r["first_call_ratio"],
+            "checker": remote_timing(rec),
+        },
+    )
 
 
 def seed_with_offset(test_outputs: str) -> str:
@@ -328,17 +368,32 @@ def docker_host() -> tuple[int, int]:
     return int(cpus), int(memory) // 2**20
 
 
-def box_resources(cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int) -> dict:
+def box_resources(
+    cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int, checker: bool = True
+) -> dict:
     """CPUs, cpusets and memory limits of the agent box and the checker on a Docker host of this size.
 
     Every agent gets the same CPUs: the agent box has cpus_per_agent x n_agents CPUs (0..A-1), the checker
     CHECKER_CPUS (A..A+7), so agent work cannot disturb the checker's timings. Only one checker times at a
     time (CHECKER_LOCK), so the `parallel` agent boxes share the host memory left after one checker and
     HOST_HEADROOM_MB. With parallel > 1 the agent boxes share cpuset 0..A-1 and the checkers A..A+7.
+    checker=False (remote scorer): no checker on this host, so nothing is reserved for it.
     """
     if min(cpus_per_agent, n_agents, parallel) < 1:
         raise ValueError("cpus_per_agent, n_agents and parallel must be >= 1")
     agent_cpus = cpus_per_agent * n_agents
+    if not checker:
+        if agent_cpus > host_cpus:
+            raise ValueError(f"{n_agents} agents x {cpus_per_agent} CPUs = {agent_cpus} CPUs, but the Docker host has {host_cpus}")
+        agent_memory_mb = (host_memory_mb - HOST_HEADROOM_MB) // parallel
+        return {
+            "cpus_per_agent": cpus_per_agent,
+            "agent_cpus": agent_cpus,
+            "agent_cpuset": f"0-{agent_cpus - 1}",
+            "agent_memory_mb": agent_memory_mb,
+            "docker_host_cpus": host_cpus,
+            "docker_host_memory_mb": host_memory_mb,
+        }
     if agent_cpus + CHECKER_CPUS > host_cpus:
         raise ValueError(
             f"{n_agents} agents x {cpus_per_agent} CPUs + {CHECKER_CPUS} checker CPUs = {agent_cpus + CHECKER_CPUS} "
@@ -366,15 +421,52 @@ def add_checker(config: ComposeConfig, resources: dict) -> None:
     Pins both boxes to their cpusets from `box_resources` and sets their CPU and memory limits.
     ComposeService has no cpuset field; extras set after construction reach the generated YAML.
     """
-    default = config.services["default"]
-    default.cpus = float(resources["agent_cpus"])
-    default.mem_limit = f"{resources['agent_memory_mb']}m"
+    default = _limit_agent_box(config, resources)
     checker = default.model_copy(deep=True)
     checker.cpus = float(resources["checker_cpus"])
     checker.mem_limit = f"{resources['checker_memory_mb']}m"
-    default.__pydantic_extra__["cpuset"] = resources["agent_cpuset"]
     checker.__pydantic_extra__["cpuset"] = resources["checker_cpuset"]
     config.services[CHECKER] = checker
+
+
+def _limit_agent_box(config: ComposeConfig, resources: dict):
+    """Set the agent box's CPUs, memory and cpuset from `box_resources`; returns the service."""
+    default = config.services["default"]
+    default.cpus = float(resources["agent_cpus"])
+    default.mem_limit = f"{resources['agent_memory_mb']}m"
+    default.__pydantic_extra__["cpuset"] = resources["agent_cpuset"]
+    return default
+
+
+def seed_offset_id(offset: int) -> str:
+    """A short fingerprint of the seed offset for logs: shows which offset scored a run without stating it.
+
+    The offset range is small enough to brute-force from this, so it only keeps the offset out of plain sight.
+    """
+    return hashlib.sha256(f"algotune-seed-offset:{offset}".encode()).hexdigest()[:16]
+
+
+def seed_verifier(sample, offset: int) -> Path:
+    """Write our patched copy of the sample's Harbor tests (seed offset, thread check, first-call ratio) with the
+    offset file, point the sample's test_path and tests_dir at it, and return it. The hub cache is shared between
+    runs, so the seeded verifier is a copy."""
+    tests_dir = Path(sample.metadata["tests_dir"])
+    seeded_dir = VERIFIER_DIR / str(sample.id).replace("/", "_")
+    shutil.rmtree(seeded_dir, ignore_errors=True)
+    shutil.copytree(tests_dir, seeded_dir)
+    test_outputs = seeded_dir / "test_outputs.py"
+    test_outputs.write_text(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text()))))
+    shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
+    (seeded_dir / "seed_offset").write_text(f"{offset}\n")
+    sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))
+    sample.metadata["tests_dir"] = str(seeded_dir)
+    return seeded_dir
+
+
+def task_names() -> dict[str, str]:
+    """Harbor sample id (algotune/dst-type-ii-scipy-fftpack) -> AlgoTune task name (dst_type_II_scipy_fftpack)."""
+    split = json.loads(SPLIT_PATH.read_text())
+    return {_harbor_name(n): n for names in split.values() for n in names}
 
 
 def _harbor_name(task_name: str) -> str:
@@ -388,6 +480,7 @@ def algotune_task(
     cpus_per_agent: int = 4,
     n_agents: int = 1,
     parallel: int = 1,
+    checker_backend: Literal["local", "remote"] = "local",
 ) -> Task:
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
@@ -402,16 +495,28 @@ def algotune_task(
     solver threads use CPU while the reference is timed (`with_thread_guard`). The offset reaches the
     container only at scoring time, as a `seed_offset` file in the copied /tests that the verifier deletes
     before importing the solver, and is recorded in the task metadata. The hub dataset is pinned (ALGOTUNE_REF).
+
+    checker_backend="remote": every timed run goes to the scorer service at SCORER_URL (scorer_service.py), which
+    holds the seed offset and the seeded verifier. The sample gets no checker service, nothing is seeded here,
+    and the task metadata records the service's /health (CPU model, version, seed offset fingerprint) instead of
+    the offset.
     """
     names = json.loads(SPLIT_PATH.read_text())[split]
-    resources = box_resources(cpus_per_agent, n_agents, parallel, *docker_host())
+    is_remote = checker_backend == "remote"
+    resources = box_resources(cpus_per_agent, n_agents, parallel, *docker_host(), checker=not is_remote)
     base = algotune(
         ref=ALGOTUNE_REF,
         dataset_task_names=[_harbor_name(n) for n in names],
         override_cpus=resources["agent_cpus"],
         override_memory_mb=resources["agent_memory_mb"],
     )
-    offset = _seed_offset()
+    if is_remote:
+        backend_meta = {"checker_backend": "remote", "scorer": scorer_client.health()}
+        backend_meta["seed_offset_id"] = backend_meta["scorer"]["seed_offset_id"]
+    else:
+        offset = _seed_offset()
+        backend_meta = {"checker_backend": "local", "algotune_seed_offset": offset, "seed_offset_id": seed_offset_id(offset)}
+    names_by_id = task_names()
     for sample in base.dataset:
         config = sample.sandbox.config
         assert isinstance(config, ComposeConfig)
@@ -424,7 +529,12 @@ def algotune_task(
         if service.image:
             service.build = None
             service.__pydantic_extra__["x-local"] = True
-        add_checker(config, resources)
+        if is_remote:
+            _limit_agent_box(config, resources)
+        else:
+            add_checker(config, resources)
+        sample.metadata["checker_backend"] = checker_backend
+        sample.metadata["algotune_task_name"] = names_by_id[str(sample.id)]
         # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an
         # inline ComposeConfig when reading them, which rejects cpuset (only x- extras are allowed), so every
         # log would be unreadable. The YAML is what Inspect would generate; it is also kept in sample metadata.
@@ -436,20 +546,11 @@ def algotune_task(
         compose_file.write_text(compose_yaml)
         sample.sandbox = SandboxEnvironmentSpec(sample.sandbox.type, str(compose_file))
         sample.metadata["compose_yaml"] = compose_yaml
-        # The hub cache is shared between runs, so the seeded verifier is a copy; only the scorer reads it.
-        tests_dir = Path(sample.metadata["tests_dir"])
-        seeded_dir = VERIFIER_DIR / str(sample.id).replace("/", "_")
-        shutil.rmtree(seeded_dir, ignore_errors=True)
-        shutil.copytree(tests_dir, seeded_dir)
-        test_outputs = seeded_dir / "test_outputs.py"
-        test_outputs.write_text(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text()))))
-        shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
-        (seeded_dir / "seed_offset").write_text(f"{offset}\n")
-        sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))
-        sample.metadata["tests_dir"] = str(seeded_dir)
+        if not is_remote:  # only the local scorer reads it
+            seed_verifier(sample, offset)
     return task_with(
         base,
         setup=algotune_setup(),
         scorer=algotune_scorer(),
-        metadata={**(base.metadata or {}), "algotune_seed_offset": offset, **resources},
+        metadata={**(base.metadata or {}), **backend_meta, **resources},
     )

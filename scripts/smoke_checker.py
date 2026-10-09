@@ -3,10 +3,16 @@
 Run from the worktree, with nothing else using Docker:
     cd ~/projects/swarm-scaling-pilot2 && uv run python <this file>
 
+Remote scorer (scorer_service.py running, SCORER_URL and SCORER_TOKEN set):
+    uv run python scripts/smoke_checker.py --checker remote
+
 Checks: both containers start with their cpusets; the agent box has no dev_eval.py; both agents' dev_eval
 calls run in the checker (if they overlap, the later one reports a queue wait); telemetry lands in metadata; finalize runs in the
 checker and installs /app/solver.py; the sample scores; the log reads back.
 """
+
+import os
+import sys
 
 from inspect_ai import eval
 from inspect_ai.log import read_eval_log
@@ -38,12 +44,16 @@ def scripted(*calls: tuple[str, dict]):
 
 
 async def finalize(state, candidates):
-    probe = await sandbox("checker").exec(["sh", "-c", PROBE])
-    state.metadata["smoke_checker_probe"] = probe.stdout
+    if state.metadata.get("checker_backend") != "remote":  # remote: no checker container to probe
+        probe = await sandbox("checker").exec(["sh", "-c", PROBE])
+        state.metadata["smoke_checker_probe"] = probe.stdout
     await algotune_finalize(state, candidates)
 
 
 if __name__ == "__main__":
+    # --checker remote: dev_eval, finalize and scoring go to the scorer service (SCORER_URL, SCORER_TOKEN)
+    checker = sys.argv[sys.argv.index("--checker") + 1] if "--checker" in sys.argv else "local"
+    os.environ.setdefault("SWARM_RUN_ID", f"smoke-checker-{checker}")
     a0 = "/app/agents/agent_0/solver.py"
     a1 = "/app/agents/agent_1/solver.py"
     write = lambda path: ("python", {"code": f"open({path!r}, 'w').write({SOLVER!r})"})  # noqa: E731
@@ -52,7 +62,7 @@ if __name__ == "__main__":
         scripted(write(a1), ("bash", {"command": PROBE}), ("dev_eval", {"path": a1, "n": 3}), ("submit", {"answer": "done"})),
     ]
     (log,) = eval(
-        algotune_task(split="pilot"),
+        algotune_task(split="pilot", n_agents=2, checker_backend=checker),
         solver=swarm(models=agents, per_agent_tokens=200_000, finalize=finalize, agent_tools=algotune_agent_tools,
                      final_path=SOLVER_PATH, budget_warnings=()),
         model="mockllm/model",
@@ -71,3 +81,4 @@ if __name__ == "__main__":
     fin = s.metadata.get("finalize", {})
     print("finalize selected:", fin.get("selected"), [(c["agent_id"], c["valid"], c["speedup"], c["error"]) for c in fin.get("candidates", [])])
     print("score:", {k: v.value for k, v in (s.scores or {}).items()})
+    print("score metadata:", {k: v.metadata for k, v in (s.scores or {}).items()})
