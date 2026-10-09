@@ -13,7 +13,9 @@ UPLOAD=${SUDO_USER:+/home/$SUDO_USER}/swarm-upload
 
 if [ "$1" = start ]; then
   mkdir -p "$STATE" && chmod 700 "$STATE"
-  install -m 600 "$UPLOAD/seed_offset" "$REPO/data/.algotune_seed_offset" || exit 1
+  if [ -e "$UPLOAD/seed_offset" ]; then  # absent for --checker remote runs: only the scorer holds it
+    install -m 600 "$UPLOAD/seed_offset" "$REPO/data/.algotune_seed_offset" || exit 1
+  fi
   install -m 600 "$UPLOAD/env" "$STATE/env" || exit 1
   cp "$0" "$STATE/vm_run.sh"
   rm -rf "$UPLOAD"
