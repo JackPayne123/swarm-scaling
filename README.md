@@ -36,4 +36,6 @@ uv run python -m swarm_scaling.runner --arm solo --models google/gemini-3.8-flas
     --budget 60000 --sample algotune/cvar-projection --name my-run
 ```
 
+On GCP (one sample per VM, project `swarm-scaling-jp`): `scripts/gcp/build_image.sh [ref]` builds the VM image once; `scripts/gcp/run_sample.sh <name> <machine-type> <ref> -- <runner args>` runs one invocation on a fresh VM, copies `logs/<name>/` back and deletes the VM; `uv run python scripts/gcp/gcp.py plan|status|cleanup` runs a plan file in parallel, shows live VMs with estimated cost, and deletes stray VMs. Usage is in each script's header. The ref must be on GitHub.
+
 Third-party source texts used during the review (system cards, posts, transcripts) are not redistributed; [research/sources/README.md](research/sources/README.md) links to the originals.
