@@ -4,14 +4,19 @@ Spec: scorer-api.md (2026-10-09); HARNESS.md "Remote scorer". Run on the scorer 
 
     SCORER_TOKEN=... scripts/scorer_service.sh --slots 2            # slot 0 = CPUs 0-7, slot 1 = 8-15
 
+Slots must fit in Docker's CPUs with at least SERVICE_CPUS left over; on Linux the service pins itself to the CPUs
+outside every slot, so its threads never run on a slot's CPUs.
+
 API (JSON over HTTP, bearer token on every request):
     GET  /health      -> {ok, slots, queue_len, cpu_model, version, seed_offset_id, tasks}
+    GET  /stats       -> {queue_len, running, jobs_done, queue_wait_mean_s, queue_wait_p95_s, slot_busy_frac, ...}
     POST /jobs        {kind: dev_eval|final_eval|score, task, solver_source, run_id, agent_id, sample_id,
                        n, seed, reps, size}  -> {job_id}
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
-One FIFO queue for all callers; each slot's worker takes the next job. Every job runs in a fresh container
+One FIFO queue for all callers; each slot's worker takes the next job. Every QUEUE_SAMPLE_S the queue length and
+running job count are appended to <work dir>/queue.jsonl. Every job runs in a fresh container
 (`docker run --rm`, the task's image, no network, the slot's cpuset, 8 CPUs, 8 GB), so nothing a solver starts
 survives into the next job. Inputs (the solver, and for scoring the seeded verifier with the seed offset file) go in
 through stdin as a tar, so the offset file is never mounted where a solver could read it after the verifier
@@ -25,6 +30,7 @@ import argparse
 import hmac
 import io
 import json
+import math
 import os
 import platform
 import queue
@@ -46,6 +52,9 @@ KINDS = ("dev_eval", "final_eval", "score")
 TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600}
 OUTPUT_CHARS = 20_000  # verifier_stdout / dev_eval output kept per job (the end, where the summary is)
 KILL_GRACE_S = 60  # after docker kill, how long to wait for the docker CLI to return
+SLOT_CPUS = 8
+SERVICE_CPUS = 8  # CPUs left outside every slot for this service, Docker and the OS
+QUEUE_SAMPLE_S = 10
 
 
 @dataclass
@@ -200,6 +209,8 @@ class Scorer:
         task_image_digest: str | dict | None = None,
         timeouts_s: dict[str, float] | None = None,
         log_path: Path | None = None,
+        queue_log_path: Path | None = None,
+        queue_sample_s: float = QUEUE_SAMPLE_S,
     ) -> None:
         self.tasks = {**tasks, **{a.slug: a for a in tasks.values()}}  # accept the task name or the sample id
         self.cpusets, self.run = cpusets, run
@@ -210,7 +221,11 @@ class Scorer:
         self.jobs: dict[str, Job] = {}
         self.queue: queue.Queue[Job] = queue.Queue()  # FIFO across every caller
         self.lock = threading.Lock()
+        self.started_at = time.time()
+        self.busy_s = [0.0] * len(cpusets)  # per slot: run time of finished jobs
         self.workers = [threading.Thread(target=self._work, args=(slot,), daemon=True) for slot in range(len(cpusets))]
+        if queue_log_path is not None:
+            self.workers.append(threading.Thread(target=self._sample_queue, args=(queue_log_path, queue_sample_s), daemon=True))
         for w in self.workers:
             w.start()
 
@@ -220,6 +235,33 @@ class Scorer:
             "version": self.version, "seed_offset_id": self.seed_offset_id, "task_image_digest": self.task_image_digest,
             "tasks": sorted({a.name for a in self.tasks.values()}),
         }  # fmt: skip
+
+    def stats(self) -> dict:
+        """Queue length now, jobs done, queue wait (mean, nearest-rank p95) of started jobs, per-slot busy fraction."""
+        now = time.time()
+        with self.lock:
+            jobs = list(self.jobs.values())
+            busy = list(self.busy_s)
+            for j in jobs:
+                if j.status == "running":
+                    busy[j.slot] += now - j.started_at
+        waits = sorted(j.started_at - j.queued_at for j in jobs if j.started_at is not None)
+        up = now - self.started_at
+        return {
+            "queue_len": self.queue.qsize(), "running": sum(j.status == "running" for j in jobs),
+            "jobs_done": sum(j.status in ("done", "error") for j in jobs), "jobs_error": sum(j.status == "error" for j in jobs),
+            "queue_wait_mean_s": round(sum(waits) / len(waits), 3) if waits else None,
+            "queue_wait_p95_s": round(waits[math.ceil(0.95 * len(waits)) - 1], 3) if waits else None,
+            "uptime_s": round(up, 3), "slot_busy_frac": [round(b / up, 4) if up > 0 else 0.0 for b in busy],
+        }  # fmt: skip
+
+    def _sample_queue(self, path: Path, every_s: float) -> None:
+        while True:
+            with self.lock:
+                running = sum(j.status == "running" for j in self.jobs.values())
+            with path.open("a") as fh:
+                fh.write(json.dumps({"t": round(time.time(), 3), "queue_len": self.queue.qsize(), "running": running}) + "\n")
+            time.sleep(every_s)
 
     def submit(self, body: dict) -> str:
         kind = body.get("kind")
@@ -267,6 +309,7 @@ class Scorer:
                 result, output, status, error = None, "", "error", f"{type(ex).__name__}: {ex}"
             with self.lock:
                 job.result, job.output, job.error, job.status, job.ended_at = result, output, error, status, time.time()
+                self.busy_s[slot] += job.ended_at - job.started_at
             if self.log_path is not None:
                 with self.lock, self.log_path.open("a") as fh:
                     fh.write(json.dumps({**job.view(self.cpu_model), **job.meta, "output": None}) + "\n")
@@ -294,6 +337,8 @@ def handler(scorer: Scorer, token: str):
                 return
             if self.path == "/health":
                 return self._send(200, scorer.health())
+            if self.path == "/stats":
+                return self._send(200, scorer.stats())
             if self.path.startswith("/jobs/"):
                 view = scorer.view(self.path[len("/jobs/") :])
                 return self._send(200, view) if view else self._send(404, {"error": "no such job"})
@@ -328,6 +373,29 @@ def cpu_model() -> str:
     if platform.system() == "Darwin":
         return subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
     return platform.processor() or "unknown"
+
+
+def docker_cpus(docker: str = "docker") -> int:
+    out = subprocess.run([docker, "info", "--format", "{{.NCPU}}"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise SystemExit(f"docker info failed: {out.stderr.strip()}")
+    return int(out.stdout)
+
+
+def slot_cpus(slots: int, first_cpu: int, host_cpus: int) -> tuple[list[str], set[int]]:
+    """Each slot's cpuset (slot k = first + 8k .. first + 8k + 7) and the CPUs outside every slot, for the service.
+
+    Refuses slots that run past the host's CPUs or leave fewer than SERVICE_CPUS for the service.
+    """
+    used = set(range(first_cpu, first_cpu + SLOT_CPUS * slots))
+    if slots < 1 or first_cpu < 0 or max(used) >= host_cpus:
+        raise ValueError(f"{slots} slots from CPU {first_cpu} need CPUs up to {first_cpu + SLOT_CPUS * slots - 1}; "
+                         f"the Docker host has {host_cpus} (0-{host_cpus - 1})")  # fmt: skip
+    service = set(range(host_cpus)) - used
+    if len(service) < SERVICE_CPUS:
+        raise ValueError(f"{slots} slots leave {len(service)} of {host_cpus} CPUs for the service; it needs {SERVICE_CPUS}")
+    cpusets = [f"{first_cpu + SLOT_CPUS * k}-{first_cpu + SLOT_CPUS * k + SLOT_CPUS - 1}" for k in range(slots)]
+    return cpusets, service
 
 
 def git_version(root: Path) -> str:
@@ -380,19 +448,24 @@ def main() -> None:
     # other run of the experiment: copy data/.algotune_seed_offset here, or set ALGOTUNE_SEED_OFFSET.
     if not os.environ.get(SEED_OFFSET_ENV) and not SEED_OFFSET_FILE.exists():
         raise SystemExit(f"no seed offset: copy the experiment's {SEED_OFFSET_FILE.name} to {SEED_OFFSET_FILE} or set {SEED_OFFSET_ENV}")
+    try:
+        cpusets, service_cpus = slot_cpus(args.slots, args.first_cpu, docker_cpus())
+    except ValueError as ex:
+        raise SystemExit(str(ex)) from None
+    if hasattr(os, "sched_setaffinity"):  # Linux, where Docker's CPUs are the host's: keep the service off the slots
+        os.sched_setaffinity(0, service_cpus)  # before any thread starts, so every worker inherits it
     offset = _seed_offset()
     args.work_dir.mkdir(parents=True, exist_ok=True)
     tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
     # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
     digests = {a.image: task_image_digest(a.image) for a in tasks.values()}
     digest = next(iter(digests.values())) if len(digests) == 1 else digests
-    cpusets = [f"{args.first_cpu + 8 * k}-{args.first_cpu + 8 * k + 7}" for k in range(args.slots)]
     scorer = Scorer(
         tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu_model(), git_version(PROJECT_ROOT),
-        seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl",
+        seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl", queue_log_path=args.work_dir / "queue.jsonl",
     )  # fmt: skip
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
-    print(f"scorer on {args.host}:{args.port}: slots {cpusets}, {len(tasks)} tasks, cpu {scorer.cpu_model}, "
+    print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
           f"version {scorer.version}, seed offset id {scorer.seed_offset_id}", flush=True)  # fmt: skip
     server.serve_forever()
 

@@ -7,9 +7,12 @@
 #     checks out <git-ref>, starts the service detached, opens the port to this machine only, and waits for
 #     /health. State (URL, token, instance) goes to $SCORER_STATE (mode 600); run_sample.sh reads it for
 #     `--checker remote` runs and opens the port to each agent VM's IP for that run.
+#     Slots: each takes 8 CPUs from --first-cpu (default 0) and the service needs 8 more, so e.g.
+#     `--machine c7a.16xlarge -- --slots 4`. `fleet.py scorer up --plan <plan.tsv> --ref <ref>` picks both from a plan.
 #   scorer.sh status      state, instance state and /health
-#   scorer.sh down        copies the job log and service log to logs/_scorer/<instance>/, terminates the VM (and
-#                         any other instance tagged role=scorer), closes every rule on the scorer port, drops the state
+#   scorer.sh down        copies the job log, queue-length samples (queue.jsonl) and service log to logs/_scorer/<instance>/,
+#                         terminates the VM (and any other instance tagged role=scorer), closes every rule on the scorer
+#                         port, drops the state
 # Env: SEED_OFFSET_FILE (default data/.algotune_seed_offset).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -123,7 +126,7 @@ down() {
   if load_state && [ "$(vm_state)" != gone ]; then
     dir=logs/_scorer/$VM_ID
     mkdir -p "$dir"
-    vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_STATE#/}/scorer.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
+    vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_REPO#/}/data/.scorer/queue.jsonl ${REMOTE_STATE#/}/scorer.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
       vm_get /tmp/scorer-logs.tgz "$dir/" && tar -C "$dir" -xzf "$dir/scorer-logs.tgz" && rm "$dir/scorer-logs.tgz" &&
       echo "scorer logs in $dir" || echo "could not copy the scorer logs" >&2
   fi
@@ -146,5 +149,5 @@ case $cmd in
   up) up "$@" ;;
   status) status ;;
   down) down ;;
-  *) sed -n '2,13p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,16p' "$0" >&2; exit 2 ;;
 esac

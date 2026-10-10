@@ -28,7 +28,7 @@ from inspect_ai.model import (
     set_model_info,
 )
 from inspect_ai.solver import Generate, Solver, TaskState, solver
-from inspect_ai.tool import Tool, ToolDef, bash, python, update_plan
+from inspect_ai.tool import Tool, ToolDef, ToolError, bash, python, update_plan
 from inspect_ai.util import LimitExceededError, collect, cost_limit, sandbox, token_limit
 from inspect_ai.util import time_limit as wall_clock_limit
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
@@ -95,6 +95,7 @@ def swarm(
     agent_tools: AgentTools | None = None,
     final_path: str | None = None,
     candidate_file: str | None = None,
+    min_spend_frac: float = 0.0,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -137,6 +138,9 @@ def swarm(
             agents so they know that writing it themselves has no effect.
         candidate_file: Name a published single file is saved under in its registry entry (AlgoTune:
             solver.py, the name finalize looks for). None keeps the file's own name.
+        min_spend_frac: submit is refused (a tool error stating spent, remaining and the threshold, so the
+            agent keeps running) until the agent has used this fraction of its own budget; the agent then ends
+            by budget, time limit or an accepted submit. 0 lets agents stop whenever they choose.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -146,6 +150,8 @@ def swarm(
             "independent arm: run N separate single-agent samples and resample them into teams; "
             "agents in one container share a filesystem and are not independent"
         )
+    if not 0.0 <= min_spend_frac <= 1.0:
+        raise ValueError(f"min_spend_frac must be in [0, 1], got {min_spend_frac}")
     if budget_type == "cost":
         for m in models:
             budget_cost(str(m))  # unpriced model: refuse before any sandbox starts
@@ -191,9 +197,17 @@ def swarm(
             def submitted(answer: str) -> None:
                 rec.submitted = True
 
+            def refusal() -> str | None:
+                used, cap = budget.usage, budget.limit
+                if used >= min_spend_frac * cap:
+                    return None
+                rec.submit_refusals.append({"used": used, "at": time.time()})
+                return submit_refusal_text(used, cap, min_spend_frac, budget_type)
+
             extra = tools_for(agent_id) if tools_for is not None else []
             tools = _agent_tools(
-                team, agent_id, messaging, registry, budget_tool(budget, budget_type), tool_style, extra
+                team, agent_id, messaging, registry, budget_tool(budget, budget_type, min_spend_frac), tool_style,
+                extra,
             )
             if budget_warnings:
                 # outermost, so the notice also follows message tools and deliveries
@@ -202,7 +216,7 @@ def swarm(
                 name=agent_id,
                 tools=tools,
                 model=agent_model,
-                submit=AgentSubmit(tool=_submit_tool(submitted)),
+                submit=AgentSubmit(tool=_submit_tool(submitted, refusal if min_spend_frac else None)),
                 compaction=CompactionEdit(),
             )
             protocol = protocol_prompt or default_protocol_prompt(
@@ -217,6 +231,7 @@ def swarm(
                 budget_warnings=budget_warnings,
                 tool_style=tool_style,
                 final_path=final_path,
+                min_spend_frac=min_spend_frac,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -287,6 +302,7 @@ def swarm(
             "time_limit": time_limit,
             "tool_style": tool_style,
             "budget_warnings": list(budget_warnings),
+            "min_spend_frac": min_spend_frac,
             "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
@@ -321,7 +337,7 @@ def _price_for_budget(model: Model) -> None:
         raise RuntimeError(f"Inspect does not price {model} at the budget's prices; its calls would go unmetered")
 
 
-def budget_tool(limit, budget_type: str) -> Tool:
+def budget_tool(limit, budget_type: str, min_spend_frac: float = 0.0) -> Tool:
     """check_budget(): budget used and remaining under this agent's own limit (no effect on the budget)."""
 
     async def execute() -> str:
@@ -336,7 +352,24 @@ def budget_tool(limit, budget_type: str) -> Tool:
         left = budget_amount(max(cap - used, 0), budget_type)
         return f"Used {budget_amount(used, budget_type)} of {budget_amount(cap, budget_type)}{unit}; {left} remaining."
 
+    if min_spend_frac:
+        description = (
+            "Show how much of your budget you have used and how much remains. "
+            f"submit is refused until you have used {min_spend_frac:.0%} of your budget."
+        )
+        return ToolDef(execute, name="check_budget", description=description).as_tool()
     return ToolDef(execute, name="check_budget").as_tool()
+
+
+def submit_refusal_text(used: float, cap: float, frac: float, budget_type: str) -> str:
+    """What a refused submit returns to the agent: spent, remaining, the threshold and how the run ends."""
+    unit = {"output": " output-token", "cost": ""}.get(budget_type, " token")
+    return (
+        f"submit refused: you have used {budget_amount(used, budget_type)} of your "
+        f"{budget_amount(cap, budget_type)}{unit} budget ({budget_amount(max(cap - used, 0), budget_type)} "
+        f"remaining). submit is accepted once you have used {frac:.0%} ({budget_amount(frac * cap, budget_type)}). "
+        "Your run ends when your budget is used up, when the time limit is reached, or when you submit after that point."
+    )
 
 
 def _agent_tools(
@@ -369,13 +402,16 @@ def _agent_tools(
     return tools
 
 
-def _submit_tool(on_submit: Callable[[str], None]) -> Tool:
+def _submit_tool(on_submit: Callable[[str], None], refusal: Callable[[], str | None] | None = None) -> Tool:
     async def execute(answer: str) -> str:
         """Submit an answer for evaluation.
 
         Args:
             answer: Submitted answer
         """
+        # react() ends the agent on any submit result without an error, so a refusal must be a ToolError
+        if refusal is not None and (why := refusal()) is not None:
+            raise ToolError(why)
         on_submit(answer)
         return answer
 
@@ -409,6 +445,7 @@ def default_protocol_prompt(
     budget_warnings: tuple[float, ...] = (),
     tool_style: ToolStyle = "default",
     final_path: str | None = None,
+    min_spend_frac: float = 0.0,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
@@ -504,19 +541,23 @@ def default_protocol_prompt(
             + (", messages you receive" if messaging else "")
             + " and your output)."
         )
+    if min_spend_frac:
+        stopping = (
+            f"submit is refused until you have used {min_spend_frac:.0%} of your budget "
+            f"({budget_amount(min_spend_frac * budget_tokens, budget_type)}). Your run ends when your budget is used "
+            "up, when a wall-clock time limit is reached, or when you submit after that point."
+        )
+    else:
+        stopping = "You may stop at any time by submitting; you do not have to use the whole budget."
     if budget_warnings:
         pcts = [f"{t:.0%}" for t in sorted(budget_warnings)]
         when = pcts[0] if len(pcts) == 1 else ", ".join(pcts[:-1]) + f" and {pcts[-1]}"
         lines.append(
             f"check_budget() shows how much you have used, and a notice is added to a tool result when you "
-            f"pass {when} of your budget. You may stop at any time by submitting; "
-            "you do not have to use the whole budget."
+            f"pass {when} of your budget. {stopping}"
         )
     else:
-        lines.append(
-            "check_budget() shows how much you have used. You may stop at any time by submitting; "
-            "you do not have to use the whole budget."
-        )
+        lines.append(f"check_budget() shows how much you have used. {stopping}")
     return "\n".join(lines)
 
 

@@ -103,6 +103,8 @@ def main() -> None:
                    help="remote: every timed run goes to the scorer service at SCORER_URL (token SCORER_TOKEN)")
     p.add_argument("--cpus-per-agent", type=int, default=4,
                    help="agent box CPUs = this x agents in the sample; the checker has 8 more (the Docker host must have both)")
+    p.add_argument("--min-spend-frac", type=float, default=0.8,
+                   help="submit is refused until an agent has used this fraction of its own budget; 0 = stop freely")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -133,6 +135,7 @@ def main() -> None:
         "tool_style": args.tool_style,
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
+        "min_spend_frac": args.min_spend_frac,
         "parallel": args.parallel,
         "cpus_per_agent": args.cpus_per_agent,
         "checker": args.checker,  # cpusets and memory limits: algotune_task adds them to the log metadata
@@ -161,6 +164,7 @@ def main() -> None:
             agent_tools=algotune_agent_tools,
             final_path=SOLVER_PATH,
             candidate_file="solver.py",
+            min_spend_frac=args.min_spend_frac,
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

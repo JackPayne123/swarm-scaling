@@ -15,7 +15,7 @@ from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbo
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import scorer_client
 from swarm_scaling import swarm as swarm_module
-from swarm_scaling.scorer_service import Job, JobError, Scorer, TaskAssets, docker_runner, handler
+from swarm_scaling.scorer_service import Job, JobError, Scorer, TaskAssets, docker_runner, handler, slot_cpus
 from swarm_scaling.swarm import Candidate
 from swarm_scaling.tasks import algotune_scorer
 
@@ -87,6 +87,41 @@ def test_requests_without_the_token_are_rejected(serve, monkeypatch) -> None:
     assert scorer.jobs == {}
     monkeypatch.setenv("SCORER_TOKEN", TOKEN)
     assert scorer_client.health()["seed_offset_id"] == "offsetid"
+
+
+@pytest.mark.asyncio
+async def test_stats_report_queue_waits_and_per_slot_busy_time(serve) -> None:
+    # Pilot 4: a team of 2 waited 12.4 min over 8 checks on 2 slots shared by 16 agents; the service must show it.
+    gate = threading.Event()
+
+    def run(job: Job, cpuset: str, timeout_s: float):
+        gate.wait(5)
+        return {"valid": True}, ""
+
+    scorer = serve(run, slots=2)
+    ids = [scorer_client.submit(job(agent_id=f"a{i}")) for i in range(3)]  # 2 run at once, 1 waits
+    stats = scorer_client.request("GET", "/stats")
+    assert stats["running"] == 2 and stats["queue_len"] == 1 and stats["jobs_done"] == 0
+    gate.set()
+    for i in ids:
+        while scorer_client.get(i)["status"] != "done":
+            pass
+    stats = scorer_client.request("GET", "/stats")
+    waits = sorted(scorer.jobs[i].started_at - scorer.jobs[i].queued_at for i in ids)
+    assert stats["jobs_done"] == 3 and stats["queue_len"] == 0 and stats["running"] == 0
+    assert stats["queue_wait_p95_s"] == round(waits[-1], 3)
+    assert stats["queue_wait_mean_s"] == pytest.approx(sum(waits) / 3, abs=1e-3)
+    assert len(stats["slot_busy_frac"]) == 2 and all(0 < b <= 1 for b in stats["slot_busy_frac"])
+
+
+def test_slots_never_overlap_the_services_cpus() -> None:
+    # Each slot times on its own 8 CPUs; the service, Docker and the OS keep at least 8 others.
+    cpusets, service = slot_cpus(4, 0, 64)  # c7a.16xlarge
+    assert cpusets == ["0-7", "8-15", "16-23", "24-31"] and service == set(range(32, 64))
+    assert slot_cpus(1, 8, 16) == (["8-15"], set(range(8)))  # the Mac's Docker, slot above the agent box
+    for slots, first, host in ((4, 0, 32), (4, 0, 36), (2, 16, 24)):  # too few CPUs left, or past the host's
+        with pytest.raises(ValueError):
+            slot_cpus(slots, first, host)
 
 
 def fake_docker(tmp_path: Path) -> Path:

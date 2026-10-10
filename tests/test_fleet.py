@@ -100,3 +100,21 @@ def test_dry_run_fills_gcp_then_aws_and_queues_the_rest():
         ("s2", "gcp", "t2d-standard-8", "after t4"),
         ("s3", "gcp", "t2d-standard-8", "after t4"),
     ]
+
+
+def test_scorer_gets_one_slot_per_four_remote_agents_on_the_smallest_type_that_fits(tmp_path):
+    """Pilot 4 put 16 agents on 2 slots and they queued; 4 slots x 8 vCPUs + 8 for the service = 40 -> 12xlarge."""
+    plan = tmp_path / "plan.tsv"
+    plan.write_text(
+        "t4 aws auto --arm team --n 4 --checker remote\nt2 aws auto --arm team --n 2 --checker remote\n"
+        + "".join(f"i{k} aws auto --arm independent --checker=remote\n" for k in range(10))
+        + "local gcp auto --arm team --n 4\n"  # times on its own checker: not counted
+    )
+    fam = fleet.AWS_FAMILY
+    assert fleet.scorer_args(["up", "--ref", "r", "--plan", str(plan)]) == [
+        "up", "--ref", "r", "--machine", f"{fam}.12xlarge", "--", "--slots", "4"
+    ]
+    # overrides: an explicit slot count sizes the machine; an explicit machine is kept
+    assert fleet.scorer_args(["up", "--plan", str(plan), "--", "--slots", "7"])[1:] == ["--machine", f"{fam}.16xlarge", "--", "--slots", "7"]
+    assert fleet.scorer_args(["up", "--machine", "x.y", "--plan", str(plan)])[1:3] == ["--machine", "x.y"]
+    assert fleet.scorer_args(["status"]) == ["status"]

@@ -583,3 +583,40 @@ def test_task_tools_reach_every_agent_in_every_arm_and_the_prompt_says_where_the
             in p
             for p in prompts
         )
+
+
+def test_submit_is_refused_below_the_spend_threshold_and_the_agent_keeps_running(tmp_path: Path) -> None:
+    # Pilot 4: agents stopped at 4-18% of their budget, so budget scaling could not be measured.
+    stop = ModelOutput.from_content(MODEL, "I am finished.")  # no tool call: react must continue, not end
+    stop.usage = used(100)
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("submit", usage=used(100), answer="early"),  # 10% used: refused
+                    stop,  # 20%
+                    call("bash", usage=used(590), command="true"),  # 79%
+                    call("submit", usage=used(10), answer="late"),  # 80%: accepted
+                )
+            ],
+            per_agent_tokens=1000,
+            messaging=False,
+            min_spend_frac=0.8,
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    agent = swarm_meta(log)["agents"]["agent_0"]
+    assert agent["end_reason"] == "submitted" and agent["tokens"]["metered"] == 800
+    assert [r["used"] for r in agent["submit_refusals"]] == [100]
+    refused = tool_events(log, "submit")[0]
+    assert refused.error is not None and refused.error.message == (
+        "submit refused: you have used 100 of your 1,000 token budget (900 remaining). submit is accepted once you "
+        "have used 80% (800). Your run ends when your budget is used up, when the time limit is reached, or when "
+        "you submit after that point."
+    )
+    assert log.samples[0].output.completion.endswith("late")
+    assert swarm_meta(log)["min_spend_frac"] == 0.8
+    prompt = " ".join(m.text for m in log.samples[0].messages if m.role == "user")
+    assert "submit is refused until you have used 80% of your budget (800)" in prompt
+    assert "you do not have to use the whole budget" not in prompt

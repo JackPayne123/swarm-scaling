@@ -104,6 +104,7 @@ class AgentRecord:
     published: list[str] = field(default_factory=list)
     files_sent: list[dict[str, Any]] = field(default_factory=list)
     budget_notices: list[dict[str, Any]] = field(default_factory=list)
+    submit_refusals: list[dict[str, Any]] = field(default_factory=list)
     list_candidates_calls: int = 0
     candidates_read: set[str] = field(default_factory=set)
     submitted: bool = False
@@ -136,6 +137,7 @@ class AgentRecord:
             "candidates_published": self.published,
             "files_sent": self.files_sent,
             "budget_notices": self.budget_notices,
+            "submit_refusals": self.submit_refusals,
             "list_candidates_calls": self.list_candidates_calls,
             "candidates_read": sorted(self.candidates_read),
         }

@@ -5,6 +5,7 @@ Usage:
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
   uv run python scripts/cloud/fleet.py scorer up|down|status [args]   (scripts/cloud/scorer.sh)
+  uv run python scripts/cloud/fleet.py scorer up --plan <plan.tsv> --ref <git-ref> [scorer.sh up args]
 
 Plan file: one run per line, `name  cloud  machine  runner args...` (tab or space separated; the args are split like
 a shell would), blank lines and # comments ignored.
@@ -16,15 +17,20 @@ Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when eve
 in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
 instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
-empty cloud fails at once. Each run's output goes to logs/<name>/driver.log and its progress to
+empty cloud fails at once. `plan` warns about rows whose --time-limit is below their dollar budget / SPEND_USD_PER_H. Each run's output goes to logs/<name>/driver.log and its progress to
 logs/<name>/cloud-status. Run a long plan under bgjob (--grace 60) and caffeinate.
 
 cleanup lists every VM tagged/labelled tool=swarm-runner on both clouds and, with --yes, deletes them (running
 plans included) and runs `scorer.sh down`.
+
+scorer up --plan sizes the scorer from the plan's `--checker remote` rows: slots = ceil(agents / AGENTS_PER_SLOT)
+(agents = the sum of each row's --n) and the smallest <AWS_FAMILY> type with slots x 8 + 8 vCPUs (8 per slot, 8 for
+the service). An explicit --machine or `-- --slots S` overrides either.
 """
 
 import argparse
 import json
+import math
 import re
 import shlex
 import subprocess
@@ -50,7 +56,13 @@ MACHINES = {
     "gcp": ["t2d-standard-8", "t2d-standard-16", "t2d-standard-32"],
     "aws": [f"{AWS_FAMILY}.2xlarge", f"{AWS_FAMILY}.4xlarge", f"{AWS_FAMILY}.8xlarge"],
 }
-AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32, "12xlarge": 48, "16xlarge": 64}
+AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32, "12xlarge": 48, "16xlarge": 64,
+             "24xlarge": 96, "32xlarge": 128, "48xlarge": 192}
+AGENTS_PER_SLOT = 4  # one scorer slot per 4 agents (decided 2026-10-10)
+SLOT_VCPUS, SCORER_SERVICE_VCPUS = 8, 8  # as scorer_service.py's SLOT_CPUS and SERVICE_CPUS
+# Pilot 4 (2026-10-10): the fastest-spending independent Opus 5.5 agent spent about $1.9 per hour. A row whose time
+# limit is below its per-agent dollar budget / this rate may end by time before it can spend its budget.
+SPEND_USD_PER_H = 1.9
 
 # On-demand compute USD per hour. Estimates for the cost column only; check billing. They leave out disks
 # (60 GB pd-balanced / gp3, about $0.01/h) and public IPs (about $0.005/h).
@@ -83,12 +95,12 @@ def vcpus(machine: str) -> int:
     return int(machine.rsplit("-", 1)[1])
 
 
-def arg_value(args: list[str], flag: str, default: int) -> int:
+def arg_value(args: list[str], flag: str, default, cast=int):
     for i, a in enumerate(args):
         if a == flag and i + 1 < len(args):
-            return int(args[i + 1])
+            return cast(args[i + 1])
         if a.startswith(flag + "="):
-            return int(a.split("=", 1)[1])
+            return cast(a.split("=", 1)[1])
     return default
 
 
@@ -144,6 +156,57 @@ def run_json(cmd: list[str]) -> dict | list:
 
 def is_remote(args: list[str]) -> bool:
     return "--checker=remote" in args or any(a == "--checker" and b == "remote" for a, b in zip(args, args[1:]))
+
+
+def time_limit_warnings(rows: list[Row]) -> list[str]:
+    """Rows with a dollar budget whose per-agent time limit (runner default 3600 s) is below budget / SPEND_USD_PER_H."""
+    out = []
+    for r in rows:
+        budget = arg_value(r.args, "--budget", None, float)
+        if budget is None or arg_value(r.args, "--budget-type", "cost", str) != "cost":
+            continue
+        budget *= arg_value(r.args, "--mult", 1)
+        limit_h = arg_value(r.args, "--time-limit", 3600) / 3600
+        if limit_h < budget / SPEND_USD_PER_H:
+            out.append(f"{r.name}: time limit {limit_h:.2f} h is below ${budget:g} / ${SPEND_USD_PER_H}/h = "
+                       f"{budget / SPEND_USD_PER_H:.2f} h; agents may end by time before spending their budget")
+    return out
+
+
+def scorer_size(rows: list[Row]) -> tuple[int, str]:
+    """(slots, machine) for the plan's remote-checker agents: one slot per AGENTS_PER_SLOT, smallest type that fits."""
+    agents = sum(arg_value(r.args, "--n", 1) for r in rows if is_remote(r.args))
+    if not agents:
+        raise SystemExit("no --checker remote rows in the plan: nothing uses the scorer")
+    slots = math.ceil(agents / AGENTS_PER_SLOT)
+    return slots, scorer_machine(slots)
+
+
+def scorer_machine(slots: int) -> str:
+    need = slots * SLOT_VCPUS + SCORER_SERVICE_VCPUS
+    size = next((s for s, v in sorted(AWS_SIZES.items(), key=lambda kv: kv[1]) if v >= need), None)
+    if size is None:
+        raise SystemExit(f"no {AWS_FAMILY} type has {need} vCPUs for {slots} slots")
+    return f"{AWS_FAMILY}.{size}"
+
+
+def scorer_args(args: list[str]) -> list[str]:
+    """scorer.sh arguments with `--plan <tsv>` replaced by the --machine and `-- --slots` it implies (`up` only)."""
+    if "--plan" not in args:
+        return args
+    i = args.index("--plan")
+    plan_file, args = args[i + 1], args[:i] + args[i + 2 :]
+    own, service = (args[: args.index("--")], args[args.index("--") + 1 :]) if "--" in args else (args, [])
+    slots, machine = scorer_size(parse_plan(Path(plan_file).read_text()))
+    if "--slots" in service or any(a.startswith("--slots=") for a in service):
+        slots = arg_value(service, "--slots", slots)
+        machine = scorer_machine(slots)
+    else:
+        service = ["--slots", str(slots), *service]
+    if "--machine" not in own:
+        own = [*own, "--machine", machine]
+    print(f"scorer for {plan_file}: {' '.join(own[1:])} -- {' '.join(service)}", flush=True)
+    return [*own, "--", *service]
 
 
 def gcp_free(t2d_only: bool) -> int:
@@ -235,6 +298,8 @@ def dry_run(rows: list[Row], free: dict[str, int], max_runs: int = 0) -> list[tu
 
 def plan(args: argparse.Namespace) -> None:
     rows = parse_plan(Path(args.plan).read_text())
+    for warning in time_limit_warnings(rows):
+        print(f"warning: {warning}", flush=True)
     if args.dry_run:
         free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
         print(f"{len(rows)} runs; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']} (nothing is launched)")
@@ -343,7 +408,7 @@ def cleanup(args: argparse.Namespace) -> None:
 
 def main() -> None:
     if sys.argv[1:2] == ["scorer"]:  # passed through as is
-        sys.exit(subprocess.run(["bash", "scripts/cloud/scorer.sh", *sys.argv[2:]], cwd=ROOT).returncode)
+        sys.exit(subprocess.run(["bash", "scripts/cloud/scorer.sh", *scorer_args(sys.argv[2:])], cwd=ROOT).returncode)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     pp = sub.add_parser("plan")

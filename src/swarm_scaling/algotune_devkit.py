@@ -287,6 +287,26 @@ class Checker:
         return ToolDef(execute, name="dev_eval").as_tool()
 
 
+def queue_telemetry(calls: list[dict], agents: dict[str, dict], time_limit: float | None) -> dict[str, dict]:
+    """Per agent: dev_eval calls, total and max queue wait, wait as a fraction of its active (wall) time, time limit.
+
+    `calls` is state.metadata["checker"]["calls"], `agents` state.metadata["swarm"]["agents"].
+    """
+    out = {}
+    for agent_id, rec in agents.items():
+        waits = [c["queue_wait_s"] for c in calls if c["agent_id"] == agent_id and c.get("queue_wait_s") is not None]
+        active = rec.get("wall_s")
+        out[agent_id] = {
+            "dev_eval_calls": len(waits),
+            "queue_wait_total_s": round(sum(waits), 3),
+            "queue_wait_max_s": max(waits, default=0.0),
+            "active_s": active,
+            "queue_wait_frac": round(sum(waits) / active, 4) if active else None,
+            "time_limit_s": time_limit,
+        }
+    return out
+
+
 def algotune_agent_tools(state: TaskState) -> Callable[[str], list[Tool]]:
     """swarm(agent_tools=...): one Checker (queue) per sample, and its dev_eval tool for each agent."""
     checker = Checker(state)
@@ -301,7 +321,11 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
     Reinstalls the toolkit first so the check is the packaged one.
     Candidates with identical solver.py text share one evaluation. Any /app/solver.py an agent wrote is
     removed first (agents are told it has no effect), so nothing is installed when no candidate is correct.
+    Each agent's dev_eval queue waits are summarised first (`queue_telemetry`, state.metadata["checker"]["agents"]).
     """
+    sw = state.metadata.get("swarm", {})
+    checker = state.metadata.setdefault("checker", {"calls": []})
+    checker["agents"] = queue_telemetry(checker.get("calls", []), sw.get("agents", {}), sw.get("time_limit"))
     await _install_toolkit(state)
     box = sandbox()
     removed = await box.exec(["rm", "-f", SOLVER_PATH])

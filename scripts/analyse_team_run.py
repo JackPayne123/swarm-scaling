@@ -2,6 +2,7 @@
 
 Usage: uv run python scripts/analyse_team_run.py <log.eval | dir> [out_dir]
 Writes timeline-<agent>.txt (every model call and tool call, with reasoning), messages.txt, summary.txt.
+summary.txt ends with scripts/run_telemetry.py's report: queue waits, scorer slot use, cache rewrites after waits.
 """
 
 import os
@@ -11,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from inspect_ai.log import read_eval_log
+from run_telemetry import sample_report
 
 TEAM_WORDS = re.compile(
     r"\b(agent_\d|teammate|other agent|send_message|wait_for_message|message|registry|publish|"
@@ -141,6 +143,7 @@ def main() -> None:
     summ += [f"  {a}: {k} calls, {w:.0f}s total queue wait" for a, (k, w) in sorted(per_agent.items())]
     summ += ["", f"model errors: {model_errors}", f"tool errors ({len(tool_errors)}):"]
     summ += [f"  {x}" for x in tool_errors[:40]]
+    summ += ["", *sample_report(s, path.parent.name, log.eval.metadata)]
     summ += ["", "TEAM-RELATED SENTENCES IN REASONING/TEXT:"]
     for a, sents in team_reasoning.items():
         summ.append(f"--- {a} ({len(sents)})")
