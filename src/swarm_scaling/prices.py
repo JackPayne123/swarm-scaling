@@ -20,7 +20,8 @@ PRICES = {  # model substring -> (input, output, cache read as a multiple of inp
 
 # Cache writes: 5-minute TTL at 1.25x input, 1-hour TTL at 2x input (Anthropic's rates, applied to every provider).
 # Output includes reasoning tokens. The live budget (Inspect's cost_limit) prices a write by the TTL the request
-# was sent with; Inspect applies 2x when it sent the 1-hour TTL (after a gap of over 5 minutes in a sample).
+# was sent with; since 2026-10-10 swarm pins the 1-hour TTL on every Anthropic agent call (swarm anthropic_cache_ttl),
+# so those writes are metered at 2x. (Inspect's default switches to 1 hour only after a gap of over 5 minutes.)
 CACHE_WRITE_5M, CACHE_WRITE_1H = 1.25, 2.0
 
 

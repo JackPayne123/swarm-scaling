@@ -96,6 +96,7 @@ def swarm(
     final_path: str | None = None,
     candidate_file: str | None = None,
     min_spend_frac: float = 0.0,
+    anthropic_cache_ttl: str | None = "1h",
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -141,6 +142,9 @@ def swarm(
         min_spend_frac: submit is refused (a tool error stating spent, remaining and the threshold, so the
             agent keeps running) until the agent has used this fraction of its own budget; the agent then ends
             by budget, time limit or an accepted submit. 0 lets agents stop whenever they choose.
+        anthropic_cache_ttl: Prompt-cache TTL pinned on every call of each anthropic/ model given by name (Inspect's
+            `cache_ttl` model arg; writes at 2x input for "1h"). None keeps Inspect's "auto" (5 minutes, 1 hour only
+            after a gap of over 5 minutes since the sample's last call to that model, which teammates keep resetting).
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -159,12 +163,6 @@ def swarm(
     model_names = [m if isinstance(m, str) else m.name for m in models]
     messaging = messaging and n > 1
 
-    def resolve_model(m: str | Model) -> Model:
-        if isinstance(m, Model):
-            return m
-        effort = (reasoning_effort or {}).get(m)
-        config = GenerateConfig(reasoning_effort=effort) if effort else GenerateConfig()  # type: ignore[arg-type]
-        return get_model(m, config=config)
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         if setup is not None:
@@ -182,7 +180,8 @@ def swarm(
 
         async def run_agent(agent_id: str, model: str | Model) -> AgentState | None:
             rec = team.agents[agent_id]
-            agent_model = resolve_model(model)
+            agent_model = resolve_agent_model(model, reasoning_effort, anthropic_cache_ttl)
+            rec.cache_ttl = cache_ttl_of(model, anthropic_cache_ttl)
             if budget_type == "cost":
                 _price_for_budget(agent_model)
                 budget = cost_limit(per_agent_tokens)
@@ -303,6 +302,7 @@ def swarm(
             "tool_style": tool_style,
             "budget_warnings": list(budget_warnings),
             "min_spend_frac": min_spend_frac,
+            "anthropic_cache_ttl": anthropic_cache_ttl,
             "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
@@ -321,6 +321,25 @@ def swarm(
         return state
 
     return solve
+
+
+def cache_ttl_of(model: str | Model, anthropic_cache_ttl: str | None) -> str | None:
+    """The cache TTL pinned on `model`'s calls: anthropic/ models given by name get anthropic_cache_ttl, others none."""
+    return anthropic_cache_ttl if isinstance(model, str) and model.startswith("anthropic/") else None
+
+
+def resolve_agent_model(model: str | Model, reasoning_effort: dict[str, str] | None, anthropic_cache_ttl: str | None) -> Model:
+    """An agent's Model: its explicit reasoning effort, and for Anthropic the pinned prompt-cache TTL.
+
+    Pinned because Inspect's default ("auto") keeps 5 minutes until the sample has gone more than 5 minutes without
+    calling that model; in pilot 4 agents' calls after dev_eval waits of 158-421 s rewrote their whole cache.
+    """
+    if isinstance(model, Model):
+        return model
+    effort = (reasoning_effort or {}).get(model)
+    config = GenerateConfig(reasoning_effort=effort) if effort else GenerateConfig()  # type: ignore[arg-type]
+    ttl = cache_ttl_of(model, anthropic_cache_ttl)
+    return get_model(model, config=config, **({"cache_ttl": ttl} if ttl else {}))
 
 
 def _price_for_budget(model: Model) -> None:

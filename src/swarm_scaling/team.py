@@ -35,6 +35,10 @@ def _iso(ts: float) -> str:
 MESSAGE_PREVIEW_CHARS = 2000
 DELIVERY_CHARS = 8000
 
+# Longest single wait_for_message: under run-to-budget an agent could otherwise idle until its 16 h time limit
+# without spending (2026-10-10). Each further wait is another model call.
+WAIT_MAX_S = 600
+
 # Why an agent ended (its end_reason: "submitted" or the limit type), as its teammates are told.
 FINISH_REASONS = {"submitted": "submitted", "token": "budget used", "cost": "budget used", "time": "time limit"}
 
@@ -114,6 +118,7 @@ class AgentRecord:
     limit_hit: str | None = None
     error: str | None = None
     tokens: dict[str, Any] = field(default_factory=dict)
+    cache_ttl: str | None = None  # prompt-cache TTL pinned on this agent's model calls (None: the provider's default)
 
     def as_log(self) -> dict[str, Any]:
         return {
@@ -131,6 +136,7 @@ class AgentRecord:
             "error": self.error,
             "submitted": self.submitted,
             "tokens": self.tokens,
+            "cache_ttl": self.cache_ttl,
             "messages_sent": self.sent,
             "messages_received": self.received,
             "messages_dropped": self.dropped,
@@ -566,15 +572,15 @@ def read_message_tool(team: Team, agent_id: str) -> Tool:
 
 def wait_for_message_tool(team: Team, agent_id: str) -> Tool:
     async def execute(timeout_s: float) -> str:
-        """Block until a teammate sends you a message, or the timeout passes.
+        """Block until a teammate sends you a message, or the timeout passes (at most 600 seconds per call).
 
         Returns immediately if every teammate has finished or is also waiting, so
         it never deadlocks the team.
 
         Args:
-            timeout_s: Maximum seconds to wait.
+            timeout_s: Maximum seconds to wait; values above 600 wait 600.
         """
-        return await team.wait(agent_id, timeout_s)
+        return await team.wait(agent_id, min(timeout_s, WAIT_MAX_S))
 
     return ToolDef(execute, name="wait_for_message").as_tool()
 

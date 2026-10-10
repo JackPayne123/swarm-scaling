@@ -3,10 +3,11 @@
 Usage: uv run python scripts/run_cost.py <log.eval | dir> [...]
 
 Prices and cache multipliers come from swarm_scaling.prices, the table the dollar budget meters with (cache reads
-at each model's multiple of input, cache writes at 1.25x input, 1-hour writes at 2x). The log's per-model totals do
-not split cache writes by TTL, so writes count as 5-minute except the 1-hour writes reported in the raw responses
-the log kept (Anthropic's usage.cache_creation; Inspect keeps the raw call for only some model events, and the
-output says for how many). Check against the provider's billing before relying on totals.
+at each model's multiple of input, cache writes at 1.25x input, 1-hour writes at 2x). A model whose agents had the
+1-hour TTL pinned (swarm metadata `cache_ttl`, since 2026-10-10) has every write counted as 1-hour. Otherwise the
+log's per-model totals do not split cache writes by TTL, so writes count as 5-minute except the 1-hour writes reported
+in the raw responses the log kept (Anthropic's usage.cache_creation; Inspect keeps the raw call for only some model
+events, and the output says for how many). Check against the provider's billing before relying on totals.
 """
 
 import sys
@@ -18,10 +19,14 @@ from inspect_ai.log import read_eval_log
 from swarm_scaling.prices import usage_cost
 
 
-def one_hour_writes(path: Path) -> tuple[Counter, Counter, Counter]:
-    """Per model: 1-hour cache-write tokens seen in logged raw responses, model calls, calls with a raw response."""
-    writes, calls, seen = Counter(), Counter(), Counter()
+def one_hour_writes(path: Path) -> tuple[Counter, Counter, Counter, set]:
+    """Per model: 1-hour cache-write tokens seen in logged raw responses, model calls, calls with a raw response;
+    and the models whose agents had the 1-hour TTL pinned."""
+    writes, calls, seen, pinned = Counter(), Counter(), Counter(), set()
     for sample in read_eval_log(str(path)).samples or []:
+        for agent in ((sample.metadata or {}).get("swarm") or {}).get("agents", {}).values():
+            if agent.get("cache_ttl") == "1h":
+                pinned.add(agent["model"])
         for e in sample.events:
             if e.event != "model":
                 continue
@@ -30,7 +35,7 @@ def one_hour_writes(path: Path) -> tuple[Counter, Counter, Counter]:
             if "cache_creation" in usage:
                 seen[e.model] += 1
                 writes[e.model] += (usage["cache_creation"] or {}).get("ephemeral_1h_input_tokens") or 0
-    return writes, calls, seen
+    return writes, calls, seen, pinned
 
 
 if __name__ == "__main__":
@@ -41,9 +46,11 @@ if __name__ == "__main__":
     total = 0.0
     for path in paths:
         log = read_eval_log(str(path), header_only=True)
-        writes_1h, calls, seen = one_hour_writes(path)
+        writes_1h, calls, seen, pinned = one_hour_writes(path)
         for model, usage in (log.stats.model_usage or {}).items():
             u = usage.model_dump(exclude_none=True)
+            if model in pinned:  # every write was sent with the 1-hour TTL
+                writes_1h[model] = u.get("input_tokens_cache_write") or 0
             try:
                 cost, note = usage_cost(model, u, writes_1h[model]), ""
             except ValueError:

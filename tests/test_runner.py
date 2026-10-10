@@ -36,14 +36,15 @@ def test_a_token_sized_budget_is_refused_as_dollars(monkeypatch, tmp_path, capsy
     assert not (tmp_path / "x").exists()  # refused before anything is written or started
 
 
-@pytest.mark.asyncio
-async def test_xhigh_reasoning_effort_reaches_the_anthropic_request_for_opus_5_5():
-    # Jack runs agents at xhigh; Inspect's docstring says xhigh is 4.7-only, so check what the API would receive.
+
+async def anthropic_request(model) -> dict:
+    """The JSON body `model` would send to Anthropic for one turn with a tool, captured by a fake transport (no network)."""
     import json
 
     import httpx2
     from anthropic import AsyncAnthropic
-    from inspect_ai.model import ChatMessageUser, GenerateConfig, get_model
+    from inspect_ai.model import ChatMessageUser, GenerateConfig
+    from inspect_ai.tool import ToolInfo, ToolParams
 
     sent = []
 
@@ -51,12 +52,37 @@ async def test_xhigh_reasoning_effort_reaches_the_anthropic_request_for_opus_5_5
         sent.append(json.loads(request.content))
         raise httpx2.ConnectError("captured, not sent")
 
-    # as swarm resolves each model from the runner's --reasoning-effort
-    model = get_model("anthropic/claude-opus-5-5", config=GenerateConfig(reasoning_effort="xhigh"), api_key="sk-test")
     transport = httpx2.AsyncClient(transport=httpx2.MockTransport(capture))
     model.api.client = AsyncAnthropic(api_key="sk-test", max_retries=0, http_client=transport)
+    tool = ToolInfo(name="bash", description="run a command", parameters=ToolParams())
     with pytest.raises(Exception):
-        await model.generate([ChatMessageUser(content="hi")], config=GenerateConfig(max_retries=0))
-    assert sent[0]["model"] == "claude-opus-5-5"
-    assert sent[0]["output_config"] == {"effort": "xhigh"}
-    assert sent[0]["thinking"]["type"] == "adaptive"
+        await model.generate([ChatMessageUser(content="hi")], tools=[tool], config=GenerateConfig(max_retries=0))
+    return sent[0]
+
+
+@pytest.mark.asyncio
+async def test_xhigh_reasoning_effort_reaches_the_anthropic_request_for_opus_5_5(monkeypatch):
+    # Jack runs agents at xhigh; Inspect's docstring says xhigh is 4.7-only, so check what the API would receive.
+    from swarm_scaling.swarm import resolve_agent_model
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    model = resolve_agent_model("anthropic/claude-opus-5-5", {"anthropic/claude-opus-5-5": "xhigh"}, "1h")  # as swarm does
+    body = await anthropic_request(model)
+    assert body["model"] == "claude-opus-5-5"
+    assert body["output_config"] == {"effort": "xhigh"}
+    assert body["thinking"]["type"] == "adaptive"
+
+
+@pytest.mark.asyncio
+async def test_agent_calls_pin_the_one_hour_prompt_cache_and_are_metered_at_its_price(monkeypatch):
+    # Pilot 4: calls after dev_eval waits of 158-421 s rewrote the whole cache, so Inspect had them on the 5-minute TTL.
+    from swarm_scaling.swarm import resolve_agent_model
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    model = resolve_agent_model("anthropic/claude-opus-5-5", None, "1h")
+    body = await anthropic_request(model)
+    assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert model.api.cache_write_ttl() == "1h"  # what Inspect's cost (and so the dollar budget) prices writes by
+    default = await anthropic_request(resolve_agent_model("anthropic/claude-opus-5-5", None, None))
+    assert "ttl" not in default["cache_control"]  # Inspect's own default: 5 minutes

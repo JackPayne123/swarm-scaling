@@ -620,3 +620,26 @@ def test_submit_is_refused_below_the_spend_threshold_and_the_agent_keeps_running
     prompt = " ".join(m.text for m in log.samples[0].messages if m.role == "user")
     assert "submit is refused until you have used 80% of your budget (800)" in prompt
     assert "you do not have to use the whole budget" not in prompt
+
+
+def test_one_wait_for_message_is_capped_so_an_agent_cannot_idle_to_its_time_limit(tmp_path: Path, monkeypatch) -> None:
+    # Under run-to-budget an agent that wants to stop could wait (spending nothing) until a 16 h time limit.
+    from swarm_scaling import team as team_module
+
+    monkeypatch.setattr(team_module, "WAIT_MAX_S", 0.3)
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(call("wait_for_message", timeout_s=57600), submit()),
+                scripted(call("bash", command="sleep 3"), submit()),  # keeps running, so the wait cannot end early
+            ],
+            per_agent_tokens=100_000,
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    (wait,) = tool_events(log, "wait_for_message")
+    assert "No messages received within 0.3 seconds." in str(wait.result)
+    assert swarm_meta(log)["agents"]["agent_0"]["wall_s"] < 3
+    description = ToolDef(team_module.wait_for_message_tool(None, "agent_0")).description
+    assert "at most 600 seconds per call" in description
