@@ -17,7 +17,7 @@ Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when eve
 in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
 instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
-empty cloud fails at once. `plan` warns about rows whose --time-limit is below their dollar budget / SPEND_USD_PER_H. Each run's output goes to logs/<name>/driver.log and its progress to
+empty cloud fails at once. Each run's output goes to logs/<name>/driver.log and its progress to
 logs/<name>/cloud-status. Run a long plan under bgjob (--grace 60) and caffeinate.
 
 cleanup lists every VM tagged/labelled tool=swarm-runner on both clouds and, with --yes, deletes them (running
@@ -60,9 +60,6 @@ AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32
              "24xlarge": 96, "32xlarge": 128, "48xlarge": 192}
 AGENTS_PER_SLOT = 4  # one scorer slot per 4 agents (decided 2026-10-10)
 SLOT_VCPUS, SCORER_SERVICE_VCPUS = 8, 8  # as scorer_service.py's SLOT_CPUS and SERVICE_CPUS
-# Pilot 4 (2026-10-10): the fastest-spending independent Opus 5.5 agent spent about $1.9 per hour. A row whose time
-# limit is below its per-agent dollar budget / this rate may end by time before it can spend its budget.
-SPEND_USD_PER_H = 1.9
 
 # On-demand compute USD per hour. Estimates for the cost column only; check billing. They leave out disks
 # (60 GB pd-balanced / gp3, about $0.01/h) and public IPs (about $0.005/h).
@@ -95,12 +92,12 @@ def vcpus(machine: str) -> int:
     return int(machine.rsplit("-", 1)[1])
 
 
-def arg_value(args: list[str], flag: str, default, cast=int):
+def arg_value(args: list[str], flag: str, default: int) -> int:
     for i, a in enumerate(args):
         if a == flag and i + 1 < len(args):
-            return cast(args[i + 1])
+            return int(args[i + 1])
         if a.startswith(flag + "="):
-            return cast(a.split("=", 1)[1])
+            return int(a.split("=", 1)[1])
     return default
 
 
@@ -156,21 +153,6 @@ def run_json(cmd: list[str]) -> dict | list:
 
 def is_remote(args: list[str]) -> bool:
     return "--checker=remote" in args or any(a == "--checker" and b == "remote" for a, b in zip(args, args[1:]))
-
-
-def time_limit_warnings(rows: list[Row]) -> list[str]:
-    """Rows with a dollar budget whose per-agent time limit (runner default 3600 s) is below budget / SPEND_USD_PER_H."""
-    out = []
-    for r in rows:
-        budget = arg_value(r.args, "--budget", None, float)
-        if budget is None or arg_value(r.args, "--budget-type", "cost", str) != "cost":
-            continue
-        budget *= arg_value(r.args, "--mult", 1)
-        limit_h = arg_value(r.args, "--time-limit", 3600) / 3600
-        if limit_h < budget / SPEND_USD_PER_H:
-            out.append(f"{r.name}: time limit {limit_h:.2f} h is below ${budget:g} / ${SPEND_USD_PER_H}/h = "
-                       f"{budget / SPEND_USD_PER_H:.2f} h; agents may end by time before spending their budget")
-    return out
 
 
 def scorer_size(rows: list[Row]) -> tuple[int, str]:
@@ -298,8 +280,6 @@ def dry_run(rows: list[Row], free: dict[str, int], max_runs: int = 0) -> list[tu
 
 def plan(args: argparse.Namespace) -> None:
     rows = parse_plan(Path(args.plan).read_text())
-    for warning in time_limit_warnings(rows):
-        print(f"warning: {warning}", flush=True)
     if args.dry_run:
         free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
         print(f"{len(rows)} runs; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']} (nothing is launched)")

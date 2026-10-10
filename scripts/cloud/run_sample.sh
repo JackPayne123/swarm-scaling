@@ -16,7 +16,7 @@
 #   Progress is appended to logs/<name>/cloud-status as "<UTC time> <state> <detail>": created (cloud, zone,
 #   machine), host (CPU model, task image), running, copied, deleted (delete-requested on a signal), exit.
 #   The exit status is the run's (or 1-2 when the infrastructure failed first).
-# Env: MAX_RUN_HOURS (default 8; the VM ends itself after this), POLL_S (default 60), SEED_OFFSET_FILE (default
+# Env: MAX_RUN_HOURS (default 18, above the runner's 16 h agent time limit; the VM ends itself after this), POLL_S (default 60), SEED_OFFSET_FILE (default
 #   data/.algotune_seed_offset), KEEP_VM=1 (debugging: do not delete), and GCP_ZONES / CREATE_ROUNDS /
 #   CREATE_WAIT_S for stockouts (common.sh). Under bgjob, use --grace 30 or more.
 set -uo pipefail
@@ -36,7 +36,7 @@ name=$1 mt=$2 ref=$3
 shift 4
 args=("$@")
 cloud=$(cloud_of "$mt")
-max_hours=${MAX_RUN_HOURS:-8}
+max_hours=${MAX_RUN_HOURS:-18}
 poll_s=${POLL_S:-60}
 seed_file=${SEED_OFFSET_FILE:-data/.algotune_seed_offset}
 logdir=logs/$name

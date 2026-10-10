@@ -89,7 +89,8 @@ def main() -> None:
     p.add_argument("--split", default="pilot", choices=("pilot", "heldout"))
     p.add_argument("--sample", action="append", help="sample id(s); default: the whole split")
     p.add_argument("--epochs", type=int, default=1, help="repeats per sample")
-    p.add_argument("--time-limit", type=int, default=3600, help="per-agent wall-clock seconds")
+    p.add_argument("--time-limit", type=int, default=57600,
+                   help="per-agent wall-clock seconds (default 16 h: a backstop; agents end by budget)")
     p.add_argument("--name", required=True, help="run name; logs go to logs/<name>/")
     p.add_argument("--budget-type", default="cost",
                    help='what --budget meters: "cost" (default: dollars at swarm_scaling.prices), '
