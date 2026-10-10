@@ -45,6 +45,13 @@ Gathered 2026-10-05. Figure-read numbers are approximate (about ±0.01). Source 
 
 - No multi-agent, Deep Think or parallel-sampling results. Scores are single attempts ("allow no majority voting or parallel test-time compute"). Google scales one long trajectory (output cap 1M tokens).
 
+### Vals AI, "Do Agent Teams Pay Off? A Case Study on Vibe Code Bench" (2026-10-09, `sources/other/vals-multiagent-vcb.md`)
+
+- Setup: GPT 6 Sol (OpenAI Agents API `multi_agent`) and Claude Opus 5.5 (Claude Code headless, subagent tools on/off) on 50 full-stack web apps, single agent vs lead + up to 5 subagents, medium and max effort, one run per setup. Teams got a delegation instruction ("split, delegate, integrate and verify"), so each comparison is "subagents plus a delegation prompt" vs neither. Different harness per model.
+- Results: teams cost 1.8-5.1x the single agent. Only Sol medium's team gain was significant (+7.3 points, p = 0.005, paired t-test across apps). Opus: medium single 91.5% ($4.08), medium team 91.2% ($9.10), max single 89.8% ($23.77), max team 93.2% ($122, 2.9 h median). For Sol, max effort raised the single agent 11.4 points, more than a team did.
+- Mechanism notes: most extra team spend is cached input (Opus max subagents read a median 224M cached tokens per app vs 55M for the single agent). Opus leads wrote a CONTRACT.md first (42/50 runs) and delegated in sequential waves (build, features, test); Sol leads split by architecture in the first minutes and tested themselves. Sol team gains concentrated on harder apps, where single agents claimed tests passed on features never built.
+- Relation to this project: hierarchical lead/subagents, team vs single at the same effort, so not matched compute and no best-of-N independent baseline. Our design differs on all three (flat peers, matched per-agent budget, best-of-N independents), plus a verifiable optimisation task. Their "higher effort is an alternative to a team" result suggests an effort-matched single-agent arm. Their cached-input finding matches our pilot 3 measurement (91-95% of tokens were cache reads).
+
 ## Papers
 
 - Park et al., "Scaling Discovery through Test-Time Communication", arXiv 2609.21032 (Sept 2026). Identical agents, shared directory, no roles. A team of k matches 4k independent agents on ARC-AGI-3 (counted in game actions; the paper also reports output-token curves); multiplier 4.3x at k=3, 6.6x at k=5. Also polyomino packing and MNIST compression (beat best-known human result). Independent agents win when compute is limited or there is no clear measure of progress. Their protocol includes distinct approaches, evidence-backed adoption and preserved variation; token curves show an initial coordination cost.
