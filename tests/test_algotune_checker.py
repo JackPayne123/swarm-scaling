@@ -21,6 +21,7 @@ from inspect_ai.util._sandbox.events import SandboxEnvironmentProxy
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import swarm as swarm_module
 from swarm_scaling.swarm import Candidate
+from swarm_scaling.algotune_devkit import TIMING_ENV
 from swarm_scaling.tasks import add_checker, algotune_scorer, box_resources
 
 
@@ -105,8 +106,11 @@ def test_every_agent_gets_the_same_cpus_and_the_checker_its_own_eight() -> None:
     add_checker(config, team4)
     dumped = config.model_dump(mode="json", by_alias=True, exclude_none=True)["services"]
     assert {k: dumped["default"][k] for k in ("cpus", "cpuset", "mem_limit")} == {"cpus": 16.0, "cpuset": "0-15", "mem_limit": "117760m"}
-    assert {k: dumped["checker"][k] for k in ("cpus", "cpuset", "mem_limit")} == {"cpus": 8.0, "cpuset": "16-23", "mem_limit": "8192m"}
-    same = ("cpus", "cpuset", "mem_limit")
+    # the checker: its own cpuset and no CPU quota (a quota equal to the cpuset throttled ~1% of timed periods), and
+    # glibc heap trimming off for every timed process in it (otherwise the reference check measured page faults)
+    assert {k: dumped["checker"].get(k) for k in ("cpus", "cpuset", "mem_limit")} == {"cpus": None, "cpuset": "16-23", "mem_limit": "8192m"}
+    assert dumped["checker"]["environment"] == TIMING_ENV and "environment" not in dumped["default"]
+    same = ("cpus", "cpuset", "mem_limit", "environment")
     assert {k: v for k, v in dumped["checker"].items() if k not in same} == {
         k: v for k, v in dumped["default"].items() if k not in same
     }

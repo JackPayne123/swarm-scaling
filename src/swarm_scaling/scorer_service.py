@@ -15,17 +15,19 @@ API (JSON over HTTP, bearer token on every request):
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
-Alone baseline (--cache-alone, default on): the reference check compares the reference timed interleaved with the
+Alone baseline (--cache-alone, default off since 2026-10-10): the reference check compares the reference timed interleaved with the
 solver against the reference timed alone on the same instances. Instead of re-timing it alone in every job, the
 service times it once per (task, instance seeds, repeats, size, task image, CPU model), in a fresh container with no
 solver on the slot of the first job that needs it, keeps it in <work dir>/alone_cache/, and sends it into each job,
 whose dev_eval.py / verifier copy reads it (thread_guard.CachedAlone) and only times interleaved. The speedup timing
-is unchanged. Each job records `alone_baseline` (cached + age, or child). --no-cache-alone restores the per-job
-alternating child, e.g. if slot interference makes an idle-measured baseline unsafe (scripts/slot_interference.py).
+is unchanged. Each job records `alone_baseline` (cached + age, or child). Off by default: on BLAS-bound tasks four
+busy slots slow the reference 7-10%, so an idle-measured cached baseline read about 0.09 higher under load (scoring
+investigation); without the cache each job times it alone itself, alternating with the interleaved timing.
 
 One FIFO queue for all callers; each slot's worker takes the next job. Every QUEUE_SAMPLE_S the queue length and
 running job count are appended to <work dir>/queue.jsonl. Every job runs in a fresh container
-(`docker run --rm`, the task's image, no network, the slot's cpuset, 8 CPUs, 8 GB), so nothing a solver starts
+(`docker run --rm`, the task's image, no network, the slot's cpuset and no CPU quota, 8 GB, glibc heap trimming off
+through TIMING_ENV), so nothing a solver starts
 survives into the next job. Inputs (the solver, and for scoring the seeded verifier with the seed offset file) go in
 through stdin as a tar, so the offset file is never mounted where a solver could read it after the verifier
 deleted it. A job past its timeout has its own container killed by name (`docker kill scorer-<job id>`); nothing
@@ -44,6 +46,7 @@ import os
 import platform
 import queue
 import re
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -55,7 +58,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from swarm_scaling.algotune_devkit import ASSETS, FINAL_DEV_N, FINAL_DEV_SEED
+from swarm_scaling.algotune_devkit import ASSETS, FINAL_DEV_N, FINAL_DEV_SEED, TIMING_ENV
 
 KINDS = ("dev_eval", "final_eval", "score")
 TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600}
@@ -103,7 +106,7 @@ class Job:
             "queue_wait_s": None if self.started_at is None else round(self.started_at - self.queued_at, 3),
             "run_s": None if self.ended_at is None or self.started_at is None else round(self.ended_at - self.started_at, 3),
             "slot": self.slot, "cpu_model": cpu_model, "result": self.result, "output": self.output, "error": self.error,
-            "alone_baseline": self.alone_baseline,
+            "alone_baseline": self.alone_baseline, "timing_env": TIMING_ENV,
         }  # fmt: skip
 
 
@@ -163,7 +166,12 @@ def parse_score(stdout: str, reward_text: str | None) -> dict:
     }
 
 
-def docker_runner(docker: str = "docker", memory: str = "8g", cpus: int = 8, work_dir: Path | None = None):
+def timing_env_args() -> list[str]:
+    """`docker run -e` arguments for TIMING_ENV: in the process environment before Python starts, as glibc needs."""
+    return [arg for k, v in TIMING_ENV.items() for arg in ("-e", f"{k}={v}")]
+
+
+def docker_runner(docker: str = "docker", memory: str = "8g", work_dir: Path | None = None):
     """Returns run(job, cpuset, timeout_s) -> (result, output) running the job in a fresh container."""
 
     def run(job: Job, cpuset: str, timeout_s: float) -> tuple[dict | None, str]:
@@ -173,8 +181,9 @@ def docker_runner(docker: str = "docker", memory: str = "8g", cpus: int = 8, wor
             out.mkdir()
             out.chmod(0o777)  # the container writes as root
             cmd = [
+                # cpuset only: a --cpus quota equal to the cpuset throttles a fully busy job about 1% of the time
                 docker, "run", "--rm", "-i", "--init", "--name", name, "--network", "none", "--cpuset-cpus", cpuset,
-                "--cpus", str(cpus), "--memory", memory, "-w", "/app", "-v", f"{out}:/out",
+                "--memory", memory, *timing_env_args(), "-w", "/app", "-v", f"{out}:/out",
                 # the toolkit, as in the local checker (solvers may load /app/dev/reference_task.py); no secrets
                 "-v", f"{job.task.dev_dir}:/app/dev:ro",
             ]  # fmt: skip
@@ -265,7 +274,7 @@ class AloneCache:
         return payload, {"mode": "cached", "age_s": round(time.time() - oldest, 1), "measured_now": len(missing), "measure_s": measure_s}
 
 
-def docker_alone_measure(docker: str = "docker", memory: str = "8g", cpus: int = 8, timeout_s: float = TIMEOUTS_S["score"]):
+def docker_alone_measure(docker: str = "docker", memory: str = "8g", timeout_s: float = TIMEOUTS_S["score"]):
     """AloneCache's measure: thread_guard.py's alone-timing child (the code the per-job check runs) on each seed, in a
     fresh container with the job's limits, the toolkit and no solver, with the verifier's thread settings."""
 
@@ -275,7 +284,7 @@ def docker_alone_measure(docker: str = "docker", memory: str = "8g", cpus: int =
         script = f"export {threads}; exec python /app/dev/thread_guard.py /app/dev/reference_task.py {reps} 0"
         cmd = [
             docker, "run", "--rm", "-i", "--init", "--name", name, "--network", "none", "--cpuset-cpus", cpuset,
-            "--cpus", str(cpus), "--memory", memory, "-w", "/app", "-v", f"{job.task.dev_dir}:/app/dev:ro",
+            "--memory", memory, *timing_env_args(), "-w", "/app", "-v", f"{job.task.dev_dir}:/app/dev:ro",
             job.task.image, "sh", "-c", script,
         ]  # fmt: skip
         stdin = "".join(json.dumps({"n": size, "random_seed": s}) + "\n" for s in seeds)
@@ -332,7 +341,8 @@ class Scorer:
         return {
             "ok": True, "slots": len(self.cpusets), "queue_len": self.queue.qsize(), "cpu_model": self.cpu_model,
             "version": self.version, "seed_offset_id": self.seed_offset_id, "task_image_digest": self.task_image_digest,
-            "cache_alone": self.alone_cache is not None,
+            "cache_alone": self.alone_cache is not None, "timing_env": TIMING_ENV,
+            "cpu_dma_latency_us": cpu_dma_latency(),
             "tasks": sorted({a.name for a in self.tasks.values()}),
         }  # fmt: skip
 
@@ -481,6 +491,18 @@ def cpu_model() -> str:
     return platform.processor() or "unknown"
 
 
+def cpu_dma_latency(path: str = "/dev/cpu_dma_latency") -> int | None:
+    """The CPU latency limit in effect (µs; 0 = no C-state exits), read from the PM QoS device; None where unreadable.
+
+    scorer.sh starts scripts/cloud/hold_cpu_dma_latency.py on the scorer VM, which holds it at 0 for the VM's life.
+    """
+    try:
+        with open(path, "rb") as f:
+            return struct.unpack("i", f.read(4))[0]
+    except (OSError, struct.error):
+        return None
+
+
 def docker_cpus(docker: str = "docker") -> int:
     out = subprocess.run([docker, "info", "--format", "{{.NCPU}}"], capture_output=True, text=True)
     if out.returncode != 0:
@@ -546,10 +568,8 @@ def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, Ta
     return tasks
 
 
-def main() -> None:
-    from swarm_scaling.tasks import (
-        PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_image_digest, task_names,
-    )  # fmt: skip
+def parser() -> argparse.ArgumentParser:
+    from swarm_scaling.tasks import PROJECT_ROOT
 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default="0.0.0.0")
@@ -558,9 +578,17 @@ def main() -> None:
     p.add_argument("--first-cpu", type=int, default=0, help="slot k uses CPUs first + 8k .. first + 8k + 7")
     p.add_argument("--memory", default="8g")
     p.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "data" / ".scorer")
-    p.add_argument("--cache-alone", action=argparse.BooleanOptionalAction, default=True,
-                   help="time the reference alone once per instance set and reuse it (default); --no-cache-alone: every job times it")
-    args = p.parse_args()
+    p.add_argument("--cache-alone", action=argparse.BooleanOptionalAction, default=False,
+                   help="time the reference alone once per instance set and reuse it (default off: every job times it)")
+    return p
+
+
+def main() -> None:
+    from swarm_scaling.tasks import (
+        PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_image_digest, task_names,
+    )  # fmt: skip
+
+    args = parser().parse_args()
 
     token = os.environ.get("SCORER_TOKEN")
     if not token:
@@ -590,7 +618,8 @@ def main() -> None:
     )  # fmt: skip
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
-          f"version {scorer.version}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}", flush=True)  # fmt: skip
+          f"version {scorer.version}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}, "
+          f"cpu_dma_latency {cpu_dma_latency()}", flush=True)  # fmt: skip
     server.serve_forever()
 
 

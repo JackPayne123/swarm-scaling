@@ -25,6 +25,7 @@ from swarm_scaling.algotune_devkit import (
     CHECKER,
     CHECKER_LOCK,
     SOLVER_PATH,
+    TIMING_ENV,
     algotune_setup,
     end_checker_processes,
     remote,
@@ -159,7 +160,7 @@ def algotune_scorer() -> Scorer:
             "log_speedup": math.log(_speedup(result.as_float())),
             "checker": {
                 "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup,
-                "alone_baseline": {"mode": "child"},
+                "alone_baseline": {"mode": "child"}, "timing_env": TIMING_ENV,
             },
         }
         return result
@@ -451,12 +452,19 @@ def box_resources(
 def add_checker(config: ComposeConfig, resources: dict) -> None:
     """Add the `checker` service, a copy of `default` that only the dev_eval tool, final selection and scoring use.
 
-    Pins both boxes to their cpusets from `box_resources` and sets their CPU and memory limits.
-    ComposeService has no cpuset field; extras set after construction reach the generated YAML.
+    Pins both boxes to their cpusets from `box_resources` and sets their memory limits; the agent box also gets a CPU
+    quota, the checker none: a quota equal to its cpuset throttled fully busy timed runs about 1% of the time
+    (scoring investigation, 2026-10-10). Every process in the checker (dev_eval, the verifier, the alone-timer child)
+    gets TIMING_ENV from the service environment. ComposeService has no cpuset field; extras set after construction
+    reach the generated YAML.
     """
     default = _limit_agent_box(config, resources)
     checker = default.model_copy(deep=True)
-    checker.cpus = float(resources["checker_cpus"])
+    checker.cpus = None
+    env = checker.environment or {}
+    if isinstance(env, list):
+        env = dict(e.split("=", 1) if "=" in e else (e, None) for e in env)
+    checker.environment = {**env, **TIMING_ENV}
     checker.mem_limit = f"{resources['checker_memory_mb']}m"
     checker.__pydantic_extra__["cpuset"] = resources["checker_cpuset"]
     config.services[CHECKER] = checker

@@ -40,6 +40,18 @@ DEV_EVAL_TIMEOUT_S = 900  # per dev_eval tool call, run time only (not the queue
 # One queue for the whole process: parallel samples' checkers share CPUs 8-15, so their timings must not overlap.
 CHECKER_LOCK = anyio.Lock()  # waiters are served in arrival order (FIFO)
 
+# glibc heap trimming off in every timed process (2026-10-10, scoring investigation): with the defaults the
+# reference's temporaries were either recycled heap (0 page faults, 53-55 ms on generalized_eigenvalues_real) or
+# trimmed and refaulted (4,600-5,800 faults, 63-72 ms) depending on the heap layout the solver left, so the
+# reference check measured the allocator. glibc reads these when the process starts, so they go in the container's
+# environment (scorer `docker run -e`, the local checker's compose environment), never from inside Python; the
+# alone-timer child inherits them from dev_eval or the verifier.
+TIMING_ENV = {
+    "MALLOC_MMAP_THRESHOLD_": "33554432",
+    "MALLOC_TRIM_THRESHOLD_": "68719476736",
+    "MALLOC_TOP_PAD_": "268435456",
+}
+
 # Selection runs on its own dev instances: dev_eval's default seeds start at 0, these start far away.
 FINAL_DEV_SEED = 50_000
 FINAL_DEV_N = 20
@@ -135,7 +147,8 @@ def scorer_job(state: TaskState, kind: str, source: bytes, agent_id: str = "", *
 
 def remote_timing(rec: dict) -> dict:
     """Telemetry of a finished scorer job, in the shape of the local checker's plus where it ran."""
-    keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id", "alone_baseline")
+    keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id", "alone_baseline",
+            "timing_env")
     return {k: rec.get(k) for k in keep}
 
 
@@ -163,6 +176,7 @@ async def timed_dev_eval(
     timing = {
         "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended,
         "run_s": round(ended - started, 3), "cleanup": cleanup, "alone_baseline": {"mode": "child"},
+        "timing_env": TIMING_ENV,
     }  # fmt: skip
     return detail, report, timing
 

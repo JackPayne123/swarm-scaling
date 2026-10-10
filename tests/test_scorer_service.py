@@ -15,9 +15,10 @@ from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbo
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import scorer_client
 from swarm_scaling import swarm as swarm_module
+from swarm_scaling.algotune_devkit import TIMING_ENV
 from swarm_scaling.scorer_service import (
-    AloneCache, Job, JobError, Scorer, TaskAssets, docker_runner, handler, image_digest_with_retry, job_inputs, job_script,
-    slot_cpus,
+    AloneCache, Job, JobError, Scorer, TaskAssets, docker_alone_measure, docker_runner, handler, image_digest_with_retry,
+    job_inputs, job_script, parser, slot_cpus,
 )
 from swarm_scaling.swarm import Candidate
 from swarm_scaling.tasks import algotune_scorer
@@ -218,8 +219,14 @@ def test_a_job_past_its_timeout_has_only_its_own_container_killed(tmp_path) -> N
     assert kills == [["kill", "scorer-j1"], ["kill", "scorer-j2"]]
     first = calls[0]
     assert first[:4] == ["run", "--rm", "-i", "--init"] and first[first.index("--network") + 1] == "none"
-    assert first[first.index("--cpuset-cpus") + 1] == "8-15" and first[first.index("--cpus") + 1] == "8"
+    # cpuset only, no --cpus quota (it throttled ~1% of a fully busy job's periods on an 8-CPU cpuset)
+    assert first[first.index("--cpuset-cpus") + 1] == "8-15" and "--cpus" not in first
     assert first[first.index("--memory") + 1] == "8g"
+    # glibc heap trimming off in the process environment of the verifier (score) and of dev_eval
+    runs = [c for c in calls if c[0] == "run"]
+    for argv in runs:
+        assert {argv[i + 1] for i, a in enumerate(argv) if a == "-e"} >= {f"{k}={v}" for k, v in TIMING_ENV.items()}
+    assert "dev_eval.py" in runs[1][-1] and "test.sh" in runs[0][-1]
     # the seeded verifier (with the offset file) goes in through stdin, never as a mount a solver could read
     assert not any(str(task.tests_dir) in arg for arg in first)
 
@@ -307,3 +314,27 @@ def test_startup_retries_an_intermittent_image_inspect_failure_and_gives_up_afte
 
     with pytest.raises(RuntimeError, match="No such image"):
         image_digest_with_retry("hb__x", missing, tries=2, wait_s=0)
+
+
+def test_the_alone_measurement_container_gets_the_allocator_settings_and_no_cpu_quota(tmp_path) -> None:
+    # The cached alone baseline must be timed under the same allocator and CPU conditions as the jobs it is compared to.
+    docker = tmp_path / "docker"
+    docker.write_text(f"""#!{sys.executable}
+import json, sys
+open({str(tmp_path / "argv.json")!r}, "w").write(json.dumps(sys.argv[1:]))
+for line in sys.stdin:
+    print("ALONE 1000")
+""")
+    docker.chmod(0o755)
+    task = assets(tmp_path)
+    measure = docker_alone_measure(docker=str(docker))
+    assert measure(Job("j", "dev_eval", task, "", {}, {}), [1, 2], 9, 3, "8-15") == [1000, 1000]
+    argv = json.loads((tmp_path / "argv.json").read_text())
+    assert "--cpus" not in argv and argv[argv.index("--cpuset-cpus") + 1] == "8-15"
+    assert {argv[i + 1] for i, a in enumerate(argv) if a == "-e"} == {f"{k}={v}" for k, v in TIMING_ENV.items()}
+
+
+def test_the_alone_baseline_cache_is_off_unless_asked_for() -> None:
+    # On BLAS-bound tasks an idle-measured cached baseline read ~0.09 higher than the busy-slot interleaved timing.
+    assert parser().parse_args([]).cache_alone is False
+    assert parser().parse_args(["--cache-alone"]).cache_alone is True

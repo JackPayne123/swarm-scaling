@@ -217,3 +217,22 @@ def test_cached_alone_timings_replace_only_the_alone_child_and_are_deleted_befor
     with pytest.raises(ValueError, match="repeats"):
         run(2_000_000, reps=10)
     assert dev_eval.evaluate(clean, n=1, seed=0, size=100, reps=3)["alone_baseline"] == "child"  # no cache file
+
+
+def test_the_alone_timer_child_inherits_the_allocator_settings(tmp_path, monkeypatch) -> None:
+    # glibc reads MALLOC_* at process start: the child must get them from its parent's environment (the container's).
+    seen = tmp_path / "seen.txt"
+    (tmp_path / "reference_task.py").write_text(
+        "import os\n"
+        f"open({str(seen)!r}, 'w').write(os.environ.get('MALLOC_TRIM_THRESHOLD_', 'unset'))\n"
+        "class Task:\n"
+        "    def generate_problem(self, n, random_seed):\n"
+        "        return list(range(n))\n"
+        "    def solve(self, problem):\n"
+        "        return sorted(problem)\n"
+    )
+    monkeypatch.setenv("MALLOC_TRIM_THRESHOLD_", "68719476736")
+    timer = thread_guard.AloneTimer(str(tmp_path / "reference_task.py"), 1)
+    assert timer.time(n=3, random_seed=0) > 0
+    timer.close()
+    assert seen.read_text() == "68719476736"

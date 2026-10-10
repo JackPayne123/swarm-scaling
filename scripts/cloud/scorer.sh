@@ -4,13 +4,14 @@
 # Usage:
 #   scorer.sh up --ref <git-ref> [--machine <AWS_FAMILY>.8xlarge: c7a in us-east-1, m7a in Sydney] [--hours 30] [-- <scorer_service.sh args, default --slots 2>]
 #     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
-#     checks out <git-ref>, starts the service detached, opens the port to this machine only, and waits for
+#     checks out <git-ref>, holds /dev/cpu_dma_latency at 0 (hold_cpu_dma_latency.py, log cpu_dma_latency.log),
+#     starts the service detached, opens the port to this machine only, and waits for
 #     /health. State (URL, token, instance) goes to $SCORER_STATE (mode 600); run_sample.sh reads it for
 #     `--checker remote` runs and opens the port to each agent VM's IP for that run.
 #     Slots: each takes 8 CPUs from --first-cpu (default 0) and the service needs 8 more, so e.g.
 #     `--machine c7a.16xlarge -- --slots 4`. `fleet.py scorer up --plan <plan.tsv> --ref <ref>` picks both from a plan.
 #   scorer.sh status      state, instance state and /health
-#   scorer.sh down        copies the job log, queue-length samples (queue.jsonl) and service log to logs/_scorer/<instance>/,
+#   scorer.sh down        copies the job log, queue samples (queue.jsonl), service and latency logs to logs/_scorer/<instance>/,
 #                         terminates the VM (and any other instance tagged role=scorer), closes every rule on the scorer
 #                         port, drops the state
 # Env: SEED_OFFSET_FILE (default data/.algotune_seed_offset).
@@ -81,6 +82,10 @@ start=$(date +%s)
 find /var/lib/containerd /var/lib/docker /opt /root/.cache /root/.local -type f -print0 2>/dev/null | xargs -0 -P 16 cat > /dev/null 2>&1 || true
 echo "volume warm-up $(( $(date +%s) - start )) s"
 install -m 600 "$up/seed_offset" data/.algotune_seed_offset
+# Hold the CPU latency limit at 0 for the VM's life (no C2 exits with 800 us latency; scoring investigation).
+setsid nohup python3 scripts/cloud/hold_cpu_dma_latency.py > "$state/cpu_dma_latency.log" 2>&1 < /dev/null &
+sleep 1
+cat "$state/cpu_dma_latency.log"
 install -m 600 "$up/env" "$state/scorer.env"
 rm -rf "$up"
 # The service reads the token from its environment; the file is removed once the shell has loaded it.
@@ -126,7 +131,7 @@ down() {
   if load_state && [ "$(vm_state)" != gone ]; then
     dir=logs/_scorer/$VM_ID
     mkdir -p "$dir"
-    vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_REPO#/}/data/.scorer/queue.jsonl ${REMOTE_STATE#/}/scorer.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
+    vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_REPO#/}/data/.scorer/queue.jsonl ${REMOTE_STATE#/}/scorer.log ${REMOTE_STATE#/}/cpu_dma_latency.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
       vm_get /tmp/scorer-logs.tgz "$dir/" && tar -C "$dir" -xzf "$dir/scorer-logs.tgz" && rm "$dir/scorer-logs.tgz" &&
       echo "scorer logs in $dir" || echo "could not copy the scorer logs" >&2
   fi
@@ -149,5 +154,5 @@ case $cmd in
   up) up "$@" ;;
   status) status ;;
   down) down ;;
-  *) sed -n '2,16p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,17p' "$0" >&2; exit 2 ;;
 esac
