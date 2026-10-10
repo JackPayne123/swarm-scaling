@@ -1,0 +1,13 @@
+# Pilot 5b (2026-10-10): replication of pilot 5 on a second task, generalized_eigenvalues_real, at $2 per agent to fit
+# the remaining Anthropic credit (~$27). Same settings otherwise: Claude Opus 5.5 effort xhigh, run to budget (submit
+# refused below 80% spend), 16 h backstop, 1 h cache, 4 CPUs per agent, remote scorer. Arms: team of 4, team of 2,
+# 6 independent agents (best-of-2 and best-of-4 resampling). Max model spend $24 (min about $19 at 80%).
+# name                       cloud  machine  runner args
+pilot5b-team4-geneig         aws    auto     --arm team --n 4 --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-team2-geneig         aws    auto     --arm team --n 2 --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e1      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e2      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e3      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e4      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e5      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
+pilot5b-indep-geneig-e6      aws    auto     --arm independent --time-limit 57600 --models anthropic/claude-opus-5-5 --reasoning-effort xhigh --budget 2 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 4 --sample algotune/generalized-eigenvalues-real
