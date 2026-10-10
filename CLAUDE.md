@@ -23,4 +23,5 @@ Jack's independent one-week research project (not Lyptus): matched-compute swarm
 - Docker Desktop: you may start it (`open -g -a Docker`) only if it is not running, then wait with a bounded `docker info` loop. Never start it twice, and never stop, restart or kill it. The `guard-docker-desktop.sh` hook enforces this.
 - Run at most one Docker build or one sandboxed eval at a time on the Mac unless Jack says otherwise.
 - Judges must not share a model family with the agents being compared (self-preference bias).
+- Claude manages pre-flights and pilot runs end to end without asking (Jack, 2026-10-10): run the pre-flight, fix or roll back what fails, launch when it passes, monitor, rescore, analyse, and tear down cloud VMs and the scorer when a pilot ends. Ask Jack only for new spend beyond the agreed pilot design, design changes, or a step only he can do (logins, console-only settings). Report results as they land.
 - Do not cite Ord's "1,200 agents / 700 attacked" Hugging Face figures; they are not in OpenAI's report.
