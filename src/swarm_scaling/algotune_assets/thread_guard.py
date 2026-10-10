@@ -17,6 +17,12 @@ Mac it made legitimate solvers read 0.78x and 1.45x (2026-10-09). The first vers
 CPU used by solver threads, and it flagged two legitimate pilot-3 eigenvalue solvers whose `blas_thread_shutdown_`
 made OpenBLAS restart its pool (2026-10-09).
 
+On the remote scorer the alone timings can come from a cache instead (`CachedAlone`, scorer_service --cache-alone):
+the scorer measures them once per task, instances, repeats, size, image and CPU model, in a container with no solver,
+and passes them in a file that is read and deleted before the solver is imported. `make_alone_timer` picks the cache
+when that file exists and the alternating child otherwise. Only the alone timing changes; the interleaved timing of
+reference and solver, and the speedup, do not.
+
 `ThreadGuard` still measures the CPU of solver threads during the reference's timed calls, for the logs only:
 the reference's own threads are those alive after an untimed reference call made before the solver is imported,
 plus any thread that first appears during a reference call. CPU of a thread that exits during a call is not seen.
@@ -130,6 +136,8 @@ class AloneTimer:
     only to these two processes. Elsewhere (unit tests) the child times while this process waits for its answer.
     """
 
+    mode = "child"
+
     def __init__(self, reference_path: str, reps: int) -> None:
         self.pause = in_container()
         self.proc = subprocess.Popen(
@@ -155,6 +163,37 @@ class AloneTimer:
             os.kill(self.proc.pid, signal.SIGCONT)
         self.proc.stdin.close()
         self.proc.wait(timeout=60)
+
+
+class CachedAlone:
+    """Alone timings measured earlier on the scorer, with AloneTimer's interface. The file is deleted once read, so
+    the solver (imported later, in the same container) never sees it; it maps each instance's random seed to ns."""
+
+    mode = "cached"
+
+    def __init__(self, path: str, reps: int) -> None:
+        with open(path) as f:
+            data = json.load(f)
+        os.remove(path)
+        if data["reps"] != reps:
+            raise ValueError(f"cached alone timings are for {data['reps']} repeats, this run times {reps}")
+        self.size = data["size"]
+        self.ns = {int(seed): ns for seed, ns in data["ns"].items()}
+
+    def time(self, n: int, random_seed: int) -> int:
+        if n != self.size:
+            raise ValueError(f"cached alone timings are for size {self.size}, not {n}")
+        return self.ns[random_seed]
+
+    def close(self) -> None:
+        pass
+
+
+def make_alone_timer(reference_path: str, reps: int, cache_path: str | None = None):
+    """CachedAlone when the scorer sent cached alone timings (a file at cache_path), else today's AloneTimer."""
+    if cache_path is not None and os.path.exists(cache_path):
+        return CachedAlone(cache_path, reps)
+    return AloneTimer(reference_path, reps)
 
 
 def _pause(pid: int) -> None:

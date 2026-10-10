@@ -15,6 +15,14 @@ API (JSON over HTTP, bearer token on every request):
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
+Alone baseline (--cache-alone, default on): the reference check compares the reference timed interleaved with the
+solver against the reference timed alone on the same instances. Instead of re-timing it alone in every job, the
+service times it once per (task, instance seeds, repeats, size, task image, CPU model), in a fresh container with no
+solver on the slot of the first job that needs it, keeps it in <work dir>/alone_cache/, and sends it into each job,
+whose dev_eval.py / verifier copy reads it (thread_guard.CachedAlone) and only times interleaved. The speedup timing
+is unchanged. Each job records `alone_baseline` (cached + age, or child). --no-cache-alone restores the per-job
+alternating child, e.g. if slot interference makes an idle-measured baseline unsafe (scripts/slot_interference.py).
+
 One FIFO queue for all callers; each slot's worker takes the next job. Every QUEUE_SAMPLE_S the queue length and
 running job count are appended to <work dir>/queue.jsonl. Every job runs in a fresh container
 (`docker run --rm`, the task's image, no network, the slot's cpuset, 8 CPUs, 8 GB), so nothing a solver starts
@@ -27,6 +35,7 @@ else is ever killed. The seed offset and the seeded verifier copies exist only o
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import io
 import json
@@ -52,6 +61,8 @@ KINDS = ("dev_eval", "final_eval", "score")
 TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600}
 OUTPUT_CHARS = 20_000  # verifier_stdout / dev_eval output kept per job (the end, where the summary is)
 KILL_GRACE_S = 60  # after docker kill, how long to wait for the docker CLI to return
+DEV_SEED_OFFSET = 10_000  # dev_eval.py's SEED_OFFSET: dev instance i of a job is seed DEV_SEED_OFFSET + seed + i
+THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")  # set to 8 by default
 SLOT_CPUS = 8
 SERVICE_CPUS = 8  # CPUs left outside every slot for this service, Docker and the OS
 QUEUE_SAMPLE_S = 10
@@ -82,6 +93,8 @@ class Job:
     result: dict | None = None
     output: str = ""
     error: str | None = None
+    alone_payload: dict | None = None  # cached alone timings sent into the job, or None (the job times them itself)
+    alone_baseline: dict | None = None  # what was sent: {"mode": "cached", "age_s", ...} or {"mode": "child"}
 
     def view(self, cpu_model: str) -> dict:
         return {
@@ -90,6 +103,7 @@ class Job:
             "queue_wait_s": None if self.started_at is None else round(self.started_at - self.queued_at, 3),
             "run_s": None if self.ended_at is None or self.started_at is None else round(self.ended_at - self.started_at, 3),
             "slot": self.slot, "cpu_model": cpu_model, "result": self.result, "output": self.output, "error": self.error,
+            "alone_baseline": self.alone_baseline,
         }  # fmt: skip
 
 
@@ -109,13 +123,14 @@ def _tar(files: dict[str, bytes]) -> bytes:
 
 def job_inputs(job: Job) -> bytes:
     """The tar a job's container extracts at /: the solver, plus the seeded verifier for scoring."""
+    alone = {} if job.alone_payload is None else {"alone": json.dumps(job.alone_payload).encode()}
     if job.kind != "score":
-        return _tar({"job/solver.py": job.solver_source.encode()})
+        return _tar({"job/solver.py": job.solver_source.encode(), **{"job/alone.json": v for v in alone.values()}})
     files = {"app/solver.py": job.solver_source.encode()}
     for path in sorted(job.task.tests_dir.rglob("*")):
         if path.is_file():
             files[f"tests/{path.relative_to(job.task.tests_dir)}"] = path.read_bytes()
-    return _tar(files)
+    return _tar({**files, **{"tests/alone_cache.json": v for v in alone.values()}})
 
 
 def job_script(job: Job) -> str:
@@ -128,6 +143,7 @@ def job_script(job: Job) -> str:
         )
     a = job.args
     argv = ["--n", a["n"], "--seed", a["seed"], "--reps", a["reps"]] + (["--size", a["size"]] if a.get("size") is not None else [])
+    argv += ["--alone-cache", "/job/alone.json"] if job.alone_payload is not None else []
     return "tar -x -C / && python /app/dev/dev_eval.py /job/solver.py " + " ".join(str(x) for x in argv) + " --json-out /out/result.json"
 
 
@@ -195,6 +211,87 @@ def docker_runner(docker: str = "docker", memory: str = "8g", cpus: int = 8, wor
     return run
 
 
+def alone_request(job: Job) -> tuple[list[int], int, int]:
+    """The instances (generate_problem seeds), problem size and repeats a job times the reference alone on."""
+    if job.kind == "score":  # the verifier's constants and the seed offset of this scorer's seeded copy
+        text = (job.task.tests_dir / "test_outputs.py").read_text()
+        size, n, reps = (int(re.search(rf"^{k} = (\d+)", text, re.M).group(1)) for k in ("PROBLEM_SIZE", "NUM_TEST_INSTANCES", "NUM_REPEATS"))
+        offset = int((job.task.tests_dir / "seed_offset").read_text())
+        return [offset + i for i in range(n)], size, reps
+    a = job.args
+    size = a["size"] if a.get("size") is not None else json.loads((job.task.dev_dir / "config.json").read_text())["problem_size"]
+    return [DEV_SEED_OFFSET + a["seed"] + i for i in range(a["n"])], size, a["reps"]
+
+
+class AloneCache:
+    """The reference's alone timing (min ns) per instance seed, per (task, size, repeats, image, CPU model).
+
+    Missing instances are measured by `measure(job, seeds, size, reps, cpuset)` on the slot of the job that first
+    needs them, one key at a time, and kept in <dir>/<task>-<key hash>.json with when each was measured.
+    """
+
+    def __init__(self, dir: Path, measure: Callable, image_digest: str | dict | None, cpu_model: str) -> None:
+        self.dir, self.measure = dir, measure
+        self.image_digest, self.cpu_model = image_digest, cpu_model
+        dir.mkdir(parents=True, exist_ok=True)
+        self.locks: dict[Path, threading.Lock] = {}
+        self.guard = threading.Lock()
+
+    def get(self, job: Job, cpuset: str) -> tuple[dict, dict]:
+        """(the alone timings the job's dev_eval / verifier reads, what to record about them)."""
+        seeds, size, reps = alone_request(job)
+        key = {"task": job.task.name, "size": size, "reps": reps, "image": job.task.image,
+               "image_digest": json.dumps(self.image_digest), "cpu_model": self.cpu_model}  # fmt: skip
+        path = self.dir / f"{job.task.name}-{hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:16]}.json"
+        with self.guard:
+            lock = self.locks.setdefault(path, threading.Lock())
+        with lock:
+            data = json.loads(path.read_text()) if path.exists() else {"key": key, "ns": {}, "at": {}, "measured": []}
+            missing = [s for s in seeds if str(s) not in data["ns"]]
+            measure_s = None
+            if missing:
+                start = time.time()
+                values = self.measure(job, missing, size, reps, cpuset)
+                measure_s = round(time.time() - start, 3)
+                for seed, ns in zip(missing, values, strict=True):
+                    data["ns"][str(seed)], data["at"][str(seed)] = ns, start
+                data["measured"].append({"at": start, "instances": len(missing), "measure_s": measure_s, "cpuset": cpuset, "job_id": job.id})
+                path.with_suffix(".tmp").write_text(json.dumps(data))
+                path.with_suffix(".tmp").replace(path)
+                print(f"alone baseline for {job.task.name} (size {size}, {reps} repeats): measured {len(missing)} instances "
+                      f"on CPUs {cpuset} in {measure_s:.1f}s", flush=True)  # fmt: skip
+        oldest = min(data["at"][str(s)] for s in seeds)
+        payload = {"size": size, "reps": reps, "ns": {str(s): data["ns"][str(s)] for s in seeds}}
+        return payload, {"mode": "cached", "age_s": round(time.time() - oldest, 1), "measured_now": len(missing), "measure_s": measure_s}
+
+
+def docker_alone_measure(docker: str = "docker", memory: str = "8g", cpus: int = 8, timeout_s: float = TIMEOUTS_S["score"]):
+    """AloneCache's measure: thread_guard.py's alone-timing child (the code the per-job check runs) on each seed, in a
+    fresh container with the job's limits, the toolkit and no solver, with the verifier's thread settings."""
+
+    def measure(job: Job, seeds: list[int], size: int, reps: int, cpuset: str) -> list[int]:
+        name = f"scorer-{job.id}-alone"
+        threads = " ".join(f'{v}="${{{v}:-8}}"' for v in THREAD_VARS)
+        script = f"export {threads}; exec python /app/dev/thread_guard.py /app/dev/reference_task.py {reps} 0"
+        cmd = [
+            docker, "run", "--rm", "-i", "--init", "--name", name, "--network", "none", "--cpuset-cpus", cpuset,
+            "--cpus", str(cpus), "--memory", memory, "-w", "/app", "-v", f"{job.task.dev_dir}:/app/dev:ro",
+            job.task.image, "sh", "-c", script,
+        ]  # fmt: skip
+        stdin = "".join(json.dumps({"n": size, "random_seed": s}) + "\n" for s in seeds)
+        try:
+            proc = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            subprocess.run([docker, "kill", name], capture_output=True, timeout=KILL_GRACE_S)
+            raise JobError(f"alone baseline timed out after {timeout_s:g}s") from None
+        values = [int(line.split()[1]) for line in proc.stdout.splitlines() if line.startswith("ALONE ")]
+        if proc.returncode != 0 or len(values) != len(seeds):
+            raise JobError(f"alone baseline: {len(values)} of {len(seeds)} timings, exit {proc.returncode}: {proc.stderr[-500:]}")
+        return values
+
+    return measure
+
+
 class Scorer:
     """The job store, the FIFO queue and one worker thread per slot."""
 
@@ -211,6 +308,7 @@ class Scorer:
         log_path: Path | None = None,
         queue_log_path: Path | None = None,
         queue_sample_s: float = QUEUE_SAMPLE_S,
+        alone_cache: AloneCache | None = None,
     ) -> None:
         self.tasks = {**tasks, **{a.slug: a for a in tasks.values()}}  # accept the task name or the sample id
         self.cpusets, self.run = cpusets, run
@@ -218,6 +316,7 @@ class Scorer:
         self.task_image_digest = task_image_digest
         self.timeouts_s = timeouts_s or TIMEOUTS_S
         self.log_path = log_path
+        self.alone_cache = alone_cache
         self.jobs: dict[str, Job] = {}
         self.queue: queue.Queue[Job] = queue.Queue()  # FIFO across every caller
         self.lock = threading.Lock()
@@ -233,6 +332,7 @@ class Scorer:
         return {
             "ok": True, "slots": len(self.cpusets), "queue_len": self.queue.qsize(), "cpu_model": self.cpu_model,
             "version": self.version, "seed_offset_id": self.seed_offset_id, "task_image_digest": self.task_image_digest,
+            "cache_alone": self.alone_cache is not None,
             "tasks": sorted({a.name for a in self.tasks.values()}),
         }  # fmt: skip
 
@@ -300,6 +400,12 @@ class Scorer:
             job = self.queue.get()
             with self.lock:
                 job.status, job.slot, job.started_at = "running", slot, time.time()
+            job.alone_baseline = {"mode": "child"}
+            if self.alone_cache is not None:
+                try:
+                    job.alone_payload, job.alone_baseline = self.alone_cache.get(job, self.cpusets[slot])
+                except Exception as ex:  # this job falls back to timing the reference alone itself
+                    job.alone_baseline = {"mode": "child", "cache_error": f"{type(ex).__name__}: {ex}"}
             try:
                 result, output = self.run(job, self.cpusets[slot], self.timeouts_s[job.kind])
                 status, error = "done", None
@@ -439,6 +545,8 @@ def main() -> None:
     p.add_argument("--first-cpu", type=int, default=0, help="slot k uses CPUs first + 8k .. first + 8k + 7")
     p.add_argument("--memory", default="8g")
     p.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "data" / ".scorer")
+    p.add_argument("--cache-alone", action=argparse.BooleanOptionalAction, default=True,
+                   help="time the reference alone once per instance set and reuse it (default); --no-cache-alone: every job times it")
     args = p.parse_args()
 
     token = os.environ.get("SCORER_TOKEN")
@@ -460,13 +568,16 @@ def main() -> None:
     # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
     digests = {a.image: task_image_digest(a.image) for a in tasks.values()}
     digest = next(iter(digests.values())) if len(digests) == 1 else digests
+    cpu = cpu_model()
+    alone = AloneCache(args.work_dir / "alone_cache", docker_alone_measure(memory=args.memory), digest, cpu) if args.cache_alone else None
     scorer = Scorer(
-        tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu_model(), git_version(PROJECT_ROOT),
+        tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu, git_version(PROJECT_ROOT),
         seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl", queue_log_path=args.work_dir / "queue.jsonl",
+        alone_cache=alone,
     )  # fmt: skip
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
-          f"version {scorer.version}, seed offset id {scorer.seed_offset_id}", flush=True)  # fmt: skip
+          f"version {scorer.version}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}", flush=True)  # fmt: skip
     server.serve_forever()
 
 

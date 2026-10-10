@@ -158,7 +158,8 @@ def algotune_scorer() -> Scorer:
             "reference_inflation": float(inflation.group(1)) if inflation and inflation.group(1) != "None" else None,
             "log_speedup": math.log(_speedup(result.as_float())),
             "checker": {
-                "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup
+                "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended, "cleanup": cleanup,
+                "alone_baseline": {"mode": "child"},
             },
         }
         return result
@@ -225,14 +226,15 @@ def seed_with_offset(test_outputs: str) -> str:
 # with_thread_guard: anchor -> replacement in the verifier, each anchor required exactly once.
 _GUARD_PATCHES = {
     _VERIFIER_IMPORT: _VERIFIER_IMPORT
-    + "from thread_guard import AloneTimer, ThreadGuard, reference_inflation, reference_inflation_error\n\n"
+    + "from thread_guard import ThreadGuard, make_alone_timer, reference_inflation, reference_inflation_error\n\n"
     + "_GUARD = _ALONE_TIMER = None  # set in problem_set, before the solver is imported\n"
     + "_ALONE = []  # per timed problem: the reference's min timed call alone, in the AloneTimer process (ns)\n"
     + "_WITH_SOLVER = []  # per timed problem: the reference's min timed call interleaved with the solver (ns)\n",
     '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n    return problems\n': (
         '    logger.info(f"All {NUM_TEST_INSTANCES} problems generated.")\n'
         "    global _GUARD, _ALONE_TIMER\n"
-        "    _ALONE_TIMER = AloneTimer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS)\n"
+        "    _ALONE_TIMER = make_alone_timer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS,\n"
+        "                                    str(Path(__file__).with_name('alone_cache.json')))\n"
         "    task.solve(problems[0])\n"
         "    _GUARD = ThreadGuard()\n"
         "    return problems\n"
@@ -262,6 +264,7 @@ _GUARD_PATCHES = {
     "    if validity and total_time_solver > 0:\n": (
         "    _ALONE_TIMER.close()\n"
         "    print(f\"Thread check: {_GUARD.summary()}\")\n"
+        "    print(f\"Alone baseline: {_ALONE_TIMER.mode}\")\n"
         "    print(f\"Reference inflation: {reference_inflation(_WITH_SOLVER, _ALONE)}\")\n"
         "    if reference_inflation_error(_WITH_SOLVER, _ALONE) is not None:\n"
         "        logger.error(reference_inflation_error(_WITH_SOLVER, _ALONE))\n"

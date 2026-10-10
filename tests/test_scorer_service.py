@@ -15,7 +15,9 @@ from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbo
 from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import scorer_client
 from swarm_scaling import swarm as swarm_module
-from swarm_scaling.scorer_service import Job, JobError, Scorer, TaskAssets, docker_runner, handler, slot_cpus
+from swarm_scaling.scorer_service import (
+    AloneCache, Job, JobError, Scorer, TaskAssets, docker_runner, handler, job_inputs, job_script, slot_cpus,
+)
 from swarm_scaling.swarm import Candidate
 from swarm_scaling.tasks import algotune_scorer
 
@@ -122,6 +124,61 @@ def test_slots_never_overlap_the_services_cpus() -> None:
     for slots, first, host in ((4, 0, 32), (4, 0, 36), (2, 16, 24)):  # too few CPUs left, or past the host's
         with pytest.raises(ValueError):
             slot_cpus(slots, first, host)
+
+
+def test_the_alone_baseline_is_measured_once_per_instance_and_sent_into_later_jobs(tmp_path) -> None:
+    # Only the reference-alone timing is cached; each job still times reference and solver interleaved itself.
+    import io
+    import tarfile
+    import time
+
+    task = assets(tmp_path)
+    task.dev_dir.mkdir()
+    (task.dev_dir / "config.json").write_text('{"problem_size": 9}')
+    (task.tests_dir / "test_outputs.py").write_text("PROBLEM_SIZE = 7\nNUM_TEST_INSTANCES = 4\nNUM_REPEATS = 10\n")
+    measured, sent = [], []
+
+    def measure(job, seeds, size, reps, cpuset):
+        measured.append((seeds, size, reps, cpuset))
+        return [1000 + s for s in seeds]
+
+    def run(job, cpuset, timeout_s):
+        with tarfile.open(fileobj=io.BytesIO(job_inputs(job))) as tar:
+            files = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+        sent.append((job.alone_baseline, files, job_script(job)))
+        return {"valid": True}, ""
+
+    def scorer(cache: bool, measure=measure) -> Scorer:
+        alone = AloneCache(tmp_path / "alone", measure, "sha256:img", "Test CPU") if cache else None
+        return Scorer({"cvar_projection": task}, ["8-15"], run, "Test CPU", "v", "id", alone_cache=alone)
+
+    def do(sc: Scorer, kind="dev_eval", **args) -> tuple:
+        job_id = sc.submit({**job(kind=kind), **args})
+        while sc.view(job_id)["status"] not in ("done", "error"):
+            time.sleep(0.01)
+        return sent[-1]
+
+    sc = scorer(cache=True)
+    info, files, script = do(sc, n=3, reps=2)
+    assert measured == [([10_000, 10_001, 10_002], 9, 2, "8-15")] and info["mode"] == "cached" and info["measured_now"] == 3
+    assert json.loads(files["job/alone.json"]) == {"size": 9, "reps": 2, "ns": {"10000": 11_000, "10001": 11_001, "10002": 11_002}}
+    assert "--alone-cache /job/alone.json" in script
+    info, files, _ = do(sc, n=5, reps=2)  # only the two new instances are measured
+    assert measured[-1][0] == [10_003, 10_004] and len(json.loads(files["job/alone.json"])["ns"]) == 5
+    info, files, _ = do(scorer(cache=True), kind="score")  # a restarted service keeps the dev cache; scoring: offset + i
+    assert measured[-1] == ([1_234_567 + i for i in range(4)], 7, 10, "8-15")
+    assert json.loads(files["tests/alone_cache.json"])["reps"] == 10 and "job/alone.json" not in files
+    info, _, _ = do(scorer(cache=True), n=3, reps=2)
+    assert len(measured) == 3 and info["measured_now"] == 0 and info["age_s"] >= 0  # nothing re-measured
+
+    info, files, script = do(scorer(cache=False), n=3, reps=2)  # --no-cache-alone: every job times it alone itself
+    assert info == {"mode": "child"} and "job/alone.json" not in files and "--alone-cache" not in script
+
+    def broken(job, seeds, size, reps, cpuset):
+        raise JobError("alone baseline timed out")
+
+    info, files, _ = do(scorer(cache=True, measure=broken), n=1, seed=99, reps=2)  # a failed measurement: fall back
+    assert info["mode"] == "child" and "timed out" in info["cache_error"] and "job/alone.json" not in files
 
 
 def fake_docker(tmp_path: Path) -> Path:

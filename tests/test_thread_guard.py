@@ -90,7 +90,8 @@ def test_the_scoring_verifier_runs_the_same_check() -> None:
     patched = with_thread_guard(seed_with_offset(VERIFIER.read_text()))
     compile(patched, "test_outputs.py", "exec")
     # the alone-timing process starts before the solver fixture imports the solver
-    assert "    _ALONE_TIMER = AloneTimer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS)\n" in patched
+    assert "    _ALONE_TIMER = make_alone_timer(str(Path(__file__).with_name('evaluator.py')), NUM_REPEATS,\n" in patched
+    assert "str(Path(__file__).with_name('alone_cache.json')))\n" in patched  # the scorer's cache, when it sent one
     assert "        _ALONE.append(_ALONE_TIMER.time(n=PROBLEM_SIZE, random_seed=_take_seed_offset() + i))\n" in patched
     assert patched.count("_GUARD.before_reference()") == 2  # warmup and every timed reference call
     assert "        _WITH_SOLVER.append(t_baseline)\n" in patched
@@ -191,3 +192,28 @@ def test_a_solver_that_slows_the_reference_is_invalid_and_one_that_does_not_pass
     bad = dev_eval.evaluate(slowing, n=3, seed=0, size=100, reps=3)
     assert not bad["valid"] and bad["reference_inflation"] > 1.5
     assert bad["errors"][0].startswith("the reference ran") and "timed alone in a process without the solver" in bad["errors"][0]
+
+
+def test_cached_alone_timings_replace_only_the_alone_child_and_are_deleted_before_the_solver_loads(tmp_path, monkeypatch) -> None:
+    # The scorer measures the alone baseline once (scorer_service --cache-alone); the interleaved timing still runs.
+    import json
+
+    dev_eval = load_dev_eval(tmp_path, monkeypatch, "        return sorted(problem)\n")
+    monkeypatch.setattr(dev_eval, "timed_ns", lambda fn, problem: (fn(problem), 2_000_000)[1])  # every timed call: 2 ms
+    clean = tmp_path / "clean.py"
+    clean.write_text("class Solver:\n    def solve(self, problem):\n        return sorted(problem)\n")
+    cache = tmp_path / "alone.json"
+    seeds = [dev_eval.SEED_OFFSET + i for i in range(3)]
+
+    def run(alone_ns: int, reps: int = 3) -> dict:
+        cache.write_text(json.dumps({"size": 100, "reps": reps, "ns": {str(s): alone_ns for s in seeds}}))
+        return dev_eval.evaluate(clean, n=3, seed=0, size=100, reps=3, alone_cache=cache)
+
+    ok = run(2_000_000)
+    assert ok["valid"] and ok["alone_baseline"] == "cached" and not cache.exists()
+    assert ok["reference_inflation"] == 1.0
+    flagged = run(1_000_000)  # a cache that says the reference alone takes 1 ms: the interleaved 2 ms reads as 2x
+    assert not flagged["valid"] and flagged["reference_inflation"] == 2.0
+    with pytest.raises(ValueError, match="repeats"):
+        run(2_000_000, reps=10)
+    assert dev_eval.evaluate(clean, n=1, seed=0, size=100, reps=3)["alone_baseline"] == "child"  # no cache file

@@ -154,6 +154,9 @@ Fallback (from the Sol review): if the pilot shows no progress or untrustworthy 
 | 2026-10-05 | Loose, facts-only team prompt; emergent structure measured as an outcome; structured protocol only as an N = 4 side check | Jack: let agents decide whether to form a conductor, split work or work alone. Matches the labs' minimal-structure designs. Wording-only anti-herding prompts have weak evidence (research/PROTOCOL.md) |
 | 2026-10-10 | Run to budget: `submit` is refused until an agent has spent 80% of its own budget (runner `--min-spend-frac`, default 0.8), in every arm. Replaces free stopping (decided 2026-10-08). Agents end by budget, time limit or an accepted submit, and finalize picks the best candidate | Pilot 4 agents stopped at 4-18% of their budget, so larger budgets bought nothing and budget scaling was unmeasurable. Matches AlgoTune's protocol ("continuously queries the LM to improve its solution until the budget runs out, at which point we submit its best code") |
 | 2026-10-10 | Scorer slots = 1 per 4 agents, on one scorer (one global queue) | Pilot 4: a team of 2 waited 12.4 min of queue time over 8 dev_eval calls on a 2-slot scorer shared by 16 agents |
+| 2026-10-10 | Agent time limit is a uniform 16 h backstop for every row (runner default); VM backstop 18 h, scorer 30 h | Jack: under run-to-budget the budget should end runs, not the clock |
+| 2026-10-10 | Agents run at reasoning effort xhigh from the next pilot | Jack's call. Checked offline that Inspect sends `output_config.effort = xhigh` for Opus 5.5 |
+| 2026-10-10 | The scorer caches the reference-alone baseline (`--cache-alone`, default on); the interleaved speedup timing is unchanged | Jack: re-timing the reference alone in every job roughly doubles a score job. Kept only if the slot-interference pre-flight shows slots do not slow each other; otherwise `--no-cache-alone` |
 
 ## Must fix before the Harvey pilot
 

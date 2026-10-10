@@ -1,6 +1,6 @@
 """Dev evaluator for this AlgoTune task. Runs inside the task container, standard library plus numpy only.
 
-    python /app/dev/dev_eval.py /app/solver.py [--n 20] [--seed 0] [--size N] [--reps 10]
+    python /app/dev/dev_eval.py /app/solver.py [--n 20] [--seed 0] [--size N] [--reps 10] [--alone-cache FILE]
 
 Mirrors the final evaluation: the same instance generator, the same is_solution check, the same
 interleaved timing (one untimed warmup of the reference and the solver, then `reps` alternating timed
@@ -24,7 +24,7 @@ import time
 import traceback
 from pathlib import Path
 
-from thread_guard import AloneTimer, ThreadGuard, reference_inflation, reference_inflation_error  # next to this file
+from thread_guard import ThreadGuard, make_alone_timer, reference_inflation, reference_inflation_error  # next to this file
 
 DEV_DIR = Path(__file__).resolve().parent
 SEED_OFFSET = 10_000
@@ -43,14 +43,16 @@ def timed_ns(fn, problem) -> int:
     return time.perf_counter_ns() - start
 
 
-def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int) -> dict:
+def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int, alone_cache: Path | None = None) -> dict:
     result = {"solver": str(solver_path), "n": n, "seed": seed, "size": size, "reps": reps,
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
               "total_reference_s": None, "thread_check": None, "first_call_ratio": None,
-              "reference_inflation": None, "errors": []}
+              "reference_inflation": None, "alone_baseline": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
-    # Started before the solver is imported: times the reference alone on each instance, in its own process.
-    alone_timer = AloneTimer(str(DEV_DIR / "reference_task.py"), reps)
+    # Started before the solver is imported: times the reference alone on each instance, in its own process (or reads
+    # the scorer's cached alone timings and deletes the file).
+    alone_timer = make_alone_timer(str(DEV_DIR / "reference_task.py"), reps, alone_cache and str(alone_cache))
+    result["alone_baseline"] = alone_timer.mode
     # One untimed reference call before the solver is imported, so the threads the reference starts are its own.
     task.solve(task.generate_problem(n=size, random_seed=SEED_OFFSET + seed))
     guard = ThreadGuard()
@@ -141,11 +143,12 @@ def main() -> None:
                         help="problem size n passed to generate_problem (default: the final evaluation's)")
     parser.add_argument("--reps", type=int, default=10, help="timed repeats per instance (default 10)")
     parser.add_argument("--json-out", type=Path, help="also write the result as JSON to this path")
+    parser.add_argument("--alone-cache", type=Path, help="the scorer's cached alone timings (read, then deleted)")
     args = parser.parse_args()
     if args.seed < 0:
         parser.error("--seed must be >= 0")
 
-    result = evaluate(args.solver, args.n, args.seed, args.size, args.reps)
+    result = evaluate(args.solver, args.n, args.seed, args.size, args.reps, args.alone_cache)
     report(result)
     if args.json_out:
         args.json_out.write_text(json.dumps(result))

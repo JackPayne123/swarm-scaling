@@ -135,7 +135,7 @@ def scorer_job(state: TaskState, kind: str, source: bytes, agent_id: str = "", *
 
 def remote_timing(rec: dict) -> dict:
     """Telemetry of a finished scorer job, in the shape of the local checker's plus where it ran."""
-    keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id")
+    keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id", "alone_baseline")
     return {k: rec.get(k) for k in keep}
 
 
@@ -162,7 +162,7 @@ async def timed_dev_eval(
         ended = time.time()
     timing = {
         "queue_wait_s": round(started - requested, 3), "started_at": started, "ended_at": ended,
-        "run_s": round(ended - started, 3), "cleanup": cleanup,
+        "run_s": round(ended - started, 3), "cleanup": cleanup, "alone_baseline": {"mode": "child"},
     }  # fmt: skip
     return detail, report, timing
 
