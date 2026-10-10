@@ -5,8 +5,12 @@
 #   --models providers need (mode 600; removed on the VM once read) and the seed offset, checks out <git-ref> (a
 #   branch, tag or commit on GitHub; local-only commits cannot be fetched) and runs, detached on the VM,
 #     python -m swarm_scaling.runner <runner args> --name <name>
-#   (or, with --script, `python <path> <args>` with INSPECT_LOG_DIR=logs/<name>). When it ends, logs/<name>/ is
-#   copied to the local logs/<name>/ (VM output in vm.log) and the VM is deleted, on failure too.
+#   (or, with --script, `python <path> <args>` with INSPECT_LOG_DIR=logs/<name>). When it ends, the VM itself uploads
+#   logs/<name>/ (VM output in vm.log, exit code in vm-exit-code) to gs://$LOG_BUCKET/runs/<name>/ through two
+#   upload session URIs opened here at launch (common.sh log_session; the VM gets no credentials); the driver
+#   copies it from there to the local logs/<name>/ (over SSH if the upload failed) and deletes the VM, on failure
+#   too. If the driver cannot (an expired AWS login overnight, a stopped Mac), the logs stay in the bucket:
+#   `fleet.py collect <plan>` fetches them later, and the VM ends itself at MAX_RUN_HOURS.
 #   With `--checker remote` in the runner args the VM gets no seed offset; its env carries SCORER_URL and
 #   SCORER_TOKEN from the running scorer (scorer.sh up), and its IP is allowed on the scorer port for the run.
 #   Such a VM times nothing, so when <machine-type> has no capacity or quota anywhere it may get another x86
@@ -29,7 +33,7 @@ if [ "${1:-}" = --script ]; then
   shift 2
 fi
 if [ $# -lt 4 ] || [ "$4" != -- ]; then
-  sed -n '2,21p' "$0" >&2
+  sed -n '2,25p' "$0" >&2
   exit 2
 fi
 name=$1 mt=$2 ref=$3
@@ -76,11 +80,16 @@ tmp=
 VM_ID= rc= copied=0 interrupted=0 allowed=
 copy_back() {
   [ -n "$VM_ID" ] && [ "$copied" = 0 ] || return 0
+  if log_fetch "$name" logs; then
+    copied=1
+    note copied "from $(log_url "$name") $(grep -m1 '^commit=' "$logdir/vm.log")"
+    return 0
+  fi
   vm_exec "sudo tar -C $REMOTE_REPO/logs -czf /tmp/run-logs.tgz '$name' && sudo cp $REMOTE_STATE/run.log /tmp/run.log && sudo chmod 644 /tmp/run-logs.tgz /tmp/run.log" &&
     vm_get /tmp/run-logs.tgz /tmp/run.log "$tmp/" &&
     tar -C logs -xzf "$tmp/run-logs.tgz" && cp "$tmp/run.log" "$logdir/vm.log" || { note "copy-failed"; return 1; }
   copied=1
-  note copied "$(grep -m1 '^commit=' "$logdir/vm.log")"
+  note copied "over ssh $(grep -m1 '^commit=' "$logdir/vm.log")"
 }
 finish() {
   rc=${rc:-$?}
@@ -118,6 +127,8 @@ for m in ${models//,/ }; do
     *) echo "no key mapping for model $m; add one to run_sample.sh" >&2; exit 2 ;;
   esac
 done
+put_tgz=$(log_session "$name" logs.tgz) && put_exit=$(log_session "$name" vm-exit-code) ||
+  { echo "could not open the log upload sessions (gcloud login? common.sh log_storage_setup)" >&2; exit 2; }
 tmp=$(mktemp -d)
 chmod 700 "$tmp"
 (
@@ -129,6 +140,7 @@ chmod 700 "$tmp"
   if [ "$remote" = 1 ]; then
     printf 'export SCORER_URL=%q\nexport SCORER_TOKEN=%q\n' "$scorer_url" "$scorer_token"
   fi
+  printf 'export LOG_PUT_TGZ=%q\nexport LOG_PUT_EXIT=%q\n' "$put_tgz" "$put_exit"
 ) > "$tmp/env" || exit 2
 uploads=("$tmp/env")
 if [ "$remote" = 0 ]; then

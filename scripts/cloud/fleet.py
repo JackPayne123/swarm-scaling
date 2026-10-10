@@ -4,6 +4,7 @@ Usage:
   uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--dry-run]
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
+  uv run python scripts/cloud/fleet.py collect <plan.tsv>
   uv run python scripts/cloud/fleet.py scorer up|down|status [args]   (scripts/cloud/scorer.sh)
   uv run python scripts/cloud/fleet.py scorer up --plan <plan.tsv> --ref <git-ref> [scorer.sh up args]
 
@@ -22,6 +23,10 @@ logs/<name>/cloud-status. Run a long plan under bgjob (--grace 60) and caffeinat
 
 cleanup lists every VM tagged/labelled tool=swarm-runner on both clouds and, with --yes, deletes them (running
 plans included) and runs `scorer.sh down`.
+
+collect copies each row's logs from the bucket its VM uploaded them to when the run ended (common.sh log_url,
+gs://<LOG_BUCKET>/runs/<name>/, for VMs on both clouds) into logs/<name>/, for runs whose driver could not (an
+expired AWS login, a stopped Mac). Runs that have not finished uploading are skipped; rerunning is safe.
 
 scorer up --plan sizes the scorer from the plan's `--checker remote` rows: slots = ceil(agents / AGENTS_PER_SLOT)
 (agents = the sum of each row's --n) and the smallest <AWS_FAMILY> type with slots x 8 + 8 vCPUs (8 per slot, 8 for
@@ -367,6 +372,24 @@ def status(_: argparse.Namespace) -> None:
             print(f"  {row[0]:36} {row[1]:16} {row[2]:30} {row[3]:>6} {row[4]}")
 
 
+def log_fetch(name: str) -> bool:
+    """common.sh log_fetch: unpack a finished run's upload into logs/<name>/; False if not (yet) uploaded."""
+    cmd = ["bash", "-c", 'source scripts/cloud/common.sh && log_fetch "$1" logs', "_", name]
+    return subprocess.run(cmd, cwd=ROOT).returncode == 0
+
+
+def collect_rows(rows: list[Row], fetch=log_fetch) -> dict[str, bool]:
+    """Per row, whether its finished upload was collected into logs/<name>/."""
+    return {row.name: fetch(row.name) for row in rows}
+
+
+def collect(args: argparse.Namespace) -> None:
+    results = collect_rows(parse_plan(Path(args.plan).read_text()))
+    for name, ok in results.items():
+        print(f"  {name:36} {'collected' if ok else 'no finished upload (still running, or never started)'}")
+    print(f"{sum(results.values())} of {len(results)} runs collected into logs/<name>/")
+
+
 def cleanup(args: argparse.Namespace) -> None:
     vms = live_vms()
     for vm in vms:
@@ -399,6 +422,9 @@ def main() -> None:
     pp.add_argument("--dry-run", action="store_true", help="print where and in which order rows would start; launch nothing")
     pp.set_defaults(fn=plan)
     sub.add_parser("status").set_defaults(fn=status)
+    pl = sub.add_parser("collect")
+    pl.add_argument("plan")
+    pl.set_defaults(fn=collect)
     pc = sub.add_parser("cleanup")
     pc.add_argument("--yes", action="store_true")
     pc.set_defaults(fn=cleanup)

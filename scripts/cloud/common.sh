@@ -34,8 +34,55 @@ AWS_SG_SSH=swarm-runner-ssh
 AWS_SG_SCORER=swarm-scorer
 UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
+# Durable run logs (2026-10-10): when a run ends, its VM uploads logs/<name>/ (logs.tgz, then vm-exit-code as the
+# done marker) to one private GCS bucket, for VMs on either cloud, so the operator can fetch them later without the
+# VM, also after an AWS login expired mid-run. (S3 was the first choice: this AWS account's org SCP denies
+# s3:CreateBucket.) The VM holds no cloud credentials, only two resumable-upload session URIs, one per object,
+# which GCS keeps valid for a week; run_sample.sh opens them at launch with a short-lived token of LOG_SA, which may
+# only create objects in LOG_BUCKET (signed URLs were the first choice, but GCS caps impersonated signing at 12 h).
+# Created by log_storage_setup.
+LOG_BUCKET=swarm-scaling-jp-run-logs  # us-central1
+LOG_SA=swarm-runner-logs@swarm-scaling-jp.iam.gserviceaccount.com
+
 gc() { gcloud --account="$GCP_ACCOUNT" --project="$GCP_PROJECT" --quiet "$@"; }
 aw() { command aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION" --output text "$@"; }
+
+log_url() {  # log_url <run name>: where that run's VM uploads logs.tgz and vm-exit-code
+  echo "gs://$LOG_BUCKET/runs/$1"
+}
+
+log_session() {  # log_session <run name> <object>: a resumable-upload session URI; its holder can upload that one object (one PUT of the whole file), nothing else
+  local tok name
+  tok=$(gc auth print-access-token --impersonate-service-account "$LOG_SA" 2>/dev/null) || return 1
+  name=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "runs/$1/$2")
+  printf 'header = "Authorization: Bearer %s"\n' "$tok" |
+    curl -sSf -K - -X POST -H "Content-Length: 0" -D - -o /dev/null \
+      "https://storage.googleapis.com/upload/storage/v1/b/$LOG_BUCKET/o?uploadType=resumable&name=$name" |
+    tr -d '\r' | sed -n 's/^[Ll]ocation: //p' | grep .
+}
+
+log_fetch() {  # log_fetch <run name> <logs root>: unpack a finished run's upload into <logs root>/<name>/ (fails until vm-exit-code, uploaded last, exists)
+  local url tgz rc
+  url=$(log_url "$1")
+  gc storage ls "$url/vm-exit-code" >/dev/null 2>&1 || return 1
+  tgz=$(mktemp)
+  gc storage cp --quiet "$url/logs.tgz" "$tgz" >/dev/null 2>&1 && mkdir -p "$2" && tar -C "$2" -xzf "$tgz"
+  rc=$?
+  rm -f "$tgz"
+  return $rc
+}
+
+log_storage_setup() {  # once (idempotent): the private bucket, the upload service account, who may sign as it
+  gc storage buckets describe "gs://$LOG_BUCKET" >/dev/null 2>&1 ||
+    gc storage buckets create "gs://$LOG_BUCKET" --location us-central1 --uniform-bucket-level-access --public-access-prevention || return 1
+  gc iam service-accounts describe "$LOG_SA" >/dev/null 2>&1 ||
+    gc iam service-accounts create "${LOG_SA%%@*}" --display-name "swarm-runner: opens run-log upload sessions" || return 1
+  local i
+  for i in $(seq 1 12); do gc iam service-accounts describe "$LOG_SA" >/dev/null 2>&1 && break; sleep 5; done  # a new one takes a few s to appear
+  gc storage buckets add-iam-policy-binding "gs://$LOG_BUCKET" --member "serviceAccount:$LOG_SA" --role roles/storage.objectCreator >/dev/null || return 1
+  gc iam service-accounts add-iam-policy-binding "$LOG_SA" --member "user:$GCP_ACCOUNT" --role roles/iam.serviceAccountTokenCreator >/dev/null || return 1
+  echo "log storage ready: gs://$LOG_BUCKET, upload sessions opened as $LOG_SA"
+}
 
 cloud_of() {  # cloud_of <machine-type>: AWS types have a dot (c7a.4xlarge), GCP types do not (t2d-standard-16)
   case $1 in *.*) echo aws ;; *) echo gcp ;; esac

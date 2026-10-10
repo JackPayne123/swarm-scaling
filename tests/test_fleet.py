@@ -118,3 +118,22 @@ def test_scorer_gets_one_slot_per_four_remote_agents_on_the_smallest_type_that_f
     assert fleet.scorer_args(["up", "--plan", str(plan), "--", "--slots", "7"])[1:] == ["--machine", f"{fam}.16xlarge", "--", "--slots", "7"]
     assert fleet.scorer_args(["up", "--machine", "x.y", "--plan", str(plan)])[1:3] == ["--machine", "x.y"]
     assert fleet.scorer_args(["status"]) == ["status"]
+
+
+
+def test_collect_pulls_finished_uploads_by_run_name_for_vms_on_either_cloud():
+    """Logs survive an expired operator login: every VM uploads to gs://<LOG_BUCKET>/runs/<name>/, collect pulls them."""
+    import subprocess
+
+    url = subprocess.run(["bash", "-c", "source scripts/cloud/common.sh && log_url r1"], cwd=ROOT,
+                         capture_output=True, text=True, check=True).stdout.strip()  # fmt: skip
+    assert url == f"gs://{fleet.COMMON['LOG_BUCKET']}/runs/r1"
+    rows = fleet.parse_plan("on-aws aws auto\non-gcp gcp auto\nstill-running any auto\n")
+    tried = []
+
+    def fetch(name):
+        tried.append(name)
+        return name != "still-running"
+
+    assert fleet.collect_rows(rows, fetch) == {"on-aws": True, "on-gcp": True, "still-running": False}
+    assert tried == ["on-aws", "on-gcp", "still-running"]
