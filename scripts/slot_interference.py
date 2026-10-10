@@ -8,7 +8,9 @@ Each repeat submits one score job and waits for it (alone), then submits one per
 Without --solver the job scores the task's reference solver (loaded from /app/dev/reference_task.py, which the
 scorer mounts in every job), so the run is reference against reference. The verifier prints "Total Baseline Time"
 (the reference) and "Total Solver Time"; both are reported per slot as concurrent / mean alone time. A ratio near
-1.0 means the slots do not interfere. The service's /stats are printed at the end.
+1.0 means the slots do not interfere. Each job's reference inflation (the reference check's ratio) and alone-baseline
+mode are printed too: with the scorer's --cache-alone on, an inflation that rises when every slot is busy means the
+cached baseline is not safe under load. The service's /stats are printed at the end.
 """
 
 import argparse
@@ -46,6 +48,8 @@ def timings(rec: dict) -> dict:
     if not all(found.values()):
         raise RuntimeError(f"job {rec['job_id']}: no timing totals in the verifier output: {out[-1000:]}")
     return {"slot": rec["slot"], "run_s": rec["run_s"], "score": rec["result"]["score"],
+            "reference_inflation": rec["result"].get("reference_inflation"),
+            "alone_baseline": (rec.get("alone_baseline") or {}).get("mode"),
             **{k: float(m.group(1)) for k, m in found.items()}}  # fmt: skip
 
 
@@ -78,11 +82,13 @@ def main() -> None:
     for r in range(args.repeats):
         (a,) = [timings(x) for x in wait_all([scorer_client.submit(job)])]
         alone.append({"repeat": r, **a})
-        print(f"repeat {r} alone: slot {a['slot']} reference {a['reference_s']:.3f}s solver {a['solver_s']:.3f}s", flush=True)
+        print(f"repeat {r} alone: slot {a['slot']} reference {a['reference_s']:.3f}s solver {a['solver_s']:.3f}s "
+              f"inflation {a['reference_inflation']} ({a['alone_baseline']})", flush=True)
         batch = [timings(x) for x in wait_all([scorer_client.submit(job) for _ in range(slots)])]
         together += [{"repeat": r, **b} for b in batch]
         for b in sorted(batch, key=lambda b: b["slot"]):
-            print(f"repeat {r} all slots: slot {b['slot']} reference {b['reference_s']:.3f}s solver {b['solver_s']:.3f}s", flush=True)
+            print(f"repeat {r} all slots: slot {b['slot']} reference {b['reference_s']:.3f}s solver {b['solver_s']:.3f}s "
+                  f"inflation {b['reference_inflation']} ({b['alone_baseline']})", flush=True)
 
     base = {k: sum(a[k] for a in alone) / len(alone) for k in TIMES}
     print(f"\nalone (mean of {len(alone)}, slots {sorted({a['slot'] for a in alone})}): "
