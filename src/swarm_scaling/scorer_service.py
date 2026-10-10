@@ -504,6 +504,19 @@ def slot_cpus(slots: int, first_cpu: int, host_cpus: int) -> tuple[list[str], se
     return cpusets, service
 
 
+def image_digest_with_retry(image: str, digest_of: Callable[[str], str | None], tries: int = 5, wait_s: float = 10) -> str | None:
+    """digest_of(image), retried: on the Mac, Docker Desktop intermittently answers `image inspect <name>` with "No such
+    image" while `image ls` lists it (2026-10-10, three failed starts); a few seconds later the same call works."""
+    for attempt in range(1, tries + 1):
+        try:
+            return digest_of(image)
+        except RuntimeError as ex:
+            if attempt == tries:
+                raise
+            print(f"{ex} (attempt {attempt} of {tries}; retrying in {wait_s:g}s)", flush=True)
+            time.sleep(wait_s)
+
+
 def git_version(root: Path) -> str:
     out = subprocess.run(["git", "-C", str(root), "describe", "--always", "--dirty"], capture_output=True, text=True)
     return out.stdout.strip() or "unknown"
@@ -566,7 +579,7 @@ def main() -> None:
     args.work_dir.mkdir(parents=True, exist_ok=True)
     tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
     # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
-    digests = {a.image: task_image_digest(a.image) for a in tasks.values()}
+    digests = {a.image: image_digest_with_retry(a.image, task_image_digest) for a in tasks.values()}
     digest = next(iter(digests.values())) if len(digests) == 1 else digests
     cpu = cpu_model()
     alone = AloneCache(args.work_dir / "alone_cache", docker_alone_measure(memory=args.memory), digest, cpu) if args.cache_alone else None

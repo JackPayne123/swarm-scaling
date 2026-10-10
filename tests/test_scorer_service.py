@@ -16,7 +16,8 @@ from swarm_scaling import algotune_devkit as devkit
 from swarm_scaling import scorer_client
 from swarm_scaling import swarm as swarm_module
 from swarm_scaling.scorer_service import (
-    AloneCache, Job, JobError, Scorer, TaskAssets, docker_runner, handler, job_inputs, job_script, slot_cpus,
+    AloneCache, Job, JobError, Scorer, TaskAssets, docker_runner, handler, image_digest_with_retry, job_inputs, job_script,
+    slot_cpus,
 )
 from swarm_scaling.swarm import Candidate
 from swarm_scaling.tasks import algotune_scorer
@@ -288,3 +289,21 @@ def devkit_box(files: dict[str, bytes]):
             return SimpleNamespace(success=True, returncode=0, stdout="", stderr="")
 
     return Box()
+
+
+def test_startup_retries_an_intermittent_image_inspect_failure_and_gives_up_after_the_last_try() -> None:
+    # Docker Desktop sometimes answers "No such image" for a listed image; the next call a few seconds later works.
+    calls = []
+
+    def flaky(image):
+        calls.append(image)
+        if len(calls) < 3:
+            raise RuntimeError(f"docker image inspect {image} failed: No such image")
+        return "sha256:abc"
+
+    assert image_digest_with_retry("hb__x", flaky, wait_s=0) == "sha256:abc" and len(calls) == 3
+    def missing(image):
+        raise RuntimeError("No such image")
+
+    with pytest.raises(RuntimeError, match="No such image"):
+        image_digest_with_retry("hb__x", missing, tries=2, wait_s=0)
