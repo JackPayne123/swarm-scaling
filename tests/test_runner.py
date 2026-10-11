@@ -86,3 +86,19 @@ async def test_agent_calls_pin_the_one_hour_prompt_cache_and_are_metered_at_its_
     assert model.api.cache_write_ttl() == "1h"  # what Inspect's cost (and so the dollar budget) prices writes by
     default = await anthropic_request(resolve_agent_model("anthropic/claude-opus-5-5", None, None))
     assert "ttl" not in default["cache_control"]  # Inspect's own default: 5 minutes
+
+
+@pytest.mark.asyncio
+async def test_haiku_5_5_agents_send_max_effort_and_the_one_hour_cache_pin(monkeypatch):
+    # The Haiku pilot runs agents at max (Haiku 5.5's best tier) on the dollar budget, which wraps the model for metering;
+    # Haiku 5.5 rejects non-default sampling parameters, so none may be sent.
+    from swarm_scaling.swarm import MeteredModel, resolve_agent_model
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    model = MeteredModel(resolve_agent_model("anthropic/claude-haiku-5-5", {"anthropic/claude-haiku-5-5": "max"}, "1h"))
+    body = await anthropic_request(model)
+    assert body["model"] == "claude-haiku-5-5"
+    assert body["output_config"] == {"effort": "max"}
+    assert body["thinking"]["type"] == "adaptive"
+    assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert not {"temperature", "top_p", "top_k"} & set(body)

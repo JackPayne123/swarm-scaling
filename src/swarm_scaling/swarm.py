@@ -22,18 +22,18 @@ from inspect_ai.model import (
     ContentText,
     GenerateConfig,
     Model,
-    ModelInfo,
+    ModelOutput,
     get_model,
     get_model_info,
-    set_model_info,
 )
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from inspect_ai.tool import Tool, ToolDef, ToolError, bash, python, update_plan
 from inspect_ai.util import LimitExceededError, collect, cost_limit, sandbox, token_limit
 from inspect_ai.util import time_limit as wall_clock_limit
+from inspect_ai.util._limit import check_cost_limit, record_model_cost
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
 
-from swarm_scaling.prices import budget_cost
+from swarm_scaling.prices import budget_cost, usage_cost
 from swarm_scaling.team import (
     Team,
     ToolStyle,
@@ -123,8 +123,8 @@ def swarm(
             plus output, so models that think or re-read differently are matched on what they consume),
             "output" (Ord's unit), an Inspect formula over input/output, or "cost": US dollars at
             swarm_scaling.prices (fresh input, cache writes at 1.25x input or 2x for the 1-hour TTL, cache
-            reads at the model's multiple of input, e.g. 0.05x for Opus 5.5, output incl. reasoning), metered
-            per call by Inspect's cost_limit; an unpriced model is refused.
+            reads at the model's multiple of input, e.g. 0.05x for Opus 5.5, output incl. reasoning), each call at
+            its own prompt-size tier (Haiku 5.5), metered per call into Inspect's cost_limit; an unpriced model is refused.
         deliverable: What counts as a solution, stated to agents as a fact (task-specific), e.g.
             AlgoTune: a file named solver.py. Candidates are found by this name, so state it.
         cpu_sample_interval: Seconds between container CPU samples (Docker only); the summary in
@@ -183,7 +183,7 @@ def swarm(
             agent_model = resolve_agent_model(model, reasoning_effort, anthropic_cache_ttl)
             rec.cache_ttl = cache_ttl_of(model, anthropic_cache_ttl)
             if budget_type == "cost":
-                _price_for_budget(agent_model)
+                agent_model = MeteredModel(agent_model)
                 budget = cost_limit(per_agent_tokens)
                 tokens = token_limit(None)  # no cap: records the token counts behind the dollars
                 limits = [budget, tokens]
@@ -342,18 +342,29 @@ def resolve_agent_model(model: str | Model, reasoning_effort: dict[str, str] | N
     return get_model(model, config=config, **({"cache_ttl": ttl} if ttl else {}))
 
 
-def _price_for_budget(model: Model) -> None:
-    """Make Inspect price `model`'s calls at swarm_scaling.prices, so its cost_limit meters the dollar budget.
+class MeteredModel(Model):
+    """`model` with each call's dollars, at swarm_scaling.prices, recorded into the enclosing cost_limit.
 
-    Inspect records no cost at all for a model it has no price for, which would leave the budget unmetered,
-    so the registration is read back and must match.
+    Inspect prices a call with one flat ModelCost per model, which cannot express a rate card chosen per request by
+    prompt size (Haiku 5.5), so the swarm meters every call itself from the usage the provider reported, with the
+    same function scripts/run_cost.py prices logs with. Inspect must not also price the model, or calls count twice.
     """
-    cost = budget_cost(str(model))
-    info = get_model_info(model)  # keep its context window etc. when Inspect knows the model
-    set_model_info(str(model), (info or ModelInfo()).model_copy(update={"cost": cost}))
-    registered = get_model_info(model)
-    if registered is None or registered.cost != cost:
-        raise RuntimeError(f"Inspect does not price {model} at the budget's prices; its calls would go unmetered")
+
+    def __init__(self, model: Model) -> None:
+        budget_cost(str(model))  # unpriced model: an error
+        info = get_model_info(model)
+        if info is not None and info.cost is not None:
+            raise RuntimeError(f"Inspect prices {model} itself; the dollar budget would count its calls twice")
+        super().__init__(model.api, model.config, model.model_args)
+
+    async def generate(self, *args, **kwargs) -> ModelOutput:
+        output = await super().generate(*args, **kwargs)
+        if output.usage is not None:
+            usage = output.usage.model_dump(exclude_none=True)
+            writes_1h = usage.get("input_tokens_cache_write", 0) if self.api.cache_write_ttl() == "1h" else 0
+            record_model_cost(usage_cost(str(self), usage, writes_1h))
+            check_cost_limit()
+        return output
 
 
 def budget_tool(limit, budget_type: str, min_spend_frac: float = 0.0) -> Tool:
