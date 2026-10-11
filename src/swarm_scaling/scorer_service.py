@@ -616,6 +616,7 @@ def main() -> None:
         seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl", queue_log_path=args.work_dir / "queue.jsonl",
         alone_cache=alone,
     )  # fmt: skip
+    ThreadingHTTPServer.request_queue_size = 128  # the default 5 reset connections when many clients submitted at once
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
           f"version {scorer.version}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}, "

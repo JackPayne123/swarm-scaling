@@ -126,7 +126,7 @@ def result_row(sample) -> dict:
     }  # fmt: skip
 
 
-def remote_results(rows: list[dict], offsets: set, repeats: int) -> list[dict]:
+def remote_results(rows: list[dict], offsets: set, repeats: int, concurrency: int = 8) -> list[dict]:
     """Score every row `repeats` times as jobs on the remote scorer (SCORER_URL / SCORER_TOKEN), all queued at once.
 
     Refuses logs scored with another seed offset than the service's (compared by fingerprint).
@@ -153,11 +153,17 @@ def remote_results(rows: list[dict], offsets: set, repeats: int) -> list[dict]:
             "verifier_output": res["verifier_stdout"] if res else rec["error"],
         })  # fmt: skip
 
+    limiter = anyio.CapacityLimiter(concurrency)  # 54 simultaneous submits overflowed the scorer's listen backlog (2026-10-11)
+
+    async def limited(r: dict, repeat: int) -> None:
+        async with limiter:
+            await one(r, repeat)
+
     async def run_all() -> None:
         async with anyio.create_task_group() as tg:
             for r in rows:
                 for repeat in range(1, repeats + 1):
-                    tg.start_soon(one, r, repeat)
+                    tg.start_soon(limited, r, repeat)
 
     anyio.run(run_all)
     return results
@@ -168,6 +174,7 @@ def main() -> None:
     p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
     p.add_argument("--repeats", type=int, default=1, help="scorings per solver (to measure rescore noise)")
     p.add_argument("--scorer", help="score on the remote scorer service at this URL (token: SCORER_TOKEN)")
+    p.add_argument("--concurrency", type=int, default=8, help="remote: jobs in flight at once (leave slots for live runs)")
     args = p.parse_args()
 
     if args.scorer:
@@ -184,7 +191,7 @@ def main() -> None:
         sys.exit("nothing to rescore")
     stamp = time.strftime("%Y%m%dT%H%M%S")
     if args.scorer:
-        results = remote_results(rows, offsets, args.repeats)
+        results = remote_results(rows, offsets, args.repeats, args.concurrency)
     else:
         task, samples = build(rows, offsets)
         (log,) = eval(

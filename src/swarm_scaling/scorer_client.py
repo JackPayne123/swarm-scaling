@@ -69,7 +69,14 @@ async def run_job(job: dict) -> dict:
     for (and records) a job that already occupies a scorer slot.
     """
     with anyio.CancelScope(shield=True):
-        job_id = await anyio.to_thread.run_sync(submit, job)
+        for attempt in range(MAX_CONSECUTIVE_FAILURES):  # a reset connection (listen backlog full) is retried
+            try:
+                job_id = await anyio.to_thread.run_sync(submit, job)
+                break
+            except (urllib.error.URLError, OSError):
+                if attempt == MAX_CONSECUTIVE_FAILURES - 1:
+                    raise
+                await anyio.sleep(POLL_S * (attempt + 1))
         rec = None
         running_since = None
         failures = 0
