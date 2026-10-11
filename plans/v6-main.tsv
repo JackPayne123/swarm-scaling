@@ -4,7 +4,7 @@
 # arm is set after the pilot), 4 diversified independents (priority index 0-3), 4 loose independents. Repeat 1 of
 # every task comes before repeat 2, so each task-repeat group ends early and is selected while others run.
 # sinkhorn rows use m7a (16 GiB per 4 vCPUs): its 100 verifier problems hold 7.0 GiB, more than a c7a.xlarge box.
-# 168 agents, max $16.80 plus at most one call's overshoot per agent. Run with scripts/v6.sh plans/v6-main.tsv 17.
+# 168 agents, max $16.80 plus at most one call's overshoot per agent. Run with scripts/v6.sh plans/v6-main.tsv 16 (SPEND_CAP $16: the credit left after the pilot).
 # name  cloud  machine  runner args
 v6-spd-r1-divteam aws auto --arm team --n 4 --time-limit 57600 --models anthropic/claude-haiku-5-5 --reasoning-effort xhigh --budget 0.10 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 2 --sample algotune/shortest-path-dijkstra --split heldout --elicit diversified
 v6-spd-r1-div-i0 aws auto --arm independent --time-limit 57600 --models anthropic/claude-haiku-5-5 --reasoning-effort xhigh --budget 0.10 --budget-type cost --tool-style claude_code --checker remote --cpus-per-agent 2 --sample algotune/shortest-path-dijkstra --split heldout --elicit diversified --priority-index 0

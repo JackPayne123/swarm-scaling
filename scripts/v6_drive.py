@@ -14,7 +14,7 @@ Spend cap: once measured spend of ended runs (run_cost.py's pricing) + the full 
 budget of the largest row would exceed SPEND_CAP, no further row starts (fleet.py --stop-file); running rows finish.
 
 Groups: rows named <prefix>-<task>-r<k>-<arm>[-i<j>] (plans/v6-*.tsv); a group is <prefix>-<task>-r<k>, so its
-portfolios (one per arm) are selected together. Selections run one at a time with --concurrency 3, so live agents
+portfolios (one per arm) are selected together. Selections run one at a time with --concurrency 6 (main's scorer has 11 slots), so live agents
 keep most scorer slots.
 """
 
@@ -34,7 +34,7 @@ from run_cost import call_costs  # noqa: E402
 MAX_SLOTS = 11  # c7a.24xlarge: 96 vCPUs = 11 slots x 8 + 8 for the service
 AGENTS_PER_SLOT = 8
 POLL_S = 60
-SELECT_CONCURRENCY = 3
+SELECT_CONCURRENCY = 6  # 2026-10-12, after the pilot: at 3, main's 14 groups needed about 13 h of serial selection
 
 
 def arg(row: fleet.Row, flag: str, default: float) -> float:
