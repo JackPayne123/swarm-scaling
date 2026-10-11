@@ -78,7 +78,7 @@ HOURLY_USD = {
     "c7a.2xlarge": 0.41056, "c7a.4xlarge": 0.82112, "c7a.8xlarge": 1.64224,
     # scorer sizes (`scorer up --plan`): AWS Price List API (`aws pricing get-products`, Linux, shared tenancy, no
     # pre-installed software), publication 2026-10-09T20:31Z, effective 2026-10-01, queried 2026-10-10
-    "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448,  # us-east-1
+    "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448, "c7a.24xlarge": 4.92672,  # us-east-1 (24xlarge = 2 x 12xlarge, linear)
     "m7a.12xlarge": 3.4776, "m7a.16xlarge": 4.6368,  # ap-southeast-2
 }
 
