@@ -12,10 +12,10 @@ _spec.loader.exec_module(sp)
 
 
 def test_runs_are_grouped_into_portfolios_by_plan_name() -> None:
-    assert sp.portfolio_key("v6-qp-div-r1-i2", "independent") == "v6-qp-div-r1"
-    assert sp.portfolio_key("v6-qp-divteam-r1", "team") == "v6-qp-divteam-r1"
+    assert sp.portfolio_key("v6-qp-r1-div-i2", "independent") == "v6-qp-r1-div"
+    assert sp.portfolio_key("v6-qp-r1-divteam", "team") == "v6-qp-r1-divteam"
     with pytest.raises(ValueError, match="-i<k>"):
-        sp.portfolio_key("v6-qp-div-r1", "independent")
+        sp.portfolio_key("v6-qp-r1-div", "independent")
 
 
 @pytest.mark.asyncio
@@ -27,13 +27,13 @@ async def test_the_pick_comes_from_stage_two_and_hidden_scores_only_inform_the_l
                 "kind": "published"}  # fmt: skip
 
     portfolio = {
-        "portfolio": "v6-qp-div-r1", "task": "algotune/qp", "arm": "independent", "protocol": "diversified",
-        "runs": ["v6-qp-div-r1-i0", "v6-qp-div-r1-i1"], "priority_indexes": [0, 1],
+        "portfolio": "v6-qp-r1-div", "task": "algotune/qp", "arm": "independent", "protocol": "diversified",
+        "runs": ["v6-qp-r1-div-i0", "v6-qp-r1-div-i1"], "priority_indexes": [0, 1],
         "sources": {f"sha-{x}": x for x in "ABCDE"},
         "candidates": [
-            cand("A", 5.0, "v6-qp-div-r1-i0"), cand("A", 4.5, "v6-qp-div-r1-i1"),  # one source, two runs
-            cand("B", 4.0, "v6-qp-div-r1-i1"), cand("C", 3.0, "v6-qp-div-r1-i0"), cand("D", 2.0, "v6-qp-div-r1-i1"),
-            cand("E", None, "v6-qp-div-r1-i0", valid=False),
+            cand("A", 5.0, "v6-qp-r1-div-i0"), cand("A", 4.5, "v6-qp-r1-div-i1"),  # one source, two runs
+            cand("B", 4.0, "v6-qp-r1-div-i1"), cand("C", 3.0, "v6-qp-r1-div-i0"), cand("D", 2.0, "v6-qp-r1-div-i1"),
+            cand("E", None, "v6-qp-r1-div-i0", valid=False),
         ],
     }  # fmt: skip
     stage2 = {"A": (2.0, True), "B": (3.5, True), "C": (4.0, False)}

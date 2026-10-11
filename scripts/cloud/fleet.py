@@ -1,7 +1,8 @@
 """Run a plan of samples on GCP and AWS VMs (one VM each, via run_sample.sh), show live VMs and cost, clean up.
 
 Usage:
-  uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--dry-run]
+  uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--max-agents N]
+                                         [--stop-file <path>] [--dry-run]
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
   uv run python scripts/cloud/fleet.py collect <plan.tsv>
@@ -18,8 +19,10 @@ Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when eve
 in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
 instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
-empty cloud fails at once. Each run's output goes to logs/<name>/driver.log and its progress to
-logs/<name>/cloud-status. Run a long plan under bgjob (--grace 60) and caffeinate.
+empty cloud fails at once. --max-agents caps the agents (sum of --n) running at once, e.g. to keep a ratio of agents
+to scorer slots. Once the --stop-file exists no further row starts (exit 3, "not started"); running rows finish.
+Each run's output goes to logs/<name>/driver.log and its progress to logs/<name>/cloud-status. Run a long plan
+under bgjob (--grace 60) and caffeinate.
 
 cleanup lists every VM tagged/labelled tool=swarm-runner on both clouds and, with --yes, deletes them (running
 plans included) and runs `scorer.sh down`.
@@ -59,7 +62,7 @@ AWS_STANDARD_QUOTA = "L-1216C47A"  # Running On-Demand Standard (A, C, D, H, I, 
 # Machine types `auto` picks from, smallest first. AWS: c7a in us-east-1, m7a in ap-southeast-2 (no c7a there).
 MACHINES = {
     "gcp": ["t2d-standard-8", "t2d-standard-16", "t2d-standard-32"],
-    "aws": [f"{AWS_FAMILY}.2xlarge", f"{AWS_FAMILY}.4xlarge", f"{AWS_FAMILY}.8xlarge"],
+    "aws": [f"{AWS_FAMILY}.{s}" for s in ("large", "xlarge", "2xlarge", "4xlarge", "8xlarge", "12xlarge", "24xlarge")],
 }
 AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32, "12xlarge": 48, "16xlarge": 64,
              "24xlarge": 96, "32xlarge": 128, "48xlarge": 192}
@@ -76,6 +79,8 @@ HOURLY_USD = {
     "m7a.2xlarge": 0.5796, "m7a.4xlarge": 1.1592, "m7a.8xlarge": 2.3184,
     # AWS us-east-1 Linux on-demand, same source
     "c7a.2xlarge": 0.41056, "c7a.4xlarge": 0.82112, "c7a.8xlarge": 1.64224,
+    # c7a.large / .xlarge: not queried; every c7a size above is $0.05132 per vCPU-hour, so these are 2 and 4 vCPUs of it
+    "c7a.large": 0.10264, "c7a.xlarge": 0.20528,
     # scorer sizes (`scorer up --plan`): AWS Price List API (`aws pricing get-products`, Linux, shared tenancy, no
     # pre-installed software), publication 2026-10-09T20:31Z, effective 2026-10-01, queried 2026-10-10
     "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448, "c7a.24xlarge": 4.92672,  # us-east-1 (24xlarge = 2 x 12xlarge, linear)
@@ -124,6 +129,10 @@ def machine_for(row: Row, cloud: str) -> str | None:
 
 def candidates(row: Row) -> list[str]:
     return ["gcp", "aws"] if row.cloud == "any" else [row.cloud]
+
+
+def agents(row: Row) -> int:
+    return arg_value(row.args, "--n", 1)
 
 
 def choose(row: Row, free: dict[str, int]) -> tuple[str, str] | None:
@@ -231,18 +240,28 @@ def last_state(name: str) -> str:
     return lines[-1].split(None, 1)[1] if lines else "?"
 
 
-def schedule(rows: list[Row], free: dict[str, int], launch, max_runs: int = 0) -> dict[str, int]:
+def schedule(
+    rows: list[Row], free: dict[str, int], launch, max_runs: int = 0, max_agents: int = 0, stop=lambda: False
+) -> dict[str, int]:
     """Start each row (in file order, with backfill) once a candidate cloud has room; release its vCPUs when it
     ends. `launch(row, machine)` runs one row and returns its exit code. Rows that still do not fit once nothing
-    is running get exit code 1 without being run."""
+    is running get exit code 1 without being run. With max_agents, the agents of running rows never exceed it.
+    Once `stop()` is true, rows not yet started get exit code 3 and are never started."""
     results: dict[str, int] = {}
     pending = list(rows)
     running = {}  # future -> (row, cloud, vcpus)
     with ThreadPoolExecutor(max(len(rows), 1)) as pool:
         while pending or running:
+            if pending and stop():
+                for row in pending:
+                    results[row.name] = 3
+                    print(f"{row.name}: not started (stop file)", flush=True)
+                pending = []
             for row in list(pending):
                 if max_runs and len(running) >= max_runs:
                     break
+                if max_agents and sum(agents(r) for r, _, _ in running.values()) + agents(row) > max_agents:
+                    continue
                 if pick := choose(row, free):
                     cloud, machine = pick
                     free[cloud] -= vcpus(machine)
@@ -250,6 +269,8 @@ def schedule(rows: list[Row], free: dict[str, int], launch, max_runs: int = 0) -
                     running[pool.submit(launch, row, machine)] = (row, cloud, vcpus(machine))
                     print(f"{datetime.now():%H:%M:%S} {row.name}: start on {cloud} {machine}", flush=True)
             if not running:  # nothing left that could free room
+                if not pending:
+                    break
                 for row in pending:
                     results[row.name] = 1
                     print(f"{row.name}: does not fit in the free vCPUs ({free}); not run", flush=True)
@@ -309,7 +330,8 @@ def plan(args: argparse.Namespace) -> None:
         with log.open("a") as f:
             return subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
 
-    results = schedule(rows, free, launch, args.max_runs)
+    stop = (lambda: Path(args.stop_file).exists()) if args.stop_file else (lambda: False)
+    results = schedule(rows, free, launch, args.max_runs, args.max_agents, stop)
     failed = [n for n, rc in results.items() if rc != 0]
     print(f"done: {len(results) - len(failed)} ok, {len(failed)} failed {failed}")
     if left := [vm for vm in live_vms() if vm["role"] != "scorer"]:
@@ -423,6 +445,8 @@ def main() -> None:
     pp.add_argument("--ref", required="--dry-run" not in sys.argv, help="git branch, tag or commit on GitHub")
     pp.add_argument("--script", help="run this script instead of the runner (see run_sample.sh)")
     pp.add_argument("--max-runs", type=int, default=0, help="cap on runs at once (default: only vCPU room)")
+    pp.add_argument("--max-agents", type=int, default=0, help="cap on agents (sum of --n) running at once")
+    pp.add_argument("--stop-file", help="once this file exists, start no further rows")
     pp.add_argument("--dry-run", action="store_true", help="print where and in which order rows would start; launch nothing")
     pp.set_defaults(fn=plan)
     sub.add_parser("status").set_defaults(fn=status)

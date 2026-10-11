@@ -50,6 +50,7 @@ from swarm_scaling.team import (
     task_update_tool,
     wait_for_message_tool,
     with_budget_notices,
+    with_channel_gate,
     with_delivery,
 )
 
@@ -94,6 +95,12 @@ TEAM_SHARING = (
 )
 
 
+def channel_rule(frac: float, budget: float, budget_type: str) -> str:
+    """When a two-phase team's channel opens, as the prompt and refusals state it."""
+    share = "half your budget" if frac == 0.5 else f"{frac:.0%} of your budget"
+    return f"The team channel opens once you have spent {share} ({budget_amount(frac * budget, budget_type)})."
+
+
 def priority_text(priority: str) -> str:
     return (
         f"Your initial priority is {priority}. It is a starting point, not an exclusive role: pursue any idea that "
@@ -127,6 +134,7 @@ def swarm(
     anthropic_cache_ttl: str | None = "1h",
     elicit: str = "loose",
     priority_index: int | None = None,
+    blind_frac: float = 0.0,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -179,6 +187,9 @@ def swarm(
             method priority from PRIORITIES, and for teams TEAM_SHARING in place of "how you work together is up to you".
         priority_index: diversified single-agent runs: which of PRIORITIES this agent gets (independents are separate
             samples, so the plan row sets it). Team agent i gets PRIORITIES[i].
+        blind_frac: two-phase teams: each agent works blind until it has spent this fraction of its own budget
+            (messaging tools refused, nothing delivered, list_candidates shows only its own candidates; the prompt
+            states the rule from the start), then its channel opens with a notice. 0 = channel open throughout.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -203,6 +214,10 @@ def swarm(
     if elicit == "diversified" and not all(0 <= k < len(PRIORITIES) for k in priority_indexes):
         raise ValueError(f"the diversified prompt has {len(PRIORITIES)} priorities; got indexes {priority_indexes}")
     priorities = [PRIORITIES[k] if elicit == "diversified" else None for k in priority_indexes]
+    if not 0.0 <= blind_frac < 1.0:
+        raise ValueError(f"blind_frac must be in [0, 1), got {blind_frac}")
+    if blind_frac and not (messaging and n > 1):
+        raise ValueError("blind_frac is for teams with messaging: it delays their team channel")
     agent_ids = [f"agent_{i}" for i in range(n)]
     model_names = [m if isinstance(m, str) else m.name for m in models]
     messaging = messaging and n > 1
@@ -252,6 +267,19 @@ def swarm(
                 team, agent_id, messaging, registry, budget_tool(budget, budget_type, min_spend_frac), tool_style,
                 extra,
             )
+            if blind_frac:
+                rec.channel_open = False
+
+                def ready() -> bool:
+                    return budget.usage >= blind_frac * budget.limit
+
+                def closed_text() -> str:
+                    return (
+                        f"The team channel is not open yet. {channel_rule(blind_frac, per_agent_tokens, budget_type)} "
+                        f"You have used {budget_amount(budget.usage, budget_type)}."
+                    )
+
+                tools = [with_channel_gate(t, team, agent_id, ready, closed_text) for t in tools]
             if budget_warnings:
                 # outermost, so the notice also follows message tools and deliveries
                 tools = [with_budget_notices(t, budget, rec, budget_warnings, budget_type) for t in tools]
@@ -276,6 +304,7 @@ def swarm(
                 final_path=final_path,
                 min_spend_frac=min_spend_frac,
                 priority=priorities[agent_ids.index(agent_id)],
+                blind_frac=blind_frac,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -349,6 +378,7 @@ def swarm(
             "min_spend_frac": min_spend_frac,
             "anthropic_cache_ttl": anthropic_cache_ttl,
             "elicit": elicit,
+            "blind_frac": blind_frac,
             "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
@@ -526,6 +556,7 @@ def default_protocol_prompt(
     final_path: str | None = None,
     min_spend_frac: float = 0.0,
     priority: str | None = None,
+    blind_frac: float = 0.0,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
@@ -580,6 +611,12 @@ def default_protocol_prompt(
         lines.append(
             "- publish_candidate(path, note) saves a copy of a solution as a candidate; "
             "list_candidates() lists your saved candidates."
+        )
+    if blind_frac and others:
+        lines.append(
+            f"- {channel_rule(blind_frac, budget_tokens, budget_type)} Until then you work alone: the messaging tools "
+            "are refused, messages sent to you wait, list_candidates shows only your own candidates, and you do not "
+            "read the registry or other agents' working directories. A notice tells you when it opens."
         )
     if others:
         lines.append(

@@ -6,7 +6,7 @@ This is an independent study by Jack Payne, following Toby Ord's [Swarm Scaling]
 
 Status: harness built and verified, pilot runs under way. No results on the main question yet.
 
-Current scope (v6, 2026-10-11): Claude Haiku 5.5 agents at $0.10 each in groups of 4 on 8 held-out AlgoTune tasks, 2 repeats, three arms per task: loose independents, independents given a shared exploration prompt and different starting method priorities, and a team of 4 with the same prompt and priorities plus messaging. Every arm's answer is chosen by the same two-stage dev selector. The question is whether communication adds a gain of 20% or more over equally diversified independent search. Design, task selection rule and pre-registration: [PLAN.md](PLAN.md), section "v6: elicitation redesign".
+Current scope (v6, 2026-10-11): Claude Haiku 5.5 agents at $0.10 each in groups of 4 on 7 held-out AlgoTune tasks, 2 repeats, three arms per task: loose independents, independents given a shared exploration prompt and different starting method priorities, and a team of 4 with the same prompt and priorities plus messaging. Every arm's answer is chosen by the same two-stage dev selector. The question is whether communication adds a gain of 20% or more over equally diversified independent search. Design, task selection rule and pre-registration: [PLAN.md](PLAN.md), section "v6: elicitation redesign".
 
 ## What exists so far
 

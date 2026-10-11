@@ -119,6 +119,11 @@ class AgentRecord:
     error: str | None = None
     tokens: dict[str, Any] = field(default_factory=dict)
     cache_ttl: str | None = None  # prompt-cache TTL pinned on this agent's model calls (None: the provider's default)
+    # two-phase teams (swarm blind_frac): False until the agent has spent its blind fraction; while False, messaging
+    # tools are refused, nothing is delivered to it and list_candidates shows only its own candidates
+    channel_open: bool = True
+    channel_opened_at: float | None = None
+    blind_peeks: list[dict[str, Any]] = field(default_factory=list)
 
     def as_log(self) -> dict[str, Any]:
         return {
@@ -146,6 +151,8 @@ class AgentRecord:
             "submit_refusals": self.submit_refusals,
             "list_candidates_calls": self.list_candidates_calls,
             "candidates_read": sorted(self.candidates_read),
+            "channel_opened_at": self.channel_opened_at,
+            "blind_peeks": self.blind_peeks,
         }
 
 
@@ -253,12 +260,17 @@ class Team:
             else:
                 trec.inbox.append(msg)
                 rec.sent.append(entry)
-                lines.append(f"Delivered to {target}.")
+                if trec.channel_open:
+                    lines.append(f"Delivered to {target}.")
+                else:
+                    lines.append(f"Queued for {target}: its team channel is not open yet, so it sees this when it opens.")
         self._notify()
         return "\n".join(lines)
 
     def drain(self, agent_id: str) -> list[Message]:
         rec = self.agents[agent_id]
+        if not rec.channel_open:  # held until the agent's channel opens
+            return []
         msgs, rec.inbox = rec.inbox, []
         now = time.time()
         for m in msgs:
@@ -458,14 +470,21 @@ class Team:
         saved_as = f", saved as {dest}/{self.candidate_file}" if renamed else ""
         return f"Published {entry_id} at {dest} (read-only copy of {path}{saved_as})."
 
+    def visible_entries(self, agent_id: str) -> list[RegistryEntry]:
+        """Every entry once the agent's channel is open; before that, only its own."""
+        if self.agents[agent_id].channel_open:
+            return self.entries
+        return [e for e in self.entries if e.agent_id == agent_id]
+
     def list_entries(self, agent_id: str) -> str:
         rec = self.agents[agent_id]
         rec.list_candidates_calls += 1
-        if not self.entries:
+        entries = self.visible_entries(agent_id)
+        if not entries:
             return "No candidates have been published yet."
-        rec.candidates_read.update(e.id for e in self.entries)
-        lines = [f"Published candidates ({len(self.entries)}):"]
-        for e in self.entries:
+        rec.candidates_read.update(e.id for e in entries)
+        lines = [f"Published candidates ({len(entries)}):"]
+        for e in entries:
             lines.append(
                 f"- {e.id}  by {e.agent_id}  at {_iso(e.published_at)}  path: {e.path}\n"
                 f"    note: {e.note}"
@@ -648,6 +667,52 @@ def with_delivery(tool: Tool, team: Team, agent_id: str) -> Tool:
         if not pending:
             return result
         return _append_messages(result, team.render(pending))
+
+    return _rewrap(tdef, execute)
+
+
+# Team tools refused while an agent's channel is closed (two-phase teams).
+CHANNEL_TOOLS = {
+    "send_message", "SendMessage", "read_message", "send_file", "wait_for_message",
+    "TaskCreate", "TaskList", "TaskGet", "TaskUpdate",
+}  # fmt: skip
+
+
+def with_channel_gate(tool: Tool, team: Team, agent_id: str, ready: Any, closed_text: Any) -> Tool:
+    """Two-phase teams: refuse channel tools until `ready()` (the agent has spent its blind fraction), then open.
+
+    The channel opens at the start or the end of whichever tool call first finds `ready()` true; that call's
+    result gets a notice that the channel is open, followed by every message held while it was closed.
+    `closed_text()` is the refusal. While closed, calls whose arguments name the registry or another agent's
+    directory are logged in `blind_peeks` (the shared filesystem itself is not access-controlled).
+    """
+    tdef = ToolDef(tool)
+    inner = tdef.tool
+    rec = team.agents[agent_id]
+    peek = re.compile(re.escape(team.registry_dir) + "|" + re.escape(team.root) + r"/agents/(agent_\d+)")
+
+    def open_if_ready() -> bool:
+        if rec.channel_open or not ready():
+            return False
+        rec.channel_open, rec.channel_opened_at = True, time.time()
+        return True
+
+    async def execute(**kwargs: Any) -> ToolResult:
+        opened = open_if_ready()
+        if not rec.channel_open:
+            if any(m.group(1) in (None, *(a.agent_id for a in team.others(agent_id)))
+                   for m in peek.finditer(json.dumps(kwargs, default=str))):  # fmt: skip
+                rec.blind_peeks.append({"tool": tdef.name, "arguments": kwargs, "at": time.time()})
+            if tdef.name in CHANNEL_TOOLS:
+                raise ToolError(closed_text())
+        result = await inner(**kwargs)
+        opened = open_if_ready() or opened
+        if not opened:
+            return result
+        notice = ("[team] The team channel is now open: you can use the messaging tools, list_candidates shows "
+                  "every published candidate, and you may read the registry and teammates' working directories.")  # fmt: skip
+        pending = team.drain(agent_id)
+        return _append_messages(result, notice + (f"\n\n{team.render(pending)}" if pending else ""))
 
     return _rewrap(tdef, execute)
 

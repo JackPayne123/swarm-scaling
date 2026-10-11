@@ -111,6 +111,9 @@ def main() -> None:
                         "(team agent i gets priority i; teams also get the sharing instruction)")
     p.add_argument("--priority-index", type=int, default=None,
                    help=f"diversified independent runs: which initial priority (0-{len(PRIORITIES) - 1}) this agent gets")
+    p.add_argument("--blind-frac", type=float, default=0.0,
+                   help="team arm, two-phase: each agent works blind until it has spent this fraction of its budget, "
+                        "then its team channel opens (0 = open throughout)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -129,6 +132,8 @@ def main() -> None:
         p.error("--priority-index is for --arm independent --elicit diversified (team agent i gets priority i)")
     if args.arm == "independent" and args.elicit == "diversified" and args.priority_index is None:
         p.error("a diversified independent run needs --priority-index")
+    if args.blind_frac and args.arm != "team":
+        p.error("--blind-frac delays a team's channel; it is for --arm team")
     metadata = {
         "arm": args.arm,
         "n": args.n,
@@ -143,6 +148,7 @@ def main() -> None:
         "split": args.split,
         "protocol": args.elicit,  # the prompt variant (--elicit); "loose" before v6
         "priority_index": args.priority_index,
+        "blind_frac": args.blind_frac,
         "tool_style": args.tool_style,
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
@@ -178,6 +184,7 @@ def main() -> None:
             min_spend_frac=args.min_spend_frac,
             elicit=args.elicit,
             priority_index=args.priority_index,
+            blind_frac=args.blind_frac,
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

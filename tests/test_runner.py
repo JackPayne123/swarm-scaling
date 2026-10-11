@@ -115,4 +115,8 @@ def test_a_priority_index_is_refused_outside_diversified_independent_runs(monkey
         with pytest.raises(SystemExit):
             runner.main()
         assert "priority-index" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "argv", base + ["--arm", "independent", "--blind-frac", "0.5"])  # no channel to delay
+    with pytest.raises(SystemExit):
+        runner.main()
+    assert "--blind-frac" in capsys.readouterr().err
     assert not (tmp_path / "x").exists()

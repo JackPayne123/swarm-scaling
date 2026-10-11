@@ -719,3 +719,56 @@ def test_diversified_prompt_gives_each_agent_its_priority_and_teams_the_sharing_
     assert EXPLORATION_BLOCK not in loose[0] and "initial priority" not in loose[0]
     with pytest.raises(ValueError, match="team agent i gets priority i"):
         swarm(models=[MODEL, MODEL], per_agent_tokens=1000, elicit="diversified", priority_index=1)
+
+
+def test_two_phase_team_works_blind_until_half_its_budget_then_the_channel_opens(tmp_path: Path) -> None:
+    # Two-phase arm (v6 pilot): before an agent has spent half its budget it cannot message, sees no teammate's
+    # candidates and receives nothing; its own spend opens its channel, with the held messages.
+    ws = tmp_path / "ws"
+    solver = ws / "agents" / "agent_0" / "solver.py"
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(
+                    call("send_message", usage=used(10), to="agent_1", text="too early"),  # refused
+                    call("bash", usage=used(10), command=f"mkdir -p {solver.parent} && echo x > {solver}"),
+                    call("publish_candidate", usage=used(10), path=str(solver), note="first"),
+                    call("bash", usage=used(600), command="true"),  # 630 of 1000: open
+                    call("send_message", usage=used(10), to="agent_1", text="hi from 0"),
+                    call("submit", usage=used(10), answer="done"),
+                ),
+                scripted(
+                    call("bash", usage=used(10), command="sleep 2"),  # agent_0 has published and messaged by now
+                    call("list_candidates", usage=used(10)),
+                    call("bash", usage=used(10), command=f"ls {ws}/registry"),  # a peek: logged, not blocked
+                    call("bash", usage=used(600), command="true"),  # open: notice plus the held message
+                    call("list_candidates", usage=used(10)),
+                    call("submit", usage=used(10), answer="done"),
+                ),
+            ],
+            per_agent_tokens=1000,
+            budget_type="all",
+            workspace_root=str(ws),
+            blind_frac=0.5,
+        ),
+    )
+    refused, sent = tool_events(log, "send_message")
+    assert refused.error is not None and refused.error.message.startswith(
+        "The team channel is not open yet. The team channel opens once you have spent half your budget (500)."
+    )
+    assert "Queued for agent_1" in str(sent.result)
+    before, after = (str(e.result) for e in tool_events(log, "list_candidates"))
+    assert before == "No candidates have been published yet." and "agent_0-0" in after
+    opened = [str(e.result) for e in tool_events(log, "bash") if "[team] The team channel is now open" in str(e.result)]
+    assert len(opened) == 2 and sum("hi from 0" in r for r in opened) == 1
+    assert not any("too early" in str(e.result) for e in tool_events(log, "bash"))
+    meta = swarm_meta(log)
+    assert meta["blind_frac"] == 0.5
+    assert all(a["channel_opened_at"] is not None for a in meta["agents"].values())
+    assert [p["tool"] for p in meta["agents"]["agent_1"]["blind_peeks"]] == ["bash"]
+    from inspect_ai.log import resolve_sample_attachments
+
+    sample = resolve_sample_attachments(log.samples[0])
+    prompts = [next(m.text for m in e.input if m.role == "user") for e in sample.events if e.event == "model"]
+    assert all("The team channel opens once you have spent half your budget (500)." in p for p in prompts)

@@ -74,6 +74,35 @@ def test_schedule_respects_free_vcpus_and_starts_queued_rows_as_room_frees():
     assert free == {"gcp": 24, "aws": 0}
 
 
+def test_schedule_caps_running_agents_and_starts_nothing_once_the_stop_file_exists():
+    """v6 keeps at most 8 agents per scorer slot running, and stops launching at the spend cap; running rows finish."""
+    import threading
+    import time
+
+    rows = fleet.parse_plan("t1 aws auto --n 4\ni1 aws auto\ni2 aws auto\ni3 aws auto\ni4 aws auto\ni5 aws auto\n")
+    lock, live, peak, started = threading.Lock(), [0], [0], []
+
+    def launch(row, machine):
+        with lock:
+            started.append(row.name)
+            live[0] += fleet.agents(row)
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.05)
+        with lock:
+            live[0] -= fleet.agents(row)
+        return 0
+
+    stop = lambda: len(started) >= 2  # noqa: E731 (the cap is passed once the first wave has started)
+    results = fleet.schedule(rows, {"gcp": 0, "aws": 300}, launch, max_agents=5, stop=stop)
+    assert started == ["t1", "i1"] and peak[0] == 5  # i2 would have made 6 agents
+    assert results == {"t1": 0, "i1": 0, "i2": 3, "i3": 3, "i4": 3, "i5": 3}
+
+
+def test_independents_and_teams_of_four_at_two_cpus_per_agent_get_the_small_c7a_types():
+    rows = fleet.parse_plan("i aws auto --cpus-per-agent 2\nt aws auto --n 4 --cpus-per-agent 2\n")
+    assert [fleet.machine_for(r, "aws") for r in rows] == [f"{fleet.AWS_FAMILY}.xlarge", f"{fleet.AWS_FAMILY}.4xlarge"]
+
+
 def test_schedule_fails_rows_that_never_fit():
     rows = fleet.parse_plan("big aws auto --n 4\n")  # needs 32 vCPUs; the scorer holds the AWS quota
     assert fleet.schedule(rows, {"gcp": 24, "aws": 0}, lambda row, machine: 0) == {"big": 1}

@@ -1,6 +1,6 @@
 """Two-stage portfolio selection (v6, PLAN.md), applied identically to every arm.
 
-A portfolio is one team run, or one group of independent runs named `<group>-i<k>` (plans/v6-*.tsv), so the group's
+A portfolio is one team run, or one group of independent runs named `<group>-i<k>` (plans/v6-*.tsv: `<prefix>-<task>-r<k>-<arm>-i<j>`), so the group's
 key is the run name without its `-i<k>` suffix.
 
 Stage 1: every candidate from the portfolio's runs, ranked by the dev score finalize recorded for it (FINAL_DEV_N
