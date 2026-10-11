@@ -1,3 +1,5 @@
+# CANCELLED (2026-10-11, not run): on dst one float32 cast sets the Haiku score, so teams of 8 and 16 and best-of-8/16 would
+# all sit at that ceiling whether or not agents communicate (both pivot reviews). Replaced by the v6 design (PLAN.md).
 # Haiku 3 (2026-10-11): larger teams on dst. Same settings as haiku2-dst (Haiku 5.5 xhigh, $0.25 per agent, run to budget).
 # 2 teams of 16, 2 teams of 8, and 6 more independents (e11-e16) so best-of-16 can draw on haiku2-dst-indep-e1..e10 too. Max $13.50.
 # name  cloud  machine  runner args

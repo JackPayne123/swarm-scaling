@@ -128,6 +128,54 @@ Fallback (from the Sol review): if the pilot shows no progress or untrustworthy 
 - Timing gate result (2026-10-05, `scripts/timing_noise.py`, reference vs itself, dev_eval n=20, 5 runs, host load 3-10): cvar_projection range 2.1% (an earlier run with other containers busy: 0.13%); job_shop_scheduling 12.2% (earlier 7% and 11%). Decision: run locally. The spread on job_shop persists on a quiet Docker, and its reference uses OR-Tools CP-SAT, whose multi-worker search time varies run to run, so a cloud box would likely not fix it (likely, untested). 5 of the 32 selected tasks use CP-SAT (job_shop_scheduling, vehicle_routing, min_dominating_set, set_cover_conflicts, tsp). The verifier's 100 instances average some of this out; the analysis reports every result with and without these 5 tasks.
 - Fallback / ProgramBench box (prices fetched 2026-10-05): AWS c7a.8xlarge on-demand, us-east-1 or us-west-2, 32 physical cores (SMT off), 64 GiB, $1.642/h, plus 400 GB gp3 ($32/month while stopped). About $114 for 60 h of use over 2 weeks; $567 if left on. Spot (~$0.62/h) only for agent rollouts, never for timing. Hetzner AX162 (48-core bare metal, ~$690 for 2 weeks plus EUR 304 setup, cannot be stopped) wins only above ~17 days of continuous use. If c7a timings are noisy: c7a.metal-48xl ($9.85/h) for timing runs only. A new AWS account may need a vCPU quota increase for 32+ vCPU.
 
+## v6: elicitation redesign (pre-registered 2026-10-11, before any held-out run)
+
+Question: can a diversified, sharing team of 4 beat equally budgeted, equally diversified independent search on held-out AlgoTune tasks, and does diversification alone beat loose independents? Jack approved the design on 2026-10-11; the decisions log row of that date gives the reasons.
+
+- Model and budget: Claude Haiku 5.5, effort xhigh, $0.10 per agent, run to budget (80% submit gate), 1 h prompt cache, 4 CPUs per agent, remote scorer. Groups of N = 4, 2 repeats per task.
+- Arms per task and repeat: (1) 4 loose independents, today's loose solo prompt; (2) 4 diversified independents, no messaging, agent priority index 0-3 set per plan row (runner `--elicit diversified --priority-index i`); (3) 1 diversified team of 4 (`--arm team --n 4 --elicit diversified`), messaging and registry as before, agent i gets priority i.
+- Prompt text: `swarm.EXPLORATION_BLOCK`, `swarm.PRIORITIES`, `swarm.priority_text` and `swarm.TEAM_SHARING`, added to the default protocol. Both diversified arms get the same exploration block and the same priority for the same index; the team's sharing line replaces "How you work together, if at all, is up to you." No wording on precision, number formats or risk appetite. Each run records the variant (`protocol` in run metadata, `elicit` in swarm metadata) and each agent its `priority_index` and `priority`.
+- Selection, identical for every arm (`scripts/select_portfolio.py`): a portfolio is one team run or one group of 4 independent runs (`<group>-i<k>`). Stage 1 ranks every candidate in the portfolio by its recorded 20-instance dev score (distinct sources). Stage 2 re-times the top 3 distinct sources with the final verifier on 100 dev instances (seeds 500,000-500,099, scorer job `score_dev`) and picks the fastest valid one. The pick is scored 3 times on the hidden instances; the median is the portfolio's result. The best hidden median in the shortlist is reported only as a labelled oracle bound. Every candidate's source is kept in the log (finalize `sources`).
+- Analysis: per-task mean log speedup per arm, contrasts within task (diversified team minus diversified independents isolates communication; diversified minus loose independents isolates the prompt), bootstrap over tasks with repeats nested, each portfolio one observation, failures included. Claims are pre-registered as "a 20% or larger gain, or no evidence of one"; a claim of "no gain" is not available at this sample size.
+- Plans: `plans/v6-pilot.tsv` (the two pilot tasks generalized_eigenvalues_real and optimal_advertising, 1 repeat of each arm, 24 agents, max $2.40) and `plans/v6-main.tsv` (the 8 tasks below x 2 repeats x 3 arms, 192 agents, max $19.20), both run with `scripts/v6.sh <plan> <SPEND_CAP>`, one task batch at a time.
+
+### Held-out task selection
+
+Rule, fixed before any held-out run: start from the 26 held-out tasks in `data/algotune_split.json`. Exclude (a) tasks whose reference uses OR-Tools CP-SAT (multi-worker search time varies run to run; see the timing gate under Budget) and (b) tasks whose reference is a single library call on a fixed linear transform (the dst-like case, where one library or precision swap sets the ceiling). Eigen-decompositions and other single calls that compute a decomposition or solve an optimisation are not fixed transforms and stay in. Assign each remaining task to an algorithmic family by what its reference computes, then draw 8 families with `random.Random(20261011).sample(sorted(families), 8)` and, in the drawn order, one task per family with `rng.choice(sorted(tasks))` from the same generator. Family assignments were written from the reference `solve` code only.
+
+| Task | Reference | Decision |
+|---|---|---|
+| min_dominating_set | OR-Tools CP-SAT | excluded (a) |
+| set_cover_conflicts | OR-Tools CP-SAT | excluded (a) |
+| tsp | OR-Tools CP-SAT AddCircuit | excluded (a) |
+| fft_cmplx_scipy_fftpack | `scipy.fftpack.fftn` | excluded (b) |
+| fft_real_scipy_fftpack | `scipy.fftpack.fftn` | excluded (b) |
+| eigenvalues_real | `np.linalg.eigh` | family: dense symmetric eigenproblems |
+| generalized_eigenvectors_real | Cholesky reduction + `eigh` | family: dense symmetric eigenproblems |
+| two_eigenvalues_around_0 | `np.linalg.eigvalsh` | family: dense symmetric eigenproblems |
+| generalized_eigenvalues_complex | `scipy.linalg.eig(A, B)` (QZ) | family: dense nonsymmetric generalized eigenproblems |
+| generalized_eigenvectors_complex | `scipy.linalg.eig(A, B)` (QZ) | family: dense nonsymmetric generalized eigenproblems |
+| sparse_lowest_eigenvalues_posdef | `scipy.sparse.linalg.eigsh` | family: sparse iterative eigensolvers |
+| sparse_lowest_eigenvectors_posdef | `scipy.sparse.linalg.eigsh` | family: sparse iterative eigensolvers |
+| pca | sklearn PCA | family: SVD and low-rank factorisation |
+| randomized_svd | sklearn `randomized_svd` | family: SVD and low-rank factorisation |
+| chebyshev_center | cvxpy LP (Clarabel) | family: convex programs through a general solver |
+| qp | cvxpy QP (OSQP) | family: convex programs through a general solver |
+| quantile_regression | sklearn QuantileRegressor (HiGHS LP) | family: convex programs through a general solver |
+| robust_linear_program | cvxpy SOCP (Clarabel) | family: convex programs through a general solver |
+| lasso | sklearn Lasso (coordinate descent) | family: iterative regression fitting |
+| least_squares | `scipy.optimize.leastsq` (Levenberg-Marquardt) | family: iterative regression fitting |
+| min_weight_assignment | `min_weight_full_bipartite_matching` | family: graph algorithms |
+| shortest_path_dijkstra | `scipy.sparse.csgraph.shortest_path` | family: graph algorithms |
+| btsp | pysat SAT search + networkx | family: SAT-based combinatorial search (pysat, not CP-SAT, so rule (a) does not apply) |
+| clustering_outliers | HDBSCAN | family: density-based clustering |
+| sinkhorn | POT `ot.sinkhorn` | family: entropic optimal transport |
+| unit_simplex_projection | sort-based projection in numpy | family: sort-based projection |
+
+Draw (11 families, 8 drawn): graph algorithms -> shortest_path_dijkstra; density-based clustering -> clustering_outliers; sparse iterative eigensolvers -> sparse_lowest_eigenvalues_posdef; sort-based projection -> unit_simplex_projection; convex programs through a general solver -> qp; SAT-based combinatorial search -> btsp; iterative regression fitting -> least_squares; entropic optimal transport -> sinkhorn. Families not drawn: dense symmetric eigenproblems, dense nonsymmetric generalized eigenproblems, SVD and low-rank factorisation.
+
+The v6 held-out tasks: btsp, clustering_outliers, least_squares, qp, shortest_path_dijkstra, sinkhorn, sparse_lowest_eigenvalues_posdef, unit_simplex_projection.
+
 ## Decisions log
 
 | Date | Decision | Why |
@@ -158,6 +206,7 @@ Fallback (from the Sol review): if the pilot shows no progress or untrustworthy 
 | 2026-10-10 | Agents run at reasoning effort xhigh from the next pilot | Jack's call. Checked offline that Inspect sends `output_config.effort = xhigh` for Opus 5.5 |
 | 2026-10-10 | The scorer caches the reference-alone baseline (`--cache-alone`, default on); the interleaved speedup timing is unchanged | Jack: re-timing the reference alone in every job roughly doubles a score job. Kept only if the slot-interference pre-flight shows slots do not slow each other; otherwise `--no-cache-alone` |
 | 2026-10-10 | Scoring fixes: glibc heap trimming off in every timed process (MALLOC_* in the container environment); scorer containers and the local checker use the cpuset only, without a CPU quota; the scorer VM holds /dev/cpu_dma_latency at 0; the alone-baseline cache is off by default. The official speedup stays AlgoTune's (interleaved reference) and the reference_inflation gate stays at 1.15 | Scoring investigation: the reference check on generalized_eigenvalues_real measured heap trimming (reference vs itself 0.91; 4 of 8 pilot-5b solvers invalid at 1.14-1.20). With trimming off all 8 read 0.99-1.02. The quota throttled about 1% of a busy run. C2 exits cost short multi-threaded calls 800 us. On BLAS-bound tasks the idle-measured cached baseline read about 0.09 higher under load |
+| 2026-10-11 | v6 pivot: Haiku 5.5 at $0.10 per agent, groups of 4, three arms per task (loose independents, diversified independents, diversified team of 4), two-stage dev selection for every arm, 8 held-out tasks x 2 repeats chosen by a written rule (section "v6: elicitation redesign"). plans/haiku3-dst.tsv cancelled, not run | Both pivot reviews (Codex Sol and Fable, 2026-10-11): an elicited team against a loose solo prompt cannot attribute a gain to communication, so a diversified-independent control with the same exploration text and priorities isolates the channel. Eliciting the strongest team protocol is legitimate under METR's elicitation guidelines when the comparison arm gets comparable effort. The draft's risk-taking wording was removed because on dst it pushes the one float32 decision that sets the Haiku score, a propensity change rather than collaboration. Task breadth over repeats: the unit of resampling is the task, and Haiku team scores on dst spread 4.1-11.8. haiku3 on dst would sit at the float32 ceiling at N = 8 and 16 whatever the agents did. Pre-registered claim: "a 20%+ gain, or no evidence of one", never "no gain" |
 
 ## Must fix before the Harvey pilot
 
