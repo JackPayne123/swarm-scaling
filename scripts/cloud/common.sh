@@ -203,12 +203,19 @@ vm_create() {
 }
 
 fallback_types() {  # fallback_types <machine-type>: it, then other x86 families with the same vCPU count
-  local mt=$1 f
+  local mt=$1 f fams
   echo "$mt"
   if [ "$(cloud_of "$mt")" = gcp ]; then
     for f in t2d n2d c2d e2; do [ "$f-standard-${mt##*-}" = "$mt" ] || echo "$f-standard-${mt##*-}"; done
   else
-    for f in c7a m7a m6a c6a m7i c7i; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done
+    # An m (4 GiB per vCPU) or r (8 GiB) type is asked for its memory (v6 sinkhorn rows: 100 problems peak at 9.6 GiB
+    # in the agent box), so it falls back only to families with at least as much memory per vCPU, never a c family.
+    case ${mt%%.*} in
+      m*) fams="m7a m6a m7i r7a" ;;
+      r*) fams="r7a r6a r7i" ;;
+      *) fams="c7a m7a m6a c6a m7i c7i" ;;
+    esac
+    for f in $fams; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done
   fi
 }
 

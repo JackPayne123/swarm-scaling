@@ -166,3 +166,18 @@ def test_collect_pulls_finished_uploads_by_run_name_for_vms_on_either_cloud():
 
     assert fleet.collect_rows(rows, fetch) == {"on-aws": True, "on-gcp": True, "still-running": False}
     assert tried == ["on-aws", "on-gcp", "still-running"]
+
+
+@pytest.mark.parametrize("mt,expected", [
+    ("m7a.xlarge", "m7a.xlarge m6a.xlarge m7i.xlarge r7a.xlarge"),
+    ("m7a.4xlarge", "m7a.4xlarge m6a.4xlarge m7i.4xlarge r7a.4xlarge"),
+    ("c7a.xlarge", "c7a.xlarge m7a.xlarge m6a.xlarge c6a.xlarge m7i.xlarge c7i.xlarge"),
+])
+def test_a_memory_driven_type_never_falls_back_to_less_memory_per_vcpu(mt, expected):
+    """sinkhorn rows ask for m7a (4 GiB per vCPU) because 100 problems peak at 9.6 GiB in the agent box; a c7a.xlarge
+    fallback (8 GiB, about 5.6 GiB for the box) would run out of memory."""
+    import subprocess
+
+    out = subprocess.run(["bash", "-c", f"source scripts/cloud/common.sh && fallback_types {mt}"], cwd=ROOT,
+                         capture_output=True, text=True, check=True).stdout.split()  # fmt: skip
+    assert out == expected.split()
