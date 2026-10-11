@@ -102,3 +102,17 @@ async def test_haiku_5_5_agents_send_xhigh_effort_and_the_one_hour_cache_pin(mon
     assert body["thinking"]["type"] == "adaptive"
     assert body["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert not {"temperature", "top_p", "top_k"} & set(body)
+
+
+def test_a_priority_index_is_refused_outside_diversified_independent_runs(monkeypatch, tmp_path, capsys):
+    # A team assigns priorities by agent index; a loose run has none. Either misuse would mislabel a run's prompt.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    base = ["runner", "--models", GLM, "--budget", "1", "--name", "x"]
+    for extra in (["--arm", "team", "--n", "4", "--elicit", "diversified", "--priority-index", "1"],
+                  ["--arm", "independent", "--priority-index", "1"],
+                  ["--arm", "independent", "--elicit", "diversified"]):  # fmt: skip
+        monkeypatch.setattr(sys, "argv", base + extra)
+        with pytest.raises(SystemExit):
+            runner.main()
+        assert "priority-index" in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()

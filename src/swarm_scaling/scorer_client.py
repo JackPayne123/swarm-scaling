@@ -15,7 +15,7 @@ import anyio
 
 POLL_S = 2.0
 # Run-time limits the service enforces (it kills the job's container after these), plus a margin for the poll.
-TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600}
+TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600, "score_dev": 3600}
 MARGIN_S = 120
 MAX_CONSECUTIVE_FAILURES = 5  # connection failures while polling before giving up
 

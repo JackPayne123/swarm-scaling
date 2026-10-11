@@ -674,3 +674,48 @@ def test_one_wait_for_message_is_capped_so_an_agent_cannot_idle_to_its_time_limi
     assert swarm_meta(log)["agents"]["agent_0"]["wall_s"] < 3
     description = ToolDef(team_module.wait_for_message_tool(None, "agent_0")).description
     assert "at most 600 seconds per call" in description
+
+
+def test_diversified_prompt_gives_each_agent_its_priority_and_teams_the_sharing_line(tmp_path: Path) -> None:
+    # v6: diversified independents and the diversified team must see the same exploration block and the same
+    # priority for the same index, so the only difference between those arms is the channel and the sharing line.
+    from swarm_scaling.swarm import EXPLORATION_BLOCK, PRIORITIES, TEAM_SHARING
+
+    def capture(prompts: list[str]):
+        def script(input, tools, tool_choice, config):
+            prompts.append(input[-1].text)
+            return submit()
+
+        return get_model(MODEL, custom_outputs=script)
+
+    team_prompts: list[list[str]] = [[] for _ in range(4)]
+    log = run_swarm(
+        tmp_path / "team",
+        swarm(models=[capture(p) for p in team_prompts], per_agent_tokens=100_000, workspace_root=str(tmp_path / "ws_t"),
+              elicit="diversified"),
+    )
+    for i, prompts in enumerate(team_prompts):
+        assert EXPLORATION_BLOCK in prompts[0] and TEAM_SHARING in prompts[0]
+        assert f"Your initial priority is {PRIORITIES[i]}." in prompts[0]
+        assert not any(f"priority is {p}." in prompts[0] for p in PRIORITIES if p != PRIORITIES[i])
+        assert "is up to you" not in prompts[0]
+    meta = swarm_meta(log)
+    assert meta["elicit"] == "diversified"
+    assert [(a["priority_index"], a["priority"]) for a in meta["agents"].values()] == list(enumerate(PRIORITIES))
+
+    indep: list[str] = []
+    log = run_swarm(
+        tmp_path / "indep",
+        swarm(models=[capture(indep)], per_agent_tokens=100_000, messaging=False, workspace_root=str(tmp_path / "ws_i"),
+              elicit="diversified", priority_index=2),
+    )
+    assert EXPLORATION_BLOCK in indep[0] and f"Your initial priority is {PRIORITIES[2]}." in indep[0]
+    assert TEAM_SHARING not in indep[0] and "alone" in indep[0]
+    assert swarm_meta(log)["agents"]["agent_0"]["priority_index"] == 2
+
+    loose: list[str] = []
+    run_swarm(tmp_path / "loose", swarm(models=[capture(loose)], per_agent_tokens=100_000, messaging=False,
+                                        workspace_root=str(tmp_path / "ws_l")))  # fmt: skip
+    assert EXPLORATION_BLOCK not in loose[0] and "initial priority" not in loose[0]
+    with pytest.raises(ValueError, match="team agent i gets priority i"):
+        swarm(models=[MODEL, MODEL], per_agent_tokens=1000, elicit="diversified", priority_index=1)

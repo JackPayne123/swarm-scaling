@@ -72,6 +72,34 @@ AgentTools = Callable[[TaskState], Callable[[str], list[Tool]]]
 
 DEFAULT_SELECTION_RULE = "a rule fixed before the run"
 
+ELICITS = ("loose", "diversified")
+# v6 elicitation (PLAN.md decisions log, 2026-10-11): added to the loose protocol for the diversified arms, both
+# independent and team. No wording on precision, number formats or risk appetite.
+EXPLORATION_BLOCK = (
+    "Keep a working candidate saved at all times. Explore materially different approaches and test ideas whose "
+    "outcome is uncertain using the development tools. Preserve useful alternatives when you change direction, and "
+    "verify a claimed improvement before abandoning an approach. Judge candidates only against the task's stated "
+    "correctness requirements."
+)
+# Initial method priority by index: team agent i gets PRIORITIES[i]; an independent run gets its plan row's index.
+PRIORITIES = (
+    "alternative libraries and implementations",
+    "algorithmic or mathematical changes",
+    "memory layout and execution parameters",
+    "alternative formulations within the correctness contract",
+)
+TEAM_SHARING = (
+    "Share reproducible findings (what you measured and how), avoid duplicating a teammate's investigation, and "
+    "build on useful artifacts while keeping alternatives alive."
+)
+
+
+def priority_text(priority: str) -> str:
+    return (
+        f"Your initial priority is {priority}. It is a starting point, not an exclusive role: pursue any idea that "
+        "looks promising, and make every candidate a complete solution."
+    )
+
 
 @solver
 def swarm(
@@ -97,6 +125,8 @@ def swarm(
     candidate_file: str | None = None,
     min_spend_frac: float = 0.0,
     anthropic_cache_ttl: str | None = "1h",
+    elicit: str = "loose",
+    priority_index: int | None = None,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -145,6 +175,10 @@ def swarm(
         anthropic_cache_ttl: Prompt-cache TTL pinned on every call of each anthropic/ model given by name (Inspect's
             `cache_ttl` model arg; writes at 2x input for "1h"). None keeps Inspect's "auto" (5 minutes, 1 hour only
             after a gap of over 5 minutes since the sample's last call to that model, which teammates keep resetting).
+        elicit: "loose" (the facts-only protocol) or "diversified": the protocol plus EXPLORATION_BLOCK and an initial
+            method priority from PRIORITIES, and for teams TEAM_SHARING in place of "how you work together is up to you".
+        priority_index: diversified single-agent runs: which of PRIORITIES this agent gets (independents are separate
+            samples, so the plan row sets it). Team agent i gets PRIORITIES[i].
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -159,6 +193,16 @@ def swarm(
     if budget_type == "cost":
         for m in models:
             budget_cost(str(m))  # unpriced model: refuse before any sandbox starts
+    if elicit not in ELICITS:
+        raise ValueError(f"elicit must be one of {ELICITS}, got {elicit!r}")
+    if elicit == "loose" and priority_index is not None:
+        raise ValueError("priority_index is for the diversified prompt only")
+    if priority_index is not None and n != 1:
+        raise ValueError("priority_index sets one independent agent's priority; team agent i gets priority i")
+    priority_indexes = [priority_index if priority_index is not None else i for i in range(n)]
+    if elicit == "diversified" and not all(0 <= k < len(PRIORITIES) for k in priority_indexes):
+        raise ValueError(f"the diversified prompt has {len(PRIORITIES)} priorities; got indexes {priority_indexes}")
+    priorities = [PRIORITIES[k] if elicit == "diversified" else None for k in priority_indexes]
     agent_ids = [f"agent_{i}" for i in range(n)]
     model_names = [m if isinstance(m, str) else m.name for m in models]
     messaging = messaging and n > 1
@@ -231,6 +275,7 @@ def swarm(
                 tool_style=tool_style,
                 final_path=final_path,
                 min_spend_frac=min_spend_frac,
+                priority=priorities[agent_ids.index(agent_id)],
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -303,13 +348,17 @@ def swarm(
             "budget_warnings": list(budget_warnings),
             "min_spend_frac": min_spend_frac,
             "anthropic_cache_ttl": anthropic_cache_ttl,
+            "elicit": elicit,
             "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
             "process_cleanup": cleanup,
             "cpu": cpu.summary() if cpu is not None else {"skipped": "not a Docker container"},
             "candidates": [asdict(c) for c in candidates],
-            "agents": {aid: team.agents[aid].as_log() for aid in agent_ids},
+            "agents": {
+                aid: {**team.agents[aid].as_log(), "priority_index": k if elicit == "diversified" else None, "priority": p}
+                for aid, k, p in zip(agent_ids, priority_indexes, priorities)
+            },
         }
 
         if n == 1 and results[0] is not None:
@@ -476,11 +525,14 @@ def default_protocol_prompt(
     tool_style: ToolStyle = "default",
     final_path: str | None = None,
     min_spend_frac: float = 0.0,
+    priority: str | None = None,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
     # the size of the pool the final rule picks from does not depend on the arm; only
     # whether agents can see each other's candidates and messages does.
+    # `priority` (the v6 diversified prompt) adds EXPLORATION_BLOCK and the agent's initial priority, and for teams
+    # TEAM_SHARING replaces the "up to you" line.
     rec = team.agents[agent_id]
     others = [a.agent_id for a in team.others(agent_id)]
     lines = ["## Working protocol", ""]
@@ -535,9 +587,11 @@ def default_protocol_prompt(
             "You can share any file or folder by publishing it"
             + (", sending it with send_file, or sending its path in a message." if messaging else ".")
         )
+    if priority is not None:
+        lines += ["", EXPLORATION_BLOCK, priority_text(priority)]
     if others and (messaging or registry):
         lines.append("")
-        lines.append("How you work together, if at all, is up to you.")
+        lines.append(TEAM_SHARING if priority is not None else "How you work together, if at all, is up to you.")
     lines.append("")
     pool = "all published candidates" if others else "your saved candidates"
     if not registry:

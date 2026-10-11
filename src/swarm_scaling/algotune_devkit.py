@@ -56,6 +56,9 @@ TIMING_ENV = {
 FINAL_DEV_SEED = 50_000
 FINAL_DEV_N = 20
 FINAL_TIMEOUT_S = 900  # per candidate
+# Stage 2 of scripts/select_portfolio.py: the shortlist is re-timed by the final verifier (scorer job kind score_dev) on
+# instances SELECT_SEED + i, i < 100: away from dev_eval's (10,000+), finalize's (60,000+) and the hidden ones (1,000,000+).
+SELECT_SEED = 500_000
 
 DEV_TOOLKIT_NOTE = (
     "A dev toolkit is installed in /app/dev (read /app/dev/README.md first). It contains the full "
@@ -336,6 +339,8 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
     Candidates with identical solver.py text share one evaluation. Any /app/solver.py an agent wrote is
     removed first (agents are told it has no effect), so nothing is installed when no candidate is correct.
     Each agent's dev_eval queue waits are summarised first (`queue_telemetry`, state.metadata["checker"]["agents"]).
+    Every candidate's solver.py is kept in the log, once per distinct text: each candidate row carries its `sha256`
+    and finalize's `sources` maps it to the text (scripts/select_portfolio.py selects across runs from these).
     """
     sw = state.metadata.get("swarm", {})
     checker = state.metadata.setdefault("checker", {"calls": []})
@@ -346,17 +351,21 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
     if not removed.success:
         raise RuntimeError(f"could not clear {SOLVER_PATH}: {removed.stderr}")
     cache: dict[str, DevResult] = {}
-    results = []
+    sources: dict[str, str] = {}
+    results, digests = [], []
     for i, c in enumerate(candidates):
         try:
             source = await box.read_file(f"{c.path}/solver.py", text=False)
         except FileNotFoundError:
             results.append(DevResult(c, False, None, error="no solver.py"))
+            digests.append(None)
             continue
         digest = hashlib.sha256(source).hexdigest()
         if digest not in cache:
             cache[digest] = await _dev_eval(state, c, source, i)
+            sources[digest] = source.decode(errors="replace")
         results.append(replace(cache[digest], candidate=c))
+        digests.append(digest)
     best = pick_best(results)
     selected_source = None
     if best is not None:
@@ -371,6 +380,7 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
         "dev_seed": FINAL_DEV_SEED,
         "selected": None if best is None else {"agent_id": best.candidate.agent_id, "path": best.candidate.path},
         "selected_source": selected_source,
+        "sources": sources,
         "candidates": [
             {
                 "agent_id": r.candidate.agent_id,
@@ -378,11 +388,12 @@ async def algotune_finalize(state: TaskState, candidates: list[Candidate]) -> No
                 "kind": r.candidate.kind,
                 "path": r.candidate.path,
                 "published_at": r.candidate.published_at,
+                "sha256": digest,
                 "valid": r.valid,
                 "speedup": r.speedup,
                 "error": r.error,
                 **r.detail,
             }
-            for r in results
+            for r, digest in zip(results, digests)
         ],
     }

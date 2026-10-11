@@ -183,6 +183,38 @@ def test_the_alone_baseline_is_measured_once_per_instance_and_sent_into_later_jo
     assert info["mode"] == "child" and "timed out" in info["cache_error"] and "job/alone.json" not in files
 
 
+def test_score_dev_runs_the_seeded_verifier_on_dev_instances_without_the_hidden_offset(tmp_path) -> None:
+    # Stage 2 of portfolio selection times candidates the way final scoring does, on dev seeds: the container gets the
+    # same verifier and test.sh, its seed_offset replaced, and a seed reaching the hidden range is refused.
+    import io
+    import tarfile
+
+    from swarm_scaling.algotune_devkit import SELECT_SEED
+    from swarm_scaling.tasks import SEED_OFFSET_RANGE
+
+    task = assets(tmp_path)
+    (task.tests_dir / "test_outputs.py").write_text("PROBLEM_SIZE = 7\n")
+    sent = []
+
+    def run(job, cpuset, timeout_s):
+        with tarfile.open(fileobj=io.BytesIO(job_inputs(job))) as tar:
+            sent.append(({m.name: tar.extractfile(m).read() for m in tar.getmembers()}, job_script(job), timeout_s))
+        return {"score": 2.0, "valid": True}, ""
+
+    sc = Scorer({"cvar_projection": task}, ["8-15"], run, "Test CPU", "v", "id")
+    for body in ({}, {"seed": 1234}):
+        job_id = sc.submit({**job(kind="score_dev"), **body})
+        while sc.view(job_id)["status"] not in ("done", "error"):
+            pass
+    (files, script, timeout_s), (files2, _, _) = sent
+    assert files["tests/seed_offset"] == f"{SELECT_SEED}\n".encode() and files2["tests/seed_offset"] == b"1234\n"
+    assert files["tests/test_outputs.py"] == b"PROBLEM_SIZE = 7\n" and files["app/solver.py"] == b"s"
+    assert "bash /tests/test.sh" in script and timeout_s == 3600
+    assert not any(b"1234567" in v for v in files.values())  # the hidden offset in assets()
+    with pytest.raises(ValueError, match="score_dev seed"):
+        sc.submit({**job(kind="score_dev"), "seed": SEED_OFFSET_RANGE[0] - 99})
+
+
 def fake_docker(tmp_path: Path) -> Path:
     """A `docker` that records its argv; `run` blocks until `kill` of the same container name."""
     script = tmp_path / "docker"

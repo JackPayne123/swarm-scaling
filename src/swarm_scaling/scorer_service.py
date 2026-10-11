@@ -10,8 +10,10 @@ outside every slot, so its threads never run on a slot's CPUs.
 API (JSON over HTTP, bearer token on every request):
     GET  /health      -> {ok, slots, queue_len, cpu_model, version, seed_offset_id, tasks}
     GET  /stats       -> {queue_len, running, jobs_done, queue_wait_mean_s, queue_wait_p95_s, slot_busy_frac, ...}
-    POST /jobs        {kind: dev_eval|final_eval|score, task, solver_source, run_id, agent_id, sample_id,
+    POST /jobs        {kind: dev_eval|final_eval|score|score_dev, task, solver_source, run_id, agent_id, sample_id,
                        n, seed, reps, size}  -> {job_id}
+                      score_dev: the score job's seeded verifier (problems generated and held in memory, then timed)
+                      on dev instances seed + i instead of the hidden ones; `seed` defaults to SELECT_SEED
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
@@ -58,10 +60,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from swarm_scaling.algotune_devkit import ASSETS, FINAL_DEV_N, FINAL_DEV_SEED, TIMING_ENV
+from swarm_scaling.algotune_devkit import ASSETS, FINAL_DEV_N, FINAL_DEV_SEED, SELECT_SEED, TIMING_ENV
 
-KINDS = ("dev_eval", "final_eval", "score")
-TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600}
+KINDS = ("dev_eval", "final_eval", "score", "score_dev")
+VERIFIER_KINDS = ("score", "score_dev")  # run the seeded verifier (test.sh); score_dev with its seed_offset replaced
+TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600, "score_dev": 3600}
+HIDDEN_SEED_MIN = 1_000_000  # tasks.SEED_OFFSET_RANGE[0]: score_dev instances must stay below the hidden ones
+VERIFIER_INSTANCES = 100  # Harbor's AlgoTune verifier: NUM_TEST_INSTANCES
 OUTPUT_CHARS = 20_000  # verifier_stdout / dev_eval output kept per job (the end, where the summary is)
 KILL_GRACE_S = 60  # after docker kill, how long to wait for the docker CLI to return
 DEV_SEED_OFFSET = 10_000  # dev_eval.py's SEED_OFFSET: dev instance i of a job is seed DEV_SEED_OFFSET + seed + i
@@ -125,20 +130,26 @@ def _tar(files: dict[str, bytes]) -> bytes:
 
 
 def job_inputs(job: Job) -> bytes:
-    """The tar a job's container extracts at /: the solver, plus the seeded verifier for scoring."""
+    """The tar a job's container extracts at /: the solver, plus the seeded verifier for scoring.
+
+    score_dev sends the same verifier with its seed_offset file replaced by the job's dev seed, so the hidden offset
+    never enters a score_dev container.
+    """
     alone = {} if job.alone_payload is None else {"alone": json.dumps(job.alone_payload).encode()}
-    if job.kind != "score":
+    if job.kind not in VERIFIER_KINDS:
         return _tar({"job/solver.py": job.solver_source.encode(), **{"job/alone.json": v for v in alone.values()}})
     files = {"app/solver.py": job.solver_source.encode()}
     for path in sorted(job.task.tests_dir.rglob("*")):
         if path.is_file():
             files[f"tests/{path.relative_to(job.task.tests_dir)}"] = path.read_bytes()
+    if job.kind == "score_dev":
+        files["tests/seed_offset"] = f"{job.args['seed']}\n".encode()
     return _tar({**files, **{"tests/alone_cache.json": v for v in alone.values()}})
 
 
 def job_script(job: Job) -> str:
     """The shell command the container runs. Outputs go to /out, a per-job directory on this host."""
-    if job.kind == "score":
+    if job.kind in VERIFIER_KINDS:
         # as Harbor's scorer runs it: test.sh writes reward 0 first, then pytest on the verifier
         return (
             "tar -x -C / && mkdir -p /logs/verifier && { bash /tests/test.sh; rc=$?; "
@@ -187,7 +198,7 @@ def docker_runner(docker: str = "docker", memory: str = "8g", work_dir: Path | N
                 # the toolkit, as in the local checker (solvers may load /app/dev/reference_task.py); no secrets
                 "-v", f"{job.task.dev_dir}:/app/dev:ro",
             ]  # fmt: skip
-            if job.kind == "score":
+            if job.kind in VERIFIER_KINDS:
                 cmd += ["-e", "TEST_DIR=/tests"]
             cmd += [job.task.image, "sh", "-c", job_script(job)]
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -204,7 +215,7 @@ def docker_runner(docker: str = "docker", memory: str = "8g", work_dir: Path | N
                     raise JobError(f"timed out after {timeout_s:g}s and the container did not stop") from None
             stdout_s, stderr_s = stdout.decode(errors="replace"), stderr.decode(errors="replace")
             output = (stderr_s + stdout_s).strip()[-OUTPUT_CHARS:]
-            if job.kind == "score":
+            if job.kind in VERIFIER_KINDS:
                 if timed_out:  # the harness's timeout semantics: no speedup, flagged
                     return {"score": 1.0, "valid": None, "verifier_stdout": (stdout_s + stderr_s)[-OUTPUT_CHARS:],
                             "first_call_ratio": None, "reference_inflation": None, "scoring_timeout": True}, output  # fmt: skip
@@ -222,10 +233,10 @@ def docker_runner(docker: str = "docker", memory: str = "8g", work_dir: Path | N
 
 def alone_request(job: Job) -> tuple[list[int], int, int]:
     """The instances (generate_problem seeds), problem size and repeats a job times the reference alone on."""
-    if job.kind == "score":  # the verifier's constants and the seed offset of this scorer's seeded copy
+    if job.kind in VERIFIER_KINDS:  # the verifier's constants and the seed offset it reads (score_dev: the job's)
         text = (job.task.tests_dir / "test_outputs.py").read_text()
         size, n, reps = (int(re.search(rf"^{k} = (\d+)", text, re.M).group(1)) for k in ("PROBLEM_SIZE", "NUM_TEST_INSTANCES", "NUM_REPEATS"))
-        offset = int((job.task.tests_dir / "seed_offset").read_text())
+        offset = job.args["seed"] if job.kind == "score_dev" else int((job.task.tests_dir / "seed_offset").read_text())
         return [offset + i for i in range(n)], size, reps
     a = job.args
     size = a["size"] if a.get("size") is not None else json.loads((job.task.dev_dir / "config.json").read_text())["problem_size"]
@@ -383,7 +394,12 @@ class Scorer:
         if not isinstance(body.get("solver_source"), str):
             raise ValueError("solver_source must be the solver.py text")
         args = {}
-        if kind != "score":
+        if kind == "score_dev":
+            seed = body.get("seed", SELECT_SEED)
+            if not isinstance(seed, int) or seed < 0 or seed + VERIFIER_INSTANCES > HIDDEN_SEED_MIN:
+                raise ValueError(f"score_dev seed must be an integer in 0..{HIDDEN_SEED_MIN - VERIFIER_INSTANCES}")
+            args = {"seed": seed}
+        elif kind != "score":
             final = kind == "final_eval"  # finalize's constants unless given
             args = {
                 "n": body.get("n", FINAL_DEV_N if final else 20),

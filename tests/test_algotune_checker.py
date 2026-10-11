@@ -214,6 +214,33 @@ async def test_finalize_times_in_the_checker_and_only_the_selected_solver_reache
 
 
 @pytest.mark.asyncio
+async def test_finalize_keeps_every_candidate_source_with_its_dev_result(boxes, tmp_path) -> None:
+    # v6 selects across a whole portfolio of runs after the fact, so every candidate's source must survive, not only
+    # the selected one; identical texts are stored once.
+    import hashlib
+
+    (tmp_path / "evaluator.py").write_text("class Task: ...")
+    boxes["default"].files.update({
+        "/app/registry/agent_0-1/solver.py": "speedup=2.0",
+        "/app/agents/agent_0/solver.py": "speedup=2.0",  # the same text as the published candidate
+        "/app/agents/agent_1/solver.py": "bad",
+    })  # fmt: skip
+    candidates = [
+        Candidate("agent_0", "m", "/app/registry/agent_0-1", "", 1.0, "published"),
+        Candidate("agent_0", "m", "/app/agents/agent_0", "", 2.0, "final_workspace"),
+        Candidate("agent_1", "m", "/app/agents/agent_1", "", 3.0, "final_workspace"),
+        Candidate("agent_2", "m", "/app/agents/agent_2", "", 4.0, "final_workspace"),  # wrote no solver.py
+    ]
+    state = SimpleNamespace(metadata={"tests_dir": str(tmp_path), "harbor_config": {"metadata": {"algotune_problem_size": 7}}})
+    await devkit.algotune_finalize(state, candidates)
+    fin = state.metadata["finalize"]
+    sha = {text: hashlib.sha256(text.encode()).hexdigest() for text in ("speedup=2.0", "bad")}
+    assert fin["sources"] == {sha["speedup=2.0"]: "speedup=2.0", sha["bad"]: "bad"}
+    rows = [(c["sha256"], c["valid"], c["speedup"]) for c in fin["candidates"]]
+    assert rows == [(sha["speedup=2.0"], True, 2.0), (sha["speedup=2.0"], True, 2.0), (sha["bad"], False, None), (None, False, None)]
+
+
+@pytest.mark.asyncio
 async def test_timed_checker_runs_never_overlap_across_samples(monkeypatch, tmp_path) -> None:
     # Parallel samples' checkers share CPUs 8-15: one sample's dev_eval must wait for another's finalize.
     (tmp_path / "evaluator.py").write_text("class Task: ...")
