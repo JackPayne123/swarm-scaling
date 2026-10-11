@@ -181,3 +181,13 @@ def test_a_memory_driven_type_never_falls_back_to_less_memory_per_vcpu(mt, expec
     out = subprocess.run(["bash", "-c", f"source scripts/cloud/common.sh && fallback_types {mt}"], cwd=ROOT,
                          capture_output=True, text=True, check=True).stdout.split()  # fmt: skip
     assert out == expected.split()
+
+
+def test_schedule_spaces_vm_starts_so_a_wave_does_not_hit_awss_volume_and_request_limits():
+    """v6 main started ~50 VMs at once: AWS throttled RunInstances and its volume initialization cap ended 11 new VMs."""
+    import time
+
+    starts = []
+    rows = fleet.parse_plan("a aws auto\nb aws auto\nc aws auto\n")
+    fleet.schedule(rows, {"gcp": 0, "aws": 300}, lambda row, machine: starts.append(time.monotonic()) or 0, start_gap=0.2)
+    assert len(starts) == 3 and all(b - a >= 0.19 for a, b in zip(starts, starts[1:]))

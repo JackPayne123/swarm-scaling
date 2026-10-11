@@ -43,6 +43,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,6 +58,10 @@ AWS_REGION, AWS_FAMILY = subprocess.run(  # common.sh decides both (env AWS_REGI
 AWS = ["aws", "--profile", COMMON["AWS_PROFILE_NAME"], "--region", AWS_REGION, "--output", "json"]
 TOOL = COMMON["TOOL_LABEL"]
 GCP_REGION = "us-central1"
+# Seconds between VM starts. AWS caps the summed initialization rate of volumes still loading at 5000 MiB/s
+# (quota L-A37D9CF3); each runner volume asks 300, and a 60 GB volume loads in about 205 s, so 16 at once and
+# about one start per 13 s sustained. Starting ~50 together (v6 main, 2026-10-12) also throttled RunInstances.
+START_GAP_S = 15
 AWS_STANDARD_QUOTA = "L-1216C47A"  # Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances, vCPUs
 
 # Machine types `auto` picks from, smallest first. AWS: c7a in us-east-1, m7a in ap-southeast-2 (no c7a there).
@@ -241,15 +246,18 @@ def last_state(name: str) -> str:
 
 
 def schedule(
-    rows: list[Row], free: dict[str, int], launch, max_runs: int = 0, max_agents: int = 0, stop=lambda: False
+    rows: list[Row], free: dict[str, int], launch, max_runs: int = 0, max_agents: int = 0, stop=lambda: False,
+    start_gap: float = 0,
 ) -> dict[str, int]:
     """Start each row (in file order, with backfill) once a candidate cloud has room; release its vCPUs when it
     ends. `launch(row, machine)` runs one row and returns its exit code. Rows that still do not fit once nothing
     is running get exit code 1 without being run. With max_agents, the agents of running rows never exceed it.
-    Once `stop()` is true, rows not yet started get exit code 3 and are never started."""
+    Once `stop()` is true, rows not yet started get exit code 3 and are never started. Consecutive starts are at
+    least `start_gap` seconds apart."""
     results: dict[str, int] = {}
     pending = list(rows)
     running = {}  # future -> (row, cloud, vcpus)
+    last_start = float("-inf")
     with ThreadPoolExecutor(max(len(rows), 1)) as pool:
         while pending or running:
             if pending and stop():
@@ -263,6 +271,8 @@ def schedule(
                 if max_agents and sum(agents(r) for r, _, _ in running.values()) + agents(row) > max_agents:
                     continue
                 if pick := choose(row, free):
+                    time.sleep(max(0.0, last_start + start_gap - time.monotonic()))
+                    last_start = time.monotonic()
                     cloud, machine = pick
                     free[cloud] -= vcpus(machine)
                     pending.remove(row)
@@ -331,7 +341,7 @@ def plan(args: argparse.Namespace) -> None:
             return subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
 
     stop = (lambda: Path(args.stop_file).exists()) if args.stop_file else (lambda: False)
-    results = schedule(rows, free, launch, args.max_runs, args.max_agents, stop)
+    results = schedule(rows, free, launch, args.max_runs, args.max_agents, stop, start_gap=START_GAP_S)
     failed = [n for n, rc in results.items() if rc != 0]
     print(f"done: {len(results) - len(failed)} ok, {len(failed)} failed {failed}")
     if left := [vm for vm in live_vms() if vm["role"] != "scorer"]:

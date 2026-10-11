@@ -45,7 +45,9 @@ LOG_BUCKET=swarm-scaling-jp-run-logs  # us-central1
 LOG_SA=swarm-runner-logs@swarm-scaling-jp.iam.gserviceaccount.com
 
 gc() { gcloud --account="$GCP_ACCOUNT" --project="$GCP_PROJECT" --quiet "$@"; }
-aw() { command aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION" --output text "$@"; }
+# Adaptive retries back off when AWS throttles the account (v6 main: 71 RunInstances RequestLimitExceeded when
+# ~50 creates started together).
+aw() { AWS_RETRY_MODE=adaptive AWS_MAX_ATTEMPTS=10 command aws --profile "$AWS_PROFILE_NAME" --region "$AWS_REGION" --output text "$@"; }
 
 log_url() {  # log_url <run name>: where that run's VM uploads logs.tgz and vm-exit-code
   echo "gs://$LOG_BUCKET/runs/$1"
@@ -323,7 +325,13 @@ _aws_create() {  # one round over the default subnets of zones offering <mt>; re
       --query 'Instances[0].InstanceId' 2>&1); then
       ZONE=$az
       rm -f "$userdata"
-      aw ec2 wait instance-running --instance-ids "$VM_ID" || return 1
+      if ! aw ec2 wait instance-running --instance-ids "$VM_ID"; then
+        # The volume initialization cap can also end a VM just after a successful create (v6 main: 11 VMs went
+        # straight to terminated with this reason); that VM is gone, so treat it as nothing free and retry later.
+        out=$(aw ec2 describe-instances --instance-ids "$VM_ID" --query 'Reservations[0].Instances[0].StateReason.Code')
+        case $out in *VolumeInitializationLimitExceeded*) echo "$az: $VM_ID ended by $out" >&2; VM_ID=; return 2 ;; esac
+        return 1
+      fi
       VM_IP=$(aw ec2 describe-instances --instance-ids "$VM_ID" --query 'Reservations[0].Instances[0].PublicIpAddress')
       return 0
     fi
