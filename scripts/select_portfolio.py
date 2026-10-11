@@ -8,9 +8,10 @@ instances), one entry per distinct source (sha256; a source seen in several plac
 Stage 2: the top SHORTLIST distinct sources are re-timed by the final verifier path (problems generated and held in
 memory, then timed, in the scorer's timing environment) on 100 dev instances, SELECT_SEED + i (scorer job kind
 score_dev). The pick is the fastest valid source on stage 2.
-Hidden: each shortlisted source is then scored on the hidden instances REPEATS times (score jobs, as rescore.py does)
-and its median kept; the pick's median is the portfolio's result. Every pick is fixed before any hidden job is
-submitted, so hidden scores never choose. The best hidden median in the shortlist is reported as an oracle bound.
+Hidden: the pick is then scored on the hidden instances REPEATS times (score jobs, as rescore.py does) and its median
+is the portfolio's result; every other shortlisted source is scored once, only for the oracle bound. Every pick is
+fixed before any hidden job is submitted, so hidden scores never choose. The best hidden score in the shortlist (the
+pick's median, the others' single score) is reported as an oracle bound.
 
     SCORER_TOKEN=... uv run python scripts/select_portfolio.py 'logs/v6p-*' --scorer http://<scorer>:8770
 
@@ -40,7 +41,10 @@ from rescore import eval_files  # noqa: E402
 
 SHORTLIST = 3
 REPEATS = 3
-ORACLE_LABEL = "oracle bound: the best hidden median among the shortlist (chosen with hidden scores)"
+ORACLE_LABEL = (
+    "oracle bound: the best hidden score among the shortlist (the pick's median of its repeats, one scoring for each "
+    "other source; chosen with hidden scores)"
+)
 
 RunJob = Callable[[dict], Awaitable[dict]]
 
@@ -163,7 +167,8 @@ async def select(
     for p, row in zip(portfolios, rows):
         for e in row["stage2"]:
             row["hidden"][e["sha256"]] = {"scores": []}
-            for _ in range(repeats):
+            picked = row["pick"] is not None and e["sha256"] == row["pick"]["sha256"]
+            for _ in range(repeats if picked else 1):  # the others only feed the oracle bound
                 calls.append((job(p, e["sha256"], "score"),
                               lambda rec, h=row["hidden"][e["sha256"]]: h["scores"].append(_result(rec))))  # fmt: skip
     await run_all(calls)
@@ -188,7 +193,7 @@ def main() -> None:
     p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
     p.add_argument("--scorer", required=True, help="the remote scorer service URL (token: SCORER_TOKEN)")
     p.add_argument("--shortlist", type=int, default=SHORTLIST)
-    p.add_argument("--repeats", type=int, default=REPEATS, help="hidden scorings per shortlisted source")
+    p.add_argument("--repeats", type=int, default=REPEATS, help="hidden scorings of the pick (the others: one each)")
     p.add_argument("--concurrency", type=int, default=8, help="jobs in flight at once")
     args = p.parse_args()
     os.environ["SCORER_URL"] = args.scorer

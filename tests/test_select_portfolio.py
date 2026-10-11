@@ -37,7 +37,7 @@ async def test_the_pick_comes_from_stage_two_and_hidden_scores_only_inform_the_l
         ],
     }  # fmt: skip
     stage2 = {"A": (2.0, True), "B": (3.5, True), "C": (4.0, False)}
-    hidden = {"A": [6.0, 6.0, 6.0], "B": [3.0, 2.0, 4.0], "C": [9.0, 9.0, 9.0]}
+    hidden = {"A": [6.0], "B": [3.0, 2.0, 4.0], "C": [9.0]}
     submitted = []
 
     async def run_job(job: dict) -> dict:
@@ -55,7 +55,8 @@ async def test_the_pick_comes_from_stage_two_and_hidden_scores_only_inform_the_l
     assert [(e["rank"], e["sha256"], e["dev_speedup"]) for e in row["stage1"]] == [
         (1, "sha-A", 5.0), (2, "sha-B", 4.0), (3, "sha-C", 3.0), (4, "sha-D", 2.0)]  # fmt: skip
     kinds = [k for k, _, _ in submitted]
-    assert kinds == ["score_dev"] * 3 + ["score"] * 9  # every pick is fixed before any hidden job
+    assert kinds == ["score_dev"] * 3 + ["score"] * 5  # every pick is fixed before any hidden job
+    assert sorted(s for k, s, _ in submitted if k == "score") == ["A", "B", "B", "B", "C"]  # pick 3x, the others once
     assert {(s, seed) for k, s, seed in submitted if k == "score_dev"} == {("A", 500_000), ("B", 500_000), ("C", 500_000)}
     assert "D" not in {s for _, s, _ in submitted}  # only the top 3 distinct sources go to stage 2
     assert row["pick"] == {"sha256": "sha-B", "stage1_rank": 2, "score": 3.5}
