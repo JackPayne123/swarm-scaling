@@ -26,7 +26,7 @@ REGISTRY=us-central1-docker.pkg.dev/swarm-scaling-jp/swarm-runner  # Artifact Re
 
 # us-east-1 since 2026-10-10 (the org SCP allows EC2 there now), with c7a. AWS_REGION=ap-southeast-2 selects Sydney,
 # which has no c7a; m7a there is the same EPYC Genoa generation, also 1 vCPU per physical core.
-AWS_PROFILE_NAME=personal
+AWS_PROFILE_NAME=swarm-runner  # IAM user, inline policy swarm-runner-ec2 (ec2:* in us-east-1 and ap-southeast-2 + quota/ssm/pricing reads); static key, no expiry
 AWS_REGION=${AWS_REGION:-us-east-1}
 case $AWS_REGION in ap-southeast-2) AWS_FAMILY=m7a ;; *) AWS_FAMILY=c7a ;; esac  # scorer and `auto` agent types
 AWS_KEY_NAME=swarm-runner
