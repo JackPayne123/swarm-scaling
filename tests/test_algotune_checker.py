@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 from inspect_ai.scorer import Target
+from inspect_ai.tool import ToolError
 from inspect_ai.util import ComposeConfig, ComposeService, ExecResult
 from inspect_ai.util._sandbox.context import sandbox_default_context_var, sandbox_environments_context_var
 from inspect_ai.util._sandbox.docker.docker import DockerSandboxEnvironment
@@ -159,6 +160,43 @@ async def test_dev_eval_calls_run_one_at_a_time_in_call_order_and_report_their_w
 
 
 @pytest.mark.asyncio
+async def test_dev_eval_refuses_seeds_that_could_reach_the_stage_two_instances(boxes) -> None:
+    # v6 pilot agents swept dev_eval seeds up to 104,000 while waiting out the submit gate; stage 2 times seeds 500,000+.
+    boxes["default"].files["/app/agents/agent_0/try.py"] = "speedup=2"
+    dev_eval = devkit.algotune_agent_tools(SimpleNamespace(metadata={}))("agent_0")[0]
+    for seed, n in ((400_000, 1), (399_990, 10), (10**9, 20)):
+        with pytest.raises(ToolError, match="seed \\+ n must be below 400,000"):
+            await dev_eval(path="/app/agents/agent_0/try.py", seed=seed, n=n)
+    assert boxes["checker"].ran == []
+    await dev_eval(path="/app/agents/agent_0/try.py", seed=399_979, n=20)
+    assert boxes["checker"].ran == ["speedup=2"]
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_identical_dev_eval_returns_the_recorded_result_without_a_new_evaluation(boxes) -> None:
+    # v6 pilot: 56% of dev_eval calls re-timed an unchanged file, holding scorer slots while agents padded to the gate.
+    box = boxes["default"]
+    box.files["/app/agents/agent_0/try.py"] = "speedup=2"
+    tools_for = devkit.algotune_agent_tools(state := SimpleNamespace(metadata={}))
+    dev_eval = tools_for("agent_0")[0]
+    first = await dev_eval(path="/app/agents/agent_0/try.py")
+    again = await dev_eval(path="/app/agents/agent_0/try.py")
+    assert boxes["checker"].ran == ["speedup=2"]
+    assert again.startswith("[dev_eval] same file contents and arguments as an earlier call of yours")
+    assert first.split("\n", 1)[1] in again
+    # any change to the file, the arguments or the caller is a new evaluation
+    await dev_eval(path="/app/agents/agent_0/try.py", seed=100)
+    box.files["/app/agents/agent_0/try.py"] = "speedup=3"
+    await dev_eval(path="/app/agents/agent_0/try.py")
+    box.files["/app/agents/agent_1/try.py"] = "speedup=3"
+    await tools_for("agent_1")[0](path="/app/agents/agent_1/try.py")
+    assert boxes["checker"].ran == ["speedup=2", "speedup=2", "speedup=3", "speedup=3"]
+    calls = state.metadata["checker"]["calls"]
+    assert [c["cached"] for c in calls] == [False, True, False, False, False]
+    assert calls[1]["same_as"] == 0 and calls[1]["speedup"] == 2.0 and calls[1]["queue_wait_s"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_checker_processes_are_killed_before_each_timing_but_only_in_a_confirmed_container(boxes, monkeypatch) -> None:
     # A solver can leave a daemon running into later timings, or into scoring where it could read /tests/seed_offset.
     # The kill must never run on the host: outside a confirmed Docker container (here the in-memory fake) nothing runs.
@@ -179,7 +217,7 @@ async def test_checker_processes_are_killed_before_each_timing_but_only_in_a_con
     docker.exec = docker_exec  # type: ignore[method-assign]
     monkeypatch.setattr(swarm_module, "sandbox", lambda name=None: docker if name == devkit.CHECKER else boxes["default"])
     checker.execs.clear()
-    await dev_eval(path="/app/agents/agent_0/s.py")
+    await dev_eval(path="/app/agents/agent_0/s.py", seed=100)  # new arguments: an identical repeat would not run
     probe, kill, timed = checker.execs
     assert (probe[2], kill[2], kill[3:]) == (swarm_module._CONTAINER_PROBE, swarm_module._KILL_SCRIPT, ["sh", "1 7"])
     assert f"{devkit.DEV_DIR}/dev_eval.py" in timed

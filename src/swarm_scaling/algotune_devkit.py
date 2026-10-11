@@ -59,6 +59,9 @@ FINAL_TIMEOUT_S = 900  # per candidate
 # Stage 2 of scripts/select_portfolio.py: the shortlist is re-timed by the final verifier (scorer job kind score_dev) on
 # instances SELECT_SEED + i, i < 100: away from dev_eval's (10,000+), finalize's (60,000+) and the hidden ones (1,000,000+).
 SELECT_SEED = 500_000
+# dev_eval refuses seed + n at or above this, so an agent's seed sweep never reaches the stage-2 instances (pilot agents
+# swept seeds up to 104,000 while waiting out the submit gate).
+DEV_SEED_CAP = 400_000
 
 DEV_TOOLKIT_NOTE = (
     "A dev toolkit is installed in /app/dev (read /app/dev/README.md first). It contains the full "
@@ -249,11 +252,15 @@ class Checker:
     Calls queue on CHECKER_LOCK, shared with every other sample in the process, so the queue wait
     includes other samples' dev_eval calls, finalize evaluations and final scoring.
     Every call is recorded in state.metadata["checker"]["calls"] (who, when, queue wait, run time, result).
+    An agent's repeat of a completed call (same file contents, n, seed, reps and size) returns the recorded result
+    without a new evaluation (v6 pilot: 56% of dev_eval calls re-timed an unchanged file); it is recorded with
+    `cached` True, `same_as` (the index of the call it repeats), zero queue wait and zero run time.
     """
 
     def __init__(self, state: TaskState) -> None:
         self.state = state
         self.calls: list[dict[str, Any]] = []
+        self.done: dict[tuple, tuple[int, str]] = {}  # (agent, sha256, n, seed, reps, size) -> (call index, report)
         state.metadata["checker"] = {"calls": self.calls}
 
     def tool(self, agent_id: str) -> Tool:
@@ -267,18 +274,33 @@ class Checker:
             Args:
                 path: Absolute path of the solver file in your container. Only this file is copied, so it cannot import sibling files.
                 n: Number of dev instances.
-                seed: First dev seed offset (>= 0). Dev instances never use the final evaluation's seeds.
+                seed: First dev seed offset (>= 0, and seed + n below 400,000). Dev instances never use the final evaluation's seeds.
                 reps: Timed repeats per instance.
                 size: Problem size passed to generate_problem. Default: the final evaluation's.
+
+            Repeating a call with an unchanged file and the same n, seed, reps and size returns the earlier result
+            without a new evaluation.
             """
             if not path.startswith("/"):
                 raise ToolError(f"path must be absolute, got {path!r}")
             if seed < 0:
                 raise ToolError("seed must be >= 0")
+            if seed >= DEV_SEED_CAP or seed + n >= DEV_SEED_CAP:
+                raise ToolError(f"seed + n must be below {DEV_SEED_CAP:,} (got seed {seed:,}, n {n}); use a smaller seed")
             try:
                 source = await sandbox().read_file(path, text=False)
             except (FileNotFoundError, IsADirectoryError):
                 raise ToolError(f"no such file: {path}")
+            key = (agent_id, hashlib.sha256(source).hexdigest(), n, seed, reps, size)
+            if key in self.done:
+                i, report = self.done[key]
+                same = {k: self.calls[i][k] for k in ("valid", "speedup", "error", "first_call_ratio", "reference_inflation")}
+                self.calls.append({"agent_id": agent_id, "path": path, "started_at": time.time(), "queue_wait_s": 0.0,
+                                   "run_s": 0.0, **same, "n": n, "seed": seed, "cached": True, "same_as": i})  # fmt: skip
+                return (
+                    "[dev_eval] same file contents and arguments as an earlier call of yours: this is its recorded "
+                    f"result; no new evaluation was run.\n{report}"
+                )
             requested = time.time()
             run_dir = f"{CHECK_DIR}/{agent_id}-{time.time_ns()}"
             detail, report, timing = await timed_dev_eval(
@@ -297,7 +319,10 @@ class Checker:
                 "reference_inflation": None if detail is None else detail["reference_inflation"],
                 "n": n,
                 "seed": seed,
+                "cached": False,
             })  # fmt: skip
+            if detail is not None:  # a completed evaluation; errors (e.g. a timeout) may be retried
+                self.done[key] = (len(self.calls) - 1, report)
             head = f"[dev_eval] waited {timing['queue_wait_s']:.1f}s in the queue, ran {timing['run_s']:.1f}s."
             return f"{head}\n{report}"
 
