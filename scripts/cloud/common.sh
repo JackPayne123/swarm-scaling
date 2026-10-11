@@ -215,6 +215,9 @@ fallback_types() {  # fallback_types <machine-type>: it, then other x86 families
 _no_capacity() {  # does this create error mean "nothing free here" (with fallback: also "no quota here")?
   case $1 in
     *RESOURCE_POOL_EXHAUSTED* | *ZONE_RESOURCE* | *"does not have enough resources"* | *InsufficientInstanceCapacity*) return 0 ;;
+    # AWS caps the summed VolumeInitializationRate of volumes still initializing; frees within minutes (v6 pilot:
+    # 4 of 20 VMs launched at once failed with it)
+    *VolumeInitializationLimitExceeded*) return 0 ;;
     *QUOTA_EXCEEDED* | *"Quota '"* | *VcpuLimitExceeded* | *"is not supported in your requested Availability Zone"*)
       [ "${CREATE_FALLBACK:-0}" = 1 ] && return 0 ;;
   esac
