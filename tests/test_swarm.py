@@ -194,6 +194,37 @@ def test_dollar_budget_meters_each_call_at_its_price_and_cache_rates(tmp_path: P
         swarm(models=["openai/unpriced-model"], per_agent_tokens=5, budget_type="cost")
 
 
+def test_dollar_budget_matches_run_cost_on_calls_either_side_of_a_long_prompt_tier(tmp_path: Path, monkeypatch) -> None:
+    # Haiku 5.5 prices each request by its own prompt size, so the live budget and scripts/run_cost.py must both price
+    # per call: a meter on per-model totals would put every call in one tier and end (or not end) agents at the wrong spend.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("run_cost", Path(__file__).parents[1] / "scripts/run_cost.py")
+    run_cost = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_cost)
+    monkeypatch.setitem(prices.PRICES, MODEL, (1.0, 5.0, 0.1))
+    monkeypatch.setitem(prices.LONG_PROMPT, MODEL, (100_000, (5.0, 25.0, 0.1)))
+    short = ModelUsage(input_tokens=500, input_tokens_cache_write=1_000, input_tokens_cache_read=90_000, output_tokens=800)
+    long = ModelUsage(input_tokens=500, input_tokens_cache_write=1_000, input_tokens_cache_read=110_000, output_tokens=800)
+    expected = (
+        2 * (500 * 1.0 + 1_000 * 1.25 + 90_000 * 0.1 + 800 * 5.0) + (500 * 5.0 + 1_000 * 6.25 + 110_000 * 0.5 + 800 * 25.0)
+    ) / 1e6
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[scripted(*[call("bash", usage=u, command="true") for u in (short, long, short)], call("submit", usage=ModelUsage(), answer="done"))],
+            per_agent_tokens=1.0,
+            budget_type="cost",
+            workspace_root=str(tmp_path / "ws"),
+        ),
+    )
+    metered = swarm_meta(log)["agents"]["agent_0"]["tokens"]["metered"]
+    (costs,) = run_cost.call_costs(Path(log.location)).values()
+    assert metered == pytest.approx(expected)
+    assert costs["cost"] == pytest.approx(metered)
+    assert costs["long_calls"] == 1
+
+
 def test_teammates_still_running_are_told_when_an_agent_finishes_and_why(tmp_path: Path) -> None:
     # Pilot 3: final broadcasts went to agents that had already finished, and senders kept waiting on them.
     light = ModelUsage(input_tokens=9, output_tokens=1, total_tokens=10)
