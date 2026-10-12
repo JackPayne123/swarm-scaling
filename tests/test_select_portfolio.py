@@ -63,3 +63,18 @@ async def test_the_pick_comes_from_stage_two_and_hidden_scores_only_inform_the_l
     assert row["pick_hidden_median"] == 3.0
     assert row["oracle"] == {"label": sp.ORACLE_LABEL, "sha256": "sha-C", "hidden_median": 9.0}
     assert row["oracle"]["label"].startswith("oracle bound")
+
+
+def test_a_selection_runs_once_when_the_driver_and_select_ready_both_start_it(tmp_path, monkeypatch):
+    """Selecting the same runs twice would double the scorer load and write two competing results."""
+    import subprocess
+
+    from select_portfolio import claim
+
+    monkeypatch.setattr("select_portfolio.CLAIMS", tmp_path)
+    assert claim(["logs/r-i1", "logs/r-i0"]) is True
+    ended = subprocess.Popen(["true"])
+    ended.wait()
+    (next(tmp_path.iterdir())).write_text(str(ended.pid))  # the claimant has finished
+    assert claim(["logs/r-i0", "logs/r-i1"]) is False  # same runs, any order: no second selection
+    assert claim(["logs/r-i0"]) is True  # different runs: their own claim

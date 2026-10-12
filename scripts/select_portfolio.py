@@ -20,6 +20,7 @@ offset than the scorer's. Writes analysis/portfolio/<timestamp>.jsonl (one row p
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -188,6 +189,42 @@ def fmt(value: float | None) -> str:
     return f"{value:>8.3f}" if value is not None else f"{'-':>8}"
 
 
+CLAIMS = PROJECT_ROOT / "analysis" / "portfolio" / ".claims"
+
+
+def claim_path(runs: list[str]) -> Path:
+    return CLAIMS / hashlib.sha256("\n".join(sorted(runs)).encode()).hexdigest()[:16]
+
+
+def claim(logs: list[str]) -> bool:
+    """Claim the selection of exactly these runs, so it runs once although the v6 driver (one group at a time) and
+    scripts/select_ready.py (several at once, 2026-10-12) both start it. A second caller waits for the claimant's
+    process to end, then returns False. Delete analysis/portfolio/.claims/<key> to select the same runs again."""
+    path = claim_path([Path(x).name for x in logs])
+    CLAIMS.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        pid = int(path.read_text().strip() or 0)
+        print(f"selection of these runs was claimed by pid {pid}; waiting for it to end", flush=True)
+        while pid and _alive(pid):
+            time.sleep(30)
+        return False
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    return True
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # signal 0: existence check only, sends nothing
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("logs", nargs="+", help="log dirs, .eval files or globs (quote them)")
@@ -197,6 +234,8 @@ def main() -> None:
     p.add_argument("--concurrency", type=int, default=8, help="jobs in flight at once")
     args = p.parse_args()
     os.environ["SCORER_URL"] = args.scorer
+    if not claim(args.logs):
+        return
 
     portfolios, offsets = load_portfolios(eval_files(args.logs))
     if not portfolios:
