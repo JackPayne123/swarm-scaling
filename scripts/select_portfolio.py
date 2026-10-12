@@ -16,7 +16,7 @@ pick's median, the others' single score) is reported as an oracle bound.
     SCORER_TOKEN=... uv run python scripts/select_portfolio.py 'logs/v6p-*' --scorer http://<scorer>:8770
 
 Needs logs whose finalize kept every candidate's source (`sources`, since v6). Refuses logs scored with another seed
-offset than the scorer's. Writes analysis/portfolio/<timestamp>.jsonl (one row per portfolio) and prints a table.
+offset than the scorer's. Writes analysis/portfolio/<timestamp>-<pid>.jsonl (one row per portfolio) and prints a table.
 """
 
 import argparse
@@ -246,7 +246,7 @@ def main() -> None:
     rows = anyio.run(lambda: select(list(portfolios.values()), task_names(), shortlist=args.shortlist,
                                     repeats=args.repeats, concurrency=args.concurrency))  # fmt: skip
 
-    out = PROJECT_ROOT / "analysis" / "portfolio" / f"{time.strftime('%Y%m%dT%H%M%S')}.jsonl"
+    out = PROJECT_ROOT / "analysis" / "portfolio" / f"{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}.jsonl"
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as fh:
         for r in rows:
