@@ -7,7 +7,9 @@ Stage 1: every candidate from the portfolio's runs, ranked by the dev score fina
 instances), one entry per distinct source (sha256; a source seen in several places keeps its best score).
 Validity pass (v7, --validity-n N): sources in stage-1 order are checked untimed on N instances, VALIDITY_SEED + i
 (scorer job kind validity, is_solution only, streamed), until SHORTLIST of them pass; a source with any invalid
-instance (or a failed job) is dropped and the next stage-1 source backfills, identically for every arm.
+instance (or a failed job, e.g. past the service's 3,600 s limit) is dropped and the next stage-1 source backfills,
+identically for every arm. --validity-n-task TASK=N sets a task's N, for tasks whose is_solution is slow (measured
+2026-10-14 on the Mac: generalized_eigenvalues_complex about 5.5 s per instance, so 1,000 would pass the limit).
 Stage 2: the top SHORTLIST distinct sources (with the validity pass: those that passed it) are re-timed by the final
 verifier path (problems generated and held in memory, then timed, in the scorer's timing environment) on 100 dev
 instances, SELECT_SEED + i (scorer job kind score_dev). The pick is the fastest valid source on stage 2.
@@ -150,7 +152,7 @@ async def select(
     portfolios: list[dict], names: dict[str, str], run_job: RunJob = scorer_client.run_job,
     shortlist: int = SHORTLIST, repeats: int = REPEATS, seed: int = SELECT_SEED, concurrency: int = 8,
     primary: str = "interleaved", validity_n: int = 0, validity_seed: int = VALIDITY_SEED,
-    on_row: Callable[[dict], None] | None = None, request_prefix: str = "",
+    on_row: Callable[[dict], None] | None = None, request_prefix: str = "", validity_n_by_task: dict[str, int] | None = None,
 ) -> list[dict]:
     """One output row per portfolio. Portfolios run concurrently (jobs share `concurrency`); within one, the validity
     pass (validity_n > 0) and stage 2 come first and the pick is fixed before its hidden jobs. on_row(row) gets each
@@ -174,13 +176,14 @@ async def select(
 
     async def select_one(p: dict, row: dict) -> None:
         passed = row["stage1"][:shortlist]
-        if validity_n:  # stage-1 order, backfilling each dropped source with the next one
+        n_check = row["validity_n"]
+        if n_check:  # stage-1 order, backfilling each dropped source with the next one
             passed, tried = [], 0
             while len(passed) < shortlist and tried < len(row["stage1"]):
                 batch = row["stage1"][tried : tried + shortlist - len(passed)]
                 tried += len(batch)
                 found: dict[str, dict] = {}
-                await run_all([(job(p, e["sha256"], "validity", f"n{validity_n}-s{validity_seed}", n=validity_n,
+                await run_all([(job(p, e["sha256"], "validity", f"n{n_check}-s{validity_seed}", n=n_check,
                                     seed=validity_seed), lambda rec, e=e: found.update({e["sha256"]: _validity(rec)}))
                                for e in batch])  # fmt: skip
                 for e in batch:
@@ -224,7 +227,8 @@ async def select(
         rows.append({
             "portfolio": p["portfolio"], "task": p["task"], "arm": p["arm"], "protocol": p["protocol"], "runs": p["runs"],
             "priority_indexes": p["priority_indexes"], "n_candidates": len(p["candidates"]), "n_distinct_valid": len(ranked),
-            "primary_score": primary, "stage1": ranked, "validity_n": validity_n,
+            "primary_score": primary, "stage1": ranked,
+            "validity_n": (validity_n_by_task or {}).get(names[p["task"]], validity_n) if validity_n else 0,
             "validity_seed": validity_seed if validity_n else None, "validity": [], "stage2_seed": seed, "stage2": [],
             "pick": None, "hidden": {},
         })  # fmt: skip
@@ -292,6 +296,8 @@ def main() -> None:
                    help="what stage 2 and hidden scoring rank by (default: the logs' primary_score)")
     p.add_argument("--validity-n", type=int, default=0,
                    help="v7: check every shortlisted source untimed on this many fresh instances first (0 = off; v7: 1000)")
+    p.add_argument("--validity-n-task", action="append", default=[], metavar="TASK=N",
+                   help="a task's own validity-pass size (repeatable), e.g. generalized_eigenvalues_complex=100")
     p.add_argument("--fresh", action="store_true", help="new request ids: re-time instead of resuming earlier jobs")
     args = p.parse_args()
     os.environ["SCORER_URL"] = args.scorer
@@ -323,7 +329,8 @@ def main() -> None:
 
     rows = anyio.run(lambda: select(list(portfolios.values()), task_names(), shortlist=args.shortlist,
                                     repeats=args.repeats, concurrency=args.concurrency, primary=primary,
-                                    validity_n=args.validity_n, on_row=write, request_prefix=prefix))  # fmt: skip
+                                    validity_n=args.validity_n, on_row=write, request_prefix=prefix,
+                                    validity_n_by_task={k: int(v) for k, v in (x.split("=", 1) for x in args.validity_n_task)}))  # fmt: skip
     print(f"{'portfolio':40} {'arm':12} {'prompt':12} {'runs':>4} {'distinct':>8} {'s1 rank':>7} {'stage 2':>8} "
           f"{'hidden':>8} {'oracle*':>8}")  # fmt: skip
     for r in sorted(rows, key=lambda r: r["portfolio"]):

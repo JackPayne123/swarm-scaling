@@ -100,7 +100,8 @@ def run(args: argparse.Namespace) -> int:
             return None
         print(f"[v6] {time.strftime('%H:%M:%S')} selecting {group}", flush=True)
         return subprocess.Popen([sys.executable, "-u", "scripts/select_portfolio.py", *dirs, "--scorer", args.scorer,
-                                 "--concurrency", str(SELECT_CONCURRENCY), "--validity-n", str(args.validity_n)], cwd=ROOT)  # fmt: skip
+                                 "--concurrency", str(SELECT_CONCURRENCY), "--validity-n", str(args.validity_n),
+                                 *(f"--validity-n-task={x}" for x in args.validity_n_task)], cwd=ROOT)  # fmt: skip
 
     last_pull = time.monotonic()
 
@@ -158,6 +159,7 @@ def main() -> None:
     pr.add_argument("--max-agents", type=int, required=True)
     pr.add_argument("--group-start", action="store_true", help="start each task-repeat group's rows together (v7)")
     pr.add_argument("--validity-n", type=int, default=0, help="select_portfolio.py --validity-n (v7: 1000)")
+    pr.add_argument("--validity-n-task", action="append", default=[], metavar="TASK=N", help="select_portfolio.py's")
     args = p.parse_args()
     if args.cmd == "size":
         free = fleet.aws_free()

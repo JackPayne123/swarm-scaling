@@ -117,6 +117,9 @@ async def test_a_source_invalid_on_the_validity_pass_is_dropped_and_the_next_sta
     assert [e["sha256"] for e in row["stage2"]] == ["sha-B", "sha-C", "sha-D"]  # A never timed, D backfilled, E untried
     assert row["pick"]["sha256"] == "sha-C"
     assert seen.index(next(s for s in seen if s[0] == "score_dev")) > max(i for i, s in enumerate(seen) if s[0] == "validity")
+    seen.clear()  # a task whose is_solution is slow gets its own size, the same for every arm
+    (row,) = await sp.select([portfolio], {"algotune/qp": "qp"}, run_job=run_job, validity_n=1000, validity_n_by_task={"qp": 200})
+    assert row["validity_n"] == 200 and {n for k, _, n, _ in seen if k == "validity"} == {200}
 
 
 @pytest.mark.asyncio
