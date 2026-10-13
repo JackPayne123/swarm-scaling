@@ -370,3 +370,48 @@ def test_the_alone_baseline_cache_is_off_unless_asked_for() -> None:
     # On BLAS-bound tasks an idle-measured cached baseline read ~0.09 higher than the busy-slot interleaved timing.
     assert parser().parse_args([]).cache_alone is False
     assert parser().parse_args(["--cache-alone"]).cache_alone is True
+
+
+def test_a_validity_job_runs_untimed_on_the_validity_range_without_the_alone_timing(tmp_path) -> None:
+    # v7 selection checks each shortlisted source on 1,000 fresh instances; nothing is timed, so no alone baseline.
+    from swarm_scaling.algotune_devkit import VALIDITY_MAX_N, VALIDITY_SEED
+
+    ran = []
+
+    def run(job, cpuset, timeout_s):
+        ran.append((job_script(job), timeout_s, job.alone_baseline))
+        return {"valid": True, "n": job.args["n"], "n_invalid": 0}, ""
+
+    measured = []
+    cache = SimpleNamespace(get=lambda job, cpuset: measured.append(job) or ({}, {"mode": "cached"}))
+    sc = Scorer({"cvar_projection": assets(tmp_path)}, ["8-15"], run, "Test CPU", "v", "id", alone_cache=cache)
+    job_id = sc.submit({**job(kind="validity"), "n": 1000})
+    while sc.view(job_id)["status"] not in ("done", "error"):
+        pass
+    ((script, timeout_s, alone),) = ran
+    assert script.endswith(f"validity_check.py /job/solver.py --n 1000 --seed {VALIDITY_SEED} --json-out /out/result.json")
+    assert timeout_s == 3600 and alone is None and measured == []
+    for bad in ({"seed": 500_000}, {"seed": VALIDITY_SEED + VALIDITY_MAX_N - 10, "n": 20}):  # stage 2's, past the range
+        with pytest.raises(ValueError, match="validity instances"):
+            sc.submit({**job(kind="validity"), **bad})
+
+
+@pytest.mark.asyncio
+async def test_a_retried_post_returns_the_job_it_already_made_instead_of_a_duplicate(serve, monkeypatch) -> None:
+    # v6: an ambiguous POST (sent, answer lost) retried by the client could start the same timing twice.
+    scorer = serve(lambda job, cpuset, timeout_s: ({"speedup": 2.0}, "ok"))
+    lost = {"n": 0}
+    real_submit = scorer_client.submit
+
+    def submit_then_lose_the_answer(body: dict) -> str:
+        job_id = real_submit(body)  # the service made the job...
+        if lost["n"] == 0:
+            lost["n"] += 1
+            raise ConnectionResetError("answer lost")  # ...but the client never saw its id
+        return job_id
+
+    monkeypatch.setattr(scorer_client, "submit", submit_then_lose_the_answer)
+    rec = await scorer_client.run_job(job("s"))
+    assert rec["status"] == "done" and len(scorer.jobs) == 1
+    again = await scorer_client.run_job({**job("s"), "request_id": rec["job_id"] + "-x"})
+    assert len(scorer.jobs) == 2 and again["job_id"] != rec["job_id"]  # a new request_id is a new job

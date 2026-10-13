@@ -21,13 +21,16 @@ import json
 import os
 import subprocess
 import time
+from functools import partial
 from pathlib import Path
 
 from inspect_ai import eval
 
-from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize, known_dev_score
+from swarm_scaling.algotune_devkit import (
+    DEV_SEED_CAP, DISJOINT_DEV_SEED_CAP, SOLVER_PATH, algotune_agent_tools, algotune_finalize, known_dev_score,
+)
 from swarm_scaling.swarm import ELICITS, PRIORITIES, swarm
-from swarm_scaling.tasks import LOG_DIR, algotune_task
+from swarm_scaling.tasks import EXPERIMENTS, LOG_DIR, algotune_task
 
 ALGOTUNE_RULE = "the fastest correct candidate on the dev inputs (measured as the dev_eval tool measures)"
 ALGOTUNE_DELIVERABLE = (
@@ -129,6 +132,14 @@ def main() -> None:
     p.add_argument("--blind-frac", type=float, default=0.0,
                    help="team arm, two-phase: each agent works blind until it has spent this fraction of its budget, "
                         "then its team channel opens (0 = open throughout)")
+    p.add_argument("--disjoint-dev-seeds", action="store_true",
+                   help="v7: dev_eval needs seed + n below 50,000, off the finalize (stage-1) instances, so every seed "
+                        "range is disjoint (algotune_devkit.seed_ranges); default: below 400,000 as in v6")
+    p.add_argument("--experiment", default="v6", choices=EXPERIMENTS,
+                   help="whose secret hidden-seed offset scores the run (one per experiment; a remote scorer must serve it)")
+    p.add_argument("--primary-score", default=None, choices=("interleaved", "alone"),
+                   help="the run's Score.value: AlgoTune's interleaved speedup or the speedup against the reference "
+                        "timed alone (default: alone for --experiment v7, else interleaved)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -188,6 +199,8 @@ def main() -> None:
         "isolate_agents": args.isolate_agents,
         "agent_memory_mb": args.agent_memory_mb,
         "checker": args.checker,  # cpusets and memory limits: algotune_task adds them to the log metadata
+        "dev_seed_cap": DISJOINT_DEV_SEED_CAP if args.disjoint_dev_seeds else DEV_SEED_CAP,
+        # experiment and primary_score: algotune_task records them in the log metadata
         "launched_at": time.time(),
     }
     log_dir = LOG_DIR / args.name
@@ -199,7 +212,8 @@ def main() -> None:
     logs = eval(
         algotune_task(split=args.split, cpus_per_agent=args.cpus_per_agent, n_agents=len(config["models"]),
                       parallel=args.parallel, checker_backend=args.checker, isolate_agents=args.isolate_agents,
-                      memory_per_agent_mb=args.agent_memory_mb),
+                      memory_per_agent_mb=args.agent_memory_mb, experiment=args.experiment,
+                      primary_score=args.primary_score),
         solver=swarm(
             models=config["models"],
             per_agent_tokens=config["per_agent_tokens"],
@@ -211,7 +225,7 @@ def main() -> None:
             budget_type=args.budget_type,
             deliverable=ALGOTUNE_DELIVERABLE,
             tool_style=args.tool_style,
-            agent_tools=algotune_agent_tools,
+            agent_tools=partial(algotune_agent_tools, seed_cap=metadata["dev_seed_cap"]),
             final_path=SOLVER_PATH,
             candidate_file="solver.py",
             min_spend_frac=min_spend_frac,

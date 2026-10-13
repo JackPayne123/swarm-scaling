@@ -407,3 +407,16 @@ def test_isolated_team_agents_each_get_an_independents_box_and_share_only_the_re
         box_resources(2, 4, 1, host_cpus=8, host_memory_mb=64_000, isolate=True, memory_per_agent_mb=3072)
     with pytest.raises(ValueError, match="memory_per_agent_mb"):
         box_resources(2, 4, 1, host_cpus=16, host_memory_mb=64_000, isolate=True)
+
+
+@pytest.mark.asyncio
+async def test_with_the_v7_cap_dev_eval_refuses_seeds_that_reach_the_finalize_instances(boxes) -> None:
+    boxes["default"].files["/app/agents/agent_0/try.py"] = "speedup=2"
+    dev_eval = devkit.algotune_agent_tools(SimpleNamespace(metadata={}), seed_cap=devkit.DISJOINT_DEV_SEED_CAP)("agent_0")[0]
+    with pytest.raises(ToolError, match="seed \\+ n must be below 50,000"):
+        await dev_eval(path="/app/agents/agent_0/try.py", seed=49_981, n=20)  # its last instance would be finalize's
+    await dev_eval(path="/app/agents/agent_0/try.py", seed=49_979, n=20)
+    assert boxes["checker"].ran == ["speedup=2"]
+    from inspect_ai.tool import ToolDef
+
+    assert "seed + n below 50,000" in ToolDef(dev_eval).parameters.properties["seed"].description

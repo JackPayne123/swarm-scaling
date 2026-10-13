@@ -7,6 +7,7 @@ __pycache__/
 tasks/_src/
 tasks/harvey_diligence/*/environment/documents/
 data/.algotune_seed_offset
+data/.algotune_seed_offset.*
 data/.algotune_verifier/
 data/.algotune_compose/
 # third-party full texts stay local (not ours to republish); index + extracted chart data are public

@@ -10,10 +10,14 @@ outside every slot, so its threads never run on a slot's CPUs.
 API (JSON over HTTP, bearer token on every request):
     GET  /health      -> {ok, slots, queue_len, cpu_model, version, seed_offset_id, tasks}
     GET  /stats       -> {queue_len, running, jobs_done, queue_wait_mean_s, queue_wait_p95_s, slot_busy_frac, ...}
-    POST /jobs        {kind: dev_eval|final_eval|score|score_dev, task, solver_source, run_id, agent_id, sample_id,
-                       n, seed, reps, size}  -> {job_id}
+    POST /jobs        {kind: dev_eval|final_eval|score|score_dev|validity, task, solver_source, run_id, agent_id, sample_id,
+                       n, seed, reps, size, request_id}  -> {job_id}
                       score_dev: the score job's seeded verifier (problems generated and held in memory, then timed)
                       on dev instances seed + i instead of the hidden ones; `seed` defaults to SELECT_SEED
+                      validity: validity_check.py, is_solution only and untimed, on instances seed + i, i < n, inside
+                      the validity range (default VALIDITY_SEED, 1,000 instances), one instance in memory at a time
+                      request_id (optional): a POST repeating an earlier request_id returns that job's id and starts
+                      nothing, so a client can retry a POST whose answer it never got
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
@@ -60,13 +64,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from swarm_scaling.algotune_devkit import ASSETS, FINAL_DEV_N, FINAL_DEV_SEED, SELECT_SEED, TIMING_ENV
+from swarm_scaling.algotune_devkit import (
+    ASSETS, FINAL_DEV_N, FINAL_DEV_SEED, SEED_OFFSET_RANGE, SELECT_SEED, TIMING_ENV, VALIDITY_MAX_N, VALIDITY_SEED,
+    VERIFIER_INSTANCES,
+)  # fmt: skip
 
-KINDS = ("dev_eval", "final_eval", "score", "score_dev")
+KINDS = ("dev_eval", "final_eval", "score", "score_dev", "validity")
 VERIFIER_KINDS = ("score", "score_dev")  # run the seeded verifier (test.sh); score_dev with its seed_offset replaced
-TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600, "score_dev": 3600}
-HIDDEN_SEED_MIN = 1_000_000  # tasks.SEED_OFFSET_RANGE[0]: score_dev instances must stay below the hidden ones
-VERIFIER_INSTANCES = 100  # Harbor's AlgoTune verifier: NUM_TEST_INSTANCES
+TIMEOUTS_S = {"dev_eval": 900, "final_eval": 900, "score": 3600, "score_dev": 3600, "validity": 3600}
+VALIDITY_N = 1_000
+HIDDEN_SEED_MIN = SEED_OFFSET_RANGE[0]  # score_dev instances must stay below the hidden ones
 OUTPUT_CHARS = 20_000  # verifier_stdout / dev_eval output kept per job (the end, where the summary is)
 KILL_GRACE_S = 60  # after docker kill, how long to wait for the docker CLI to return
 DEV_SEED_OFFSET = 10_000  # dev_eval.py's SEED_OFFSET: dev instance i of a job is seed DEV_SEED_OFFSET + seed + i
@@ -156,6 +163,8 @@ def job_script(job: Job) -> str:
             "cp /logs/verifier/reward.txt /out/reward.txt 2>/dev/null; exit $rc; }"
         )
     a = job.args
+    if job.kind == "validity":
+        return f"tar -x -C / && python /app/dev/validity_check.py /job/solver.py --n {a['n']} --seed {a['seed']} --json-out /out/result.json"
     argv = ["--n", a["n"], "--seed", a["seed"], "--reps", a["reps"]] + (["--size", a["size"]] if a.get("size") is not None else [])
     argv += ["--alone-cache", "/job/alone.json"] if job.alone_payload is not None else []
     return "tar -x -C / && python /app/dev/dev_eval.py /job/solver.py " + " ".join(str(x) for x in argv) + " --json-out /out/result.json"
@@ -165,10 +174,12 @@ def parse_score(stdout: str, reward_text: str | None) -> dict:
     validity = re.search(r"^Validity: (True|False)$", stdout, re.M)
     ratio = re.search(r"^First-call ratio: (\S+)$", stdout, re.M)
     inflation = re.search(r"^Reference inflation: (\S+)$", stdout, re.M)
+    alone = re.search(r"^Alone score: (\S+)$", stdout, re.M)
     if reward_text is None:
         raise JobError("the verifier wrote no reward.txt")
     return {
         "score": float(reward_text.strip()),
+        "alone_score": float(alone.group(1)) if alone else None,  # tasks.with_alone_score; AlgoTune's is "score"
         "valid": None if validity is None else validity.group(1) == "True",
         "verifier_stdout": stdout[-OUTPUT_CHARS:],
         "first_call_ratio": float(ratio.group(1)) if ratio and ratio.group(1) != "None" else None,
@@ -217,7 +228,7 @@ def docker_runner(docker: str = "docker", memory: str = "8g", work_dir: Path | N
             output = (stderr_s + stdout_s).strip()[-OUTPUT_CHARS:]
             if job.kind in VERIFIER_KINDS:
                 if timed_out:  # the harness's timeout semantics: no speedup, flagged
-                    return {"score": 1.0, "valid": None, "verifier_stdout": (stdout_s + stderr_s)[-OUTPUT_CHARS:],
+                    return {"score": 1.0, "alone_score": 1.0, "valid": None, "verifier_stdout": (stdout_s + stderr_s)[-OUTPUT_CHARS:],
                             "first_call_ratio": None, "reference_inflation": None, "scoring_timeout": True}, output  # fmt: skip
                 reward = out / "reward.txt"
                 return parse_score(stdout_s + stderr_s, reward.read_text() if reward.exists() else None), output
@@ -324,6 +335,7 @@ class Scorer:
         version: str,
         seed_offset_id: str,
         task_image_digest: str | dict | None = None,
+        experiment: str = "v6",
         timeouts_s: dict[str, float] | None = None,
         log_path: Path | None = None,
         queue_log_path: Path | None = None,
@@ -333,11 +345,13 @@ class Scorer:
         self.tasks = {**tasks, **{a.slug: a for a in tasks.values()}}  # accept the task name or the sample id
         self.cpusets, self.run = cpusets, run
         self.cpu_model, self.version, self.seed_offset_id = cpu_model, version, seed_offset_id
+        self.experiment = experiment  # whose seed offset this service scores with (tasks.seed_offset_file)
         self.task_image_digest = task_image_digest
         self.timeouts_s = timeouts_s or TIMEOUTS_S
         self.log_path = log_path
         self.alone_cache = alone_cache
         self.jobs: dict[str, Job] = {}
+        self.by_request: dict[str, str] = {}  # request_id -> job id
         self.queue: queue.Queue[Job] = queue.Queue()  # FIFO across every caller
         self.lock = threading.Lock()
         self.started_at = time.time()
@@ -351,7 +365,8 @@ class Scorer:
     def health(self) -> dict:
         return {
             "ok": True, "slots": len(self.cpusets), "queue_len": self.queue.qsize(), "cpu_model": self.cpu_model,
-            "version": self.version, "seed_offset_id": self.seed_offset_id, "task_image_digest": self.task_image_digest,
+            "version": self.version, "seed_offset_id": self.seed_offset_id, "experiment": self.experiment,
+            "task_image_digest": self.task_image_digest,
             "cache_alone": self.alone_cache is not None, "timing_env": TIMING_ENV,
             "cpu_dma_latency_us": cpu_dma_latency(),
             "tasks": sorted({a.name for a in self.tasks.values()}),
@@ -394,7 +409,13 @@ class Scorer:
         if not isinstance(body.get("solver_source"), str):
             raise ValueError("solver_source must be the solver.py text")
         args = {}
-        if kind == "score_dev":
+        if kind == "validity":
+            n, seed = body.get("n", VALIDITY_N), body.get("seed", VALIDITY_SEED)
+            if not (isinstance(n, int) and isinstance(seed, int) and n >= 1 and VALIDITY_SEED <= seed
+                    and seed + n <= VALIDITY_SEED + VALIDITY_MAX_N):  # fmt: skip
+                raise ValueError(f"validity instances must lie in seeds {VALIDITY_SEED}..{VALIDITY_SEED + VALIDITY_MAX_N - 1}")
+            args = {"n": n, "seed": seed}
+        elif kind == "score_dev":
             seed = body.get("seed", SELECT_SEED)
             if not isinstance(seed, int) or seed < 0 or seed + VERIFIER_INSTANCES > HIDDEN_SEED_MIN:
                 raise ValueError(f"score_dev seed must be an integer in 0..{HIDDEN_SEED_MIN - VERIFIER_INSTANCES}")
@@ -409,9 +430,14 @@ class Scorer:
             }
             if not all(isinstance(v, int) for v in args.values() if v is not None) or args["seed"] < 0 or min(args["n"], args["reps"]) < 1:
                 raise ValueError("n and reps must be integers >= 1, seed an integer >= 0, size an integer or null")
-        meta = {k: str(body.get(k, "")) for k in ("run_id", "agent_id", "sample_id")}
+        meta = {k: str(body.get(k, "")) for k in ("run_id", "agent_id", "sample_id", "request_id")}
         job = Job(uuid.uuid4().hex[:16], kind, task, body["solver_source"], args, meta)
+        rid = body.get("request_id")
         with self.lock:
+            if rid and rid in self.by_request:  # a retried POST: the job it already made
+                return self.by_request[rid]
+            if rid:
+                self.by_request[rid] = job.id
             self.jobs[job.id] = job
         self.queue.put(job)
         return job.id
@@ -426,8 +452,8 @@ class Scorer:
             job = self.queue.get()
             with self.lock:
                 job.status, job.slot, job.started_at = "running", slot, time.time()
-            job.alone_baseline = {"mode": "child"}
-            if self.alone_cache is not None:
+            job.alone_baseline = None if job.kind == "validity" else {"mode": "child"}  # validity times nothing
+            if self.alone_cache is not None and job.kind != "validity":
                 try:
                     job.alone_payload, job.alone_baseline = self.alone_cache.get(job, self.cpusets[slot])
                 except Exception as ex:  # this job falls back to timing the reference alone itself
@@ -575,7 +601,7 @@ def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, Ta
         dev = work_dir / "assets" / name / "dev"
         dev.mkdir(parents=True, exist_ok=True)
         (dev / "reference_task.py").write_text(evaluator)
-        for asset in ("dev_eval.py", "thread_guard.py"):
+        for asset in ("dev_eval.py", "thread_guard.py", "validity_check.py"):
             (dev / asset).write_text((ASSETS / asset).read_text())
         size = sample.metadata["harbor_config"]["metadata"]["algotune_problem_size"]
         (dev / "config.json").write_text(json.dumps({"problem_size": size}))
@@ -596,12 +622,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--work-dir", type=Path, default=PROJECT_ROOT / "data" / ".scorer")
     p.add_argument("--cache-alone", action=argparse.BooleanOptionalAction, default=False,
                    help="time the reference alone once per instance set and reuse it (default off: every job times it)")
+    p.add_argument("--experiment", default="v6", help="whose secret seed offset to score with (tasks.seed_offset_file)")
     return p
 
 
 def main() -> None:
     from swarm_scaling.tasks import (
-        PROJECT_ROOT, SEED_OFFSET_ENV, SEED_OFFSET_FILE, _seed_offset, seed_offset_id, task_image_digest, task_names,
+        PROJECT_ROOT, SEED_OFFSET_ENV, _seed_offset, seed_offset_file, seed_offset_id, task_image_digest, task_names,
     )  # fmt: skip
 
     args = parser().parse_args()
@@ -611,15 +638,16 @@ def main() -> None:
         raise SystemExit("set SCORER_TOKEN")
     # A missing offset file would silently create a new offset and score on different instances than every
     # other run of the experiment: copy data/.algotune_seed_offset here, or set ALGOTUNE_SEED_OFFSET.
-    if not os.environ.get(SEED_OFFSET_ENV) and not SEED_OFFSET_FILE.exists():
-        raise SystemExit(f"no seed offset: copy the experiment's {SEED_OFFSET_FILE.name} to {SEED_OFFSET_FILE} or set {SEED_OFFSET_ENV}")
+    offset_file = seed_offset_file(args.experiment)
+    if not os.environ.get(SEED_OFFSET_ENV) and not offset_file.exists():
+        raise SystemExit(f"no seed offset: copy the experiment's {offset_file.name} to {offset_file} or set {SEED_OFFSET_ENV}")
     try:
         cpusets, service_cpus = slot_cpus(args.slots, args.first_cpu, docker_cpus())
     except ValueError as ex:
         raise SystemExit(str(ex)) from None
     if hasattr(os, "sched_setaffinity"):  # Linux, where Docker's CPUs are the host's: keep the service off the slots
         os.sched_setaffinity(0, service_cpus)  # before any thread starts, so every worker inherits it
-    offset = _seed_offset()
+    offset = _seed_offset(offset_file, experiment=args.experiment)
     args.work_dir.mkdir(parents=True, exist_ok=True)
     tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
     # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
@@ -629,13 +657,13 @@ def main() -> None:
     alone = AloneCache(args.work_dir / "alone_cache", docker_alone_measure(memory=args.memory), digest, cpu) if args.cache_alone else None
     scorer = Scorer(
         tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu, git_version(PROJECT_ROOT),
-        seed_offset_id(offset), digest, log_path=args.work_dir / "jobs.jsonl", queue_log_path=args.work_dir / "queue.jsonl",
-        alone_cache=alone,
+        seed_offset_id(offset), digest, experiment=args.experiment, log_path=args.work_dir / "jobs.jsonl",
+        queue_log_path=args.work_dir / "queue.jsonl", alone_cache=alone,
     )  # fmt: skip
     ThreadingHTTPServer.request_queue_size = 128  # the default 5 reset connections when many clients submitted at once
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
-          f"version {scorer.version}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}, "
+          f"version {scorer.version}, experiment {args.experiment}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}, "
           f"cpu_dma_latency {cpu_dma_latency()}", flush=True)  # fmt: skip
     server.serve_forever()
 

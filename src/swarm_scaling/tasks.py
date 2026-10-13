@@ -24,8 +24,10 @@ from swarm_scaling.algotune_devkit import (
     ASSETS,
     CHECKER,
     CHECKER_LOCK,
+    SEED_OFFSET_RANGE,
     SOLVER_PATH,
     TIMING_ENV,
+    VERIFIER_INSTANCES,
     algotune_setup,
     end_checker_processes,
     remote,
@@ -38,7 +40,7 @@ SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json
 # Harbor's verifier scores on generate_problem(random_seed=i) for i in 0..99, and agents hold generate_problem.
 # The offset is added to those seeds. Dev instances use seeds 10,000+ and selection 60,000+; np.random.seed needs < 2**32.
 SEED_OFFSET_ENV = "ALGOTUNE_SEED_OFFSET"
-SEED_OFFSET_RANGE = (1_000_000, 2**31 - 1000)
+# algotune_devkit.seed_ranges lists every seed range in one place; the hidden offset's is SEED_OFFSET_RANGE.
 _VERIFIER_SEED_CALL = "task.generate_problem(n=PROBLEM_SIZE, random_seed=i)"
 _VERIFIER_IMPORT = "from evaluator import Task\n"
 _VERIFIER_FIXTURE_ORDER = "def performance_results(solver_instance, problem_set) -> dict:"
@@ -164,8 +166,11 @@ def algotune_scorer() -> Scorer:
             ended = time.time()
         ratio = re.search(r"^First-call ratio: (\S+)$", result.explanation or "", re.M)
         inflation = re.search(r"^Reference inflation: (\S+)$", result.explanation or "", re.M)
+        alone = re.search(r"^Alone score: (\S+)$", result.explanation or "", re.M)
         result.metadata = {
             **(result.metadata or {}),
+            "algotune_score": result.value,
+            "alone_score": float(alone.group(1)) if alone else None,
             "scoring_timeout": timed_out,
             "first_call_ratio": float(ratio.group(1)) if ratio and ratio.group(1) != "None" else None,
             "reference_inflation": float(inflation.group(1)) if inflation and inflation.group(1) != "None" else None,
@@ -175,8 +180,19 @@ def algotune_scorer() -> Scorer:
                 "alone_baseline": {"mode": "child"}, "timing_env": TIMING_ENV,
             },
         }
-        return result
+        return _primary(state, result)
 
+    return score
+
+
+def _primary(state: TaskState, score: Score) -> Score:
+    """Score.value is the sample's primary score (metadata "primary_score"): AlgoTune's (interleaved, the raw reward,
+    always kept as metadata "algotune_score") or the alone score (v7). A run without a timing (no solver, a scoring
+    timeout) keeps its value; log_speedup follows the primary."""
+    alone = (score.metadata or {}).get("alone_score")
+    if state.metadata.get("primary_score") == "alone" and alone is not None:
+        score.value = alone
+        score.metadata["log_speedup"] = math.log(_speedup(alone))
     return score
 
 
@@ -203,17 +219,19 @@ async def _remote_score(state: TaskState) -> Score:
     if rec["status"] != "done":
         raise RuntimeError(f"scorer job {rec['job_id']} failed: {rec['error']}")
     r = rec["result"]
-    return Score(
+    return _primary(state, Score(
         value=r["score"],
         explanation=r["verifier_stdout"],
         metadata={
             "log_speedup": math.log(_speedup(r["score"])),
+            "algotune_score": r["score"],
+            "alone_score": r.get("alone_score"),
             "scoring_timeout": r["scoring_timeout"],
             "first_call_ratio": r["first_call_ratio"],
             "reference_inflation": r.get("reference_inflation"),
             "checker": remote_timing(rec),
         },
-    )
+    ))  # fmt: skip
 
 
 def seed_with_offset(test_outputs: str) -> str:
@@ -312,6 +330,34 @@ _FIRST_CALL_PATCHES = {
 }
 
 
+# with_alone_score: anchor -> replacement, required exactly once; needs with_thread_guard's _ALONE first.
+_ALONE_SCORE_PATCH = {
+    "    _write_reward(final_score)\n": (
+        "    _alone_raw = sum(_ALONE) / total_time_solver if validity and total_time_solver > 0 else 0.0\n"
+        "    _alone_score = _alone_raw if validity and _alone_raw >= 1.0 else 1.0\n"
+        '    print(f"Alone raw speedup: {_alone_raw:.4f} x")\n'
+        '    print(f"Alone score: {_alone_score:.4f}")\n'
+        "    _write_reward(final_score)\n"
+    ),
+}
+
+
+def with_alone_score(test_outputs: str) -> str:
+    """The verifier also prints the speedup against the reference timed alone ("Alone score: <x>", v7's primary score).
+
+    AlgoTune's score divides the reference's time interleaved with the solver by the solver's, so a solver that leaves
+    process-wide thread state behind moves its own denominator (v6 pca r2: one source scored 12.72, 7.25 and 7.06 on the
+    same hidden instances). The alone score uses the same instances, the same per-instance minimum of the same solver
+    timings and the same rules (invalid or below 1.0 scores 1.0), with the reference's time from the thread guard's
+    alone timer instead. reward.txt keeps AlgoTune's score. Needs with_thread_guard; raises unless the anchor occurs once.
+    """
+    for anchor, replacement in _ALONE_SCORE_PATCH.items():
+        if test_outputs.count(anchor) != 1 or "_ALONE = []" not in test_outputs:
+            raise ValueError(f"expected exactly one {anchor!r} and the thread guard's _ALONE in the AlgoTune verifier")
+        test_outputs = test_outputs.replace(anchor, replacement)
+    return test_outputs
+
+
 def with_first_call_ratio(test_outputs: str) -> str:
     """The verifier also reports the first-call ratio: sum of untimed first solver calls / sum of min timed calls.
 
@@ -346,10 +392,21 @@ def with_thread_guard(test_outputs: str) -> str:
 
 
 SEED_OFFSET_FILE = SPLIT_PATH.parent / ".algotune_seed_offset"  # gitignored; one secret for the whole experiment
+# One secret hidden-seed offset per experiment (runner/scorer --experiment). v7's hidden instances are new because the
+# v6 ones informed the v6 diagnosis (Sol review, 2026-10-13); v6 keeps its own so v6 runs still reproduce.
+EXPERIMENTS = ("v6", "v7")
 
 
-def _offsets_in_logs(log_dir: Path) -> set[int]:
-    """Seed offsets recorded in existing AlgoTune eval logs (eval.metadata["algotune_seed_offset"])."""
+def seed_offset_file(experiment: str = "v6") -> Path:
+    """The experiment's offset file: v6 keeps data/.algotune_seed_offset, later ones data/.algotune_seed_offset.<name>."""
+    if experiment not in EXPERIMENTS:
+        raise ValueError(f"experiment must be one of {EXPERIMENTS}, got {experiment!r}")
+    return SEED_OFFSET_FILE if experiment == "v6" else SEED_OFFSET_FILE.with_name(f"{SEED_OFFSET_FILE.name}.{experiment}")
+
+
+def _offsets_in_logs(log_dir: Path, experiment: str = "v6") -> set[int]:
+    """Seed offsets recorded in existing AlgoTune eval logs (eval.metadata["algotune_seed_offset"]) of this experiment
+    (eval.metadata["experiment"]; logs without one are v6)."""
     from inspect_ai.log import read_eval_log
 
     found: set[int] = set()
@@ -358,18 +415,20 @@ def _offsets_in_logs(log_dir: Path) -> set[int]:
             header = read_eval_log(str(log), header_only=True)
         except Exception:
             continue
-        value = (header.eval.metadata or {}).get("algotune_seed_offset")
-        if value is not None:
+        meta = header.eval.metadata or {}
+        value = meta.get("algotune_seed_offset")
+        if value is not None and meta.get("experiment", "v6") == experiment:
             found.add(int(value))
     return found
 
 
-def _seed_offset(path: Path = SEED_OFFSET_FILE, log_dir: Path = LOG_DIR) -> int:
+def _seed_offset(path: Path = SEED_OFFSET_FILE, log_dir: Path = LOG_DIR, experiment: str = "v6") -> int:
     """One experiment-wide secret offset, so every arm and repeat is scored on the same instances.
 
     ALGOTUNE_SEED_OFFSET overrides. Otherwise the offset is read from `path`. If `path` is missing it is
-    restored from the offset recorded in existing eval logs; only when there are none is a new random
-    offset written. Creation is atomic, so two runs started at once cannot write different offsets.
+    restored from the offset recorded in existing eval logs of `experiment`; only when there are none is a new random
+    offset written, at least 100 seeds from every other experiment's offset file next to `path`, so no hidden instance
+    is shared. Creation is atomic, so two runs started at once cannot write different offsets.
     A fresh offset per run would score separately launched arms on different instances and break
     paired per-task comparisons.
     """
@@ -378,10 +437,13 @@ def _seed_offset(path: Path = SEED_OFFSET_FILE, log_dir: Path = LOG_DIR) -> int:
         offset = int(os.environ[SEED_OFFSET_ENV])
     else:
         if not path.exists():
-            logged = _offsets_in_logs(log_dir)
+            logged = _offsets_in_logs(log_dir, experiment)
             if len(logged) > 1:
                 raise ValueError(f"{path} is missing and the logs in {log_dir} record several offsets: {sorted(logged)}")
-            new = logged.pop() if logged else low + secrets.randbelow(high - low)
+            others = [int(f.read_text().strip()) for f in path.parent.glob(f"{SEED_OFFSET_FILE.name}*") if f != path]
+            new = logged.pop() if logged else None
+            while new is None or any(abs(new - o) < VERIFIER_INSTANCES for o in others):
+                new = low + secrets.randbelow(high - low)
             try:
                 with path.open("x") as f:  # atomic: fails if another run created it first
                     f.write(f"{new}\n")
@@ -554,7 +616,7 @@ def seed_offset_id(offset: int) -> str:
 
 
 def seed_verifier(sample, offset: int) -> Path:
-    """Write our patched copy of the sample's Harbor tests (seed offset, thread check, first-call ratio) with the
+    """Write our patched copy of the sample's Harbor tests (seed offset, thread check, first-call ratio, alone score) with the
     offset file, point the sample's test_path and tests_dir at it, and return it. The hub cache is shared between
     runs, so the seeded verifier is a copy."""
     tests_dir = Path(sample.metadata["tests_dir"])
@@ -562,7 +624,7 @@ def seed_verifier(sample, offset: int) -> Path:
     shutil.rmtree(seeded_dir, ignore_errors=True)
     shutil.copytree(tests_dir, seeded_dir)
     test_outputs = seeded_dir / "test_outputs.py"
-    test_outputs.write_text(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text()))))
+    test_outputs.write_text(with_alone_score(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text())))))
     shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
     (seeded_dir / "seed_offset").write_text(f"{offset}\n")
     sample.metadata["test_path"] = str(seeded_dir / Path(sample.metadata["test_path"]).relative_to(tests_dir))
@@ -590,6 +652,8 @@ def algotune_task(
     checker_backend: Literal["local", "remote"] = "local",
     isolate_agents: bool = False,
     memory_per_agent_mb: int | None = None,
+    experiment: str = "v6",
+    primary_score: Literal["interleaved", "alone"] | None = None,
 ) -> Task:
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
@@ -613,6 +677,9 @@ def algotune_task(
     isolate_agents (v7): one box per agent (`box_resources`), each with cpus_per_agent CPUs on its own cpuset and
     memory_per_agent_mb, the agents' files on shared volumes; sample metadata "agent_boxes" lists the services by agent
     index, and algotune_setup installs the toolkit and CPU_COUNT_SITECUSTOMIZE in each.
+
+    experiment: whose secret offset scores the hidden instances (`seed_offset_file`); a remote scorer must serve the
+    same experiment. primary_score: what Score.value is (algotune_scorer); default "alone" for v7, else "interleaved".
     """
     names = json.loads(SPLIT_PATH.read_text())[split]
     is_remote = checker_backend == "remote"
@@ -624,12 +691,18 @@ def algotune_task(
         override_cpus=resources["agent_cpus"],
         override_memory_mb=resources["agent_memory_mb"],
     )
+    if primary_score is None:
+        primary_score = "alone" if experiment == "v7" else "interleaved"
     if is_remote:
         backend_meta = {"checker_backend": "remote", "scorer": scorer_client.health()}
         backend_meta["seed_offset_id"] = backend_meta["scorer"]["seed_offset_id"]
+        served = backend_meta["scorer"].get("experiment", "v6")  # scorers before v7 served only v6's offset
+        if served != experiment:
+            raise ValueError(f"this run is experiment {experiment}, but the scorer at SCORER_URL serves {served}'s offset")
     else:
-        offset = _seed_offset()
+        offset = _seed_offset(seed_offset_file(experiment), experiment=experiment)
         backend_meta = {"checker_backend": "local", "algotune_seed_offset": offset, "seed_offset_id": seed_offset_id(offset)}
+    backend_meta |= {"experiment": experiment, "primary_score": primary_score}
     names_by_id = task_names()
     images = set()
     for sample in base.dataset:
@@ -651,6 +724,7 @@ def algotune_task(
             add_checker(config, resources)
         sample.metadata["checker_backend"] = checker_backend
         sample.metadata["algotune_task_name"] = names_by_id[str(sample.id)]
+        sample.metadata["primary_score"] = primary_score
         if isolate_agents:
             sample.metadata["agent_boxes"] = [b["service"] for b in resources["agent_boxes"]]
         # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an

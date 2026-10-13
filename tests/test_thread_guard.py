@@ -236,3 +236,35 @@ def test_the_alone_timer_child_inherits_the_allocator_settings(tmp_path, monkeyp
     assert timer.time(n=3, random_seed=0) > 0
     timer.close()
     assert seen.read_text() == "68719476736"
+
+
+def test_the_alone_score_does_not_move_with_thread_state_a_solver_leaves_behind(tmp_path, monkeypatch) -> None:
+    # v6 pca r2: solvers that left numpy's OpenBLAS state behind made the interleaved reference 15-35% faster than
+    # alone, so one source scored 12.72, 7.25 and 7.06 on the same instances. v7's primary score uses the alone timing.
+    from swarm_scaling.tasks import with_alone_score
+
+    monkeypatch.delattr("builtins._fast_reference", raising=False)
+    dev_eval = load_dev_eval(tmp_path, monkeypatch, (
+        "        time.sleep(0.001 if getattr(builtins, '_fast_reference', False) else 0.004)\n"
+        "        return sorted(problem)\n"
+    ))  # fmt: skip
+    clean = tmp_path / "clean.py"
+    clean.write_text("import time\nclass Solver:\n    def solve(self, problem):\n        time.sleep(0.001)\n        return sorted(problem)\n")
+    state = tmp_path / "state.py"
+    state.write_text(
+        "import builtins, time\n"
+        "builtins._fast_reference = True  # stands in for thread state that speeds up the next reference call\n"
+        "class Solver:\n    def solve(self, problem):\n        time.sleep(0.001)\n        return sorted(problem)\n"
+    )
+    a = dev_eval.evaluate(clean, n=3, seed=0, size=100, reps=3)
+    monkeypatch.setattr("builtins._fast_reference", False, raising=False)
+    b = dev_eval.evaluate(state, n=3, seed=0, size=100, reps=3)
+    assert b["valid"] and b["reference_inflation"] < 0.5  # the guard is one-sided: a faster reference is allowed
+    assert b["speedup"] < 0.5 * a["speedup"]  # AlgoTune's score halves
+    assert b["alone_speedup"] == pytest.approx(a["alone_speedup"], rel=0.3)  # the alone score does not
+    patched = with_alone_score(with_first_call_ratio(with_thread_guard(seed_with_offset(VERIFIER.read_text()))))
+    compile(patched, "test_outputs.py", "exec")
+    assert "    _alone_raw = sum(_ALONE) / total_time_solver if validity and total_time_solver > 0 else 0.0\n" in patched
+    assert '    print(f"Alone score: {_alone_score:.4f}")\n' in patched
+    with pytest.raises(ValueError):  # it needs the thread guard's alone timings
+        with_alone_score(seed_with_offset(VERIFIER.read_text()))

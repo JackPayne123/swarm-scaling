@@ -62,6 +62,37 @@ SELECT_SEED = 500_000
 # dev_eval refuses seed + n at or above this, so an agent's seed sweep never reaches the stage-2 instances (pilot agents
 # swept seeds up to 104,000 while waiting out the submit gate).
 DEV_SEED_CAP = 400_000
+# v7 (runner --disjoint-dev-seeds): seed + n below FINAL_DEV_SEED, so dev_eval also stays off the finalize (stage-1)
+# instances; under DEV_SEED_CAP five v6 dev_eval calls timed them.
+DISJOINT_DEV_SEED_CAP = FINAL_DEV_SEED
+DEV_SEED_BASE = 10_000  # dev_eval.py's SEED_OFFSET: dev_eval and finalize instance i is seed DEV_SEED_BASE + seed + i
+# Validity pass (scripts/select_portfolio.py --validity-n, scorer job kind validity): untimed is_solution checks of
+# each shortlisted source on instances VALIDITY_SEED + i, the same instances for every source and arm.
+VALIDITY_SEED = 600_000
+VALIDITY_MAX_N = 100_000
+# The hidden instances are offset + i, i < 100, for the experiment's secret offset in this range (tasks._seed_offset).
+SEED_OFFSET_RANGE = (1_000_000, 2**31 - 1000)
+VERIFIER_INSTANCES = 100  # Harbor's AlgoTune verifier: NUM_TEST_INSTANCES (stage 2 and hidden)
+
+
+def seed_ranges(dev_seed_cap: int = DEV_SEED_CAP) -> dict[str, tuple[int, int]]:
+    """Every range of generate_problem seeds the experiment uses, [first, last + 1), by purpose: the one place they
+    are written down. Disjoint with dev_seed_cap = DISJOINT_DEV_SEED_CAP (tests/test_algotune_seeds.py); the v6 cap
+    lets dev_eval reach the finalize instances.
+
+      dev_eval   agents' dev_eval tool: DEV_SEED_BASE + seed + i, with seed >= 0 and seed + n below dev_seed_cap
+      finalize   stage 1, every candidate at the end of a run: DEV_SEED_BASE + FINAL_DEV_SEED + i, i < FINAL_DEV_N
+      score_dev  stage 2 of selection: SELECT_SEED + i, i < 100
+      validity   selection's validity pass: VALIDITY_SEED + i, i < the pass's n (at most VALIDITY_MAX_N)
+      hidden     scoring: offset + i, i < 100, offset secret and in SEED_OFFSET_RANGE (one offset per experiment)
+    """
+    return {
+        "dev_eval": (DEV_SEED_BASE, DEV_SEED_BASE + dev_seed_cap - 1),
+        "finalize": (DEV_SEED_BASE + FINAL_DEV_SEED, DEV_SEED_BASE + FINAL_DEV_SEED + FINAL_DEV_N),
+        "score_dev": (SELECT_SEED, SELECT_SEED + VERIFIER_INSTANCES),
+        "validity": (VALIDITY_SEED, VALIDITY_SEED + VALIDITY_MAX_N),
+        "hidden": (SEED_OFFSET_RANGE[0], SEED_OFFSET_RANGE[1] + VERIFIER_INSTANCES),
+    }
 
 DEV_TOOLKIT_NOTE = (
     "A dev toolkit is installed in /app/dev (read /app/dev/README.md first). It contains the full "
@@ -259,7 +290,8 @@ async def _dev_eval(state: TaskState, candidate: Candidate, source: bytes, index
         detail["valid"],
         detail["speedup"],
         error=_first_errors(detail),
-        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check", "first_call_ratio", "reference_inflation")}, **timing},
+        detail={**{k: detail[k] for k in ("n_invalid", "total_solver_s", "total_reference_s", "thread_check", "first_call_ratio", "reference_inflation")},
+                "alone_speedup": detail.get("alone_speedup"), **timing},  # fmt: skip
     )
 
 
@@ -274,11 +306,12 @@ class Checker:
     `cached` True, `same_as` (the index of the call it repeats), zero queue wait and zero run time.
     """
 
-    def __init__(self, state: TaskState) -> None:
+    def __init__(self, state: TaskState, seed_cap: int = DEV_SEED_CAP) -> None:
         self.state = state
+        self.seed_cap = seed_cap
         self.calls: list[dict[str, Any]] = []
         self.done: dict[tuple, tuple[int, str]] = {}  # (agent, sha256, n, seed, reps, size) -> (call index, report)
-        state.metadata["checker"] = {"calls": self.calls}
+        state.metadata["checker"] = {"calls": self.calls, "seed_cap": seed_cap}
 
     def tool(self, agent_id: str) -> Tool:
         async def execute(path: str, n: int = 20, seed: int = 0, reps: int = 10, size: int | None = None) -> str:
@@ -302,8 +335,8 @@ class Checker:
                 raise ToolError(f"path must be absolute, got {path!r}")
             if seed < 0:
                 raise ToolError("seed must be >= 0")
-            if seed >= DEV_SEED_CAP or seed + n >= DEV_SEED_CAP:
-                raise ToolError(f"seed + n must be below {DEV_SEED_CAP:,} (got seed {seed:,}, n {n}); use a smaller seed")
+            if seed >= self.seed_cap or seed + n >= self.seed_cap:
+                raise ToolError(f"seed + n must be below {self.seed_cap:,} (got seed {seed:,}, n {n}); use a smaller seed")
             try:
                 source = await sandbox(agent_box(self.state, agent_id)).read_file(path, text=False)
             except (FileNotFoundError, IsADirectoryError):
@@ -345,6 +378,7 @@ class Checker:
             head = f"[dev_eval] waited {timing['queue_wait_s']:.1f}s in the queue, ran {timing['run_s']:.1f}s."
             return f"{head}\n{report}"
 
+        execute.__doc__ = execute.__doc__.replace("400,000", f"{self.seed_cap:,}")  # the agent sees its own cap
         return ToolDef(execute, name="dev_eval").as_tool()
 
 
@@ -385,9 +419,9 @@ def known_dev_score(state: TaskState) -> Callable[[bytes], str | None]:
     return lookup
 
 
-def algotune_agent_tools(state: TaskState) -> Callable[[str], list[Tool]]:
+def algotune_agent_tools(state: TaskState, seed_cap: int = DEV_SEED_CAP) -> Callable[[str], list[Tool]]:
     """swarm(agent_tools=...): one Checker (queue) per sample, and its dev_eval tool for each agent."""
-    checker = Checker(state)
+    checker = Checker(state, seed_cap)
     return lambda agent_id: [checker.tool(agent_id)]
 
 

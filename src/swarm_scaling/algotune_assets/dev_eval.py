@@ -47,7 +47,7 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int, alone_c
     result = {"solver": str(solver_path), "n": n, "seed": seed, "size": size, "reps": reps,
               "valid": False, "speedup": None, "n_invalid": None, "total_solver_s": None,
               "total_reference_s": None, "thread_check": None, "first_call_ratio": None,
-              "reference_inflation": None, "alone_baseline": None, "errors": []}
+              "reference_inflation": None, "alone_speedup": None, "alone_baseline": None, "errors": []}
     task = load_module("reference_task", DEV_DIR / "reference_task.py").Task()
     # Started before the solver is imported: times the reference alone on each instance, in its own process (or reads
     # the scorer's cached alone timings and deletes the file).
@@ -108,6 +108,9 @@ def evaluate(solver_path: Path, n: int, seed: int, size: int, reps: int, alone_c
     result["valid"] = not result["errors"]
     if total_solver > 0:
         result["speedup"] = total_reference / total_solver
+        # against the reference timed alone on the same instances (the verifier's "Alone score", v7's primary); recorded
+        # only, the report agents read is unchanged
+        result["alone_speedup"] = sum(alone) / total_solver
         # untimed first call / min timed call: large for a solver that caches results by problem identity
         result["first_call_ratio"] = total_first / total_solver
         result["total_solver_s"] = total_solver / 1e9

@@ -50,3 +50,31 @@ def test_one_offset_for_the_whole_experiment(tmp_path, monkeypatch):
     assert _seed_offset(path, log_dir=tmp_path / "no-logs") == first
     monkeypatch.setenv(SEED_OFFSET_ENV, "1234567")
     assert _seed_offset(path) == 1234567
+
+
+def test_with_the_v7_dev_cap_every_seed_range_is_disjoint():
+    # v6: dev_eval seed s timed instance 10,000 + s, so seeds 50,000+ reached finalize's stage-1 instances (5 calls did).
+    from swarm_scaling.algotune_devkit import DEV_SEED_CAP, DISJOINT_DEV_SEED_CAP, seed_ranges
+
+    ranges = sorted(seed_ranges(DISJOINT_DEV_SEED_CAP).items(), key=lambda kv: kv[1])
+    assert [name for name, _ in ranges] == ["dev_eval", "finalize", "score_dev", "validity", "hidden"]
+    assert all(a[1][1] <= b[1][0] for a, b in zip(ranges, ranges[1:]))
+    v6 = seed_ranges(DEV_SEED_CAP)
+    assert v6["dev_eval"][1] > v6["finalize"][0]  # why v7 needs --disjoint-dev-seeds
+
+
+def test_each_experiment_has_its_own_offset_at_least_100_seeds_from_any_other(tmp_path, monkeypatch):
+    # v7's hidden instances must be new: the v6 ones informed the v6 diagnosis. v6 keeps its own to reproduce v6.
+    from swarm_scaling import tasks
+
+    monkeypatch.delenv(SEED_OFFSET_ENV, raising=False)
+    monkeypatch.setattr(tasks, "SEED_OFFSET_FILE", tmp_path / ".algotune_seed_offset")
+    tasks.SEED_OFFSET_FILE.write_text("5000000\n")
+    draws = iter([5_000_050 - tasks.SEED_OFFSET_RANGE[0], 7_000_000 - tasks.SEED_OFFSET_RANGE[0]])
+    monkeypatch.setattr(tasks.secrets, "randbelow", lambda _: next(draws))  # the first draw is 50 from v6's: redrawn
+    v7 = tasks._seed_offset(tasks.seed_offset_file("v7"), log_dir=tmp_path / "no-logs", experiment="v7")
+    assert v7 == 7_000_000 and tasks.seed_offset_file("v7").name == ".algotune_seed_offset.v7"
+    assert tasks._seed_offset(tasks.seed_offset_file("v6"), log_dir=tmp_path / "no-logs") == 5_000_000
+    assert tasks._seed_offset(tasks.seed_offset_file("v7"), log_dir=tmp_path / "no-logs", experiment="v7") == v7
+    with pytest.raises(ValueError, match="experiment must be one of"):
+        tasks.seed_offset_file("v8")
