@@ -56,6 +56,18 @@ CHECKER_CPUS = 8
 CHECKER_MEMORY_MB = 8192  # the verifier's measured peak is 4.2 GiB (dst-type-ii-scipy-fftpack, 2026-10-09)
 # Left for the Docker host itself (970 MiB measured on the Mac's Docker VM with no containers, 2026-10-09).
 HOST_HEADROOM_MB = 2048
+# Per-agent boxes (isolate_agents, v7): every agent's box mounts these named volumes, so the registry, inboxes and
+# teammates' working directories are where swarm() puts them (workspace_root /app) in every box; the checker gets none.
+SHARED_VOLUMES = {"swarm_agents": "/app/agents", "swarm_registry": "/app/registry"}
+# Written into every per-agent box's site-packages: Python 3.12's os.cpu_count() reports the host's CPUs (16 on a team
+# VM, 4 on an independent's), while nproc, OpenBLAS and numba already follow the box's cpuset. v6 sinkhorn agents read
+# os.cpu_count()=16 and chose 16 OpenMP threads on 8 CPUs.
+CPU_COUNT_SITECUSTOMIZE = """\
+# swarm-scaling isolate_agents: os.cpu_count() is the CPUs this box may run on, as nproc reports.
+import os
+
+os.cpu_count = lambda: len(os.sched_getaffinity(0))
+"""
 
 # Inserted into the verifier copy. The offset travels as a file in /tests (copied in only at scoring), not as an
 # environment variable (visible in /proc/self/environ to the solver), and the file is read and deleted while the
@@ -403,7 +415,8 @@ def task_image_digest(image: str) -> str | None:
 
 
 def box_resources(
-    cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int, checker: bool = True
+    cpus_per_agent: int, n_agents: int, parallel: int, host_cpus: int, host_memory_mb: int, checker: bool = True,
+    isolate: bool = False, memory_per_agent_mb: int | None = None,
 ) -> dict:
     """CPUs, cpusets and memory limits of the agent box and the checker on a Docker host of this size.
 
@@ -412,9 +425,15 @@ def box_resources(
     time (CHECKER_LOCK), so the `parallel` agent boxes share the host memory left after one checker and
     HOST_HEADROOM_MB. With parallel > 1 the agent boxes share cpuset 0..A-1 and the checkers A..A+7.
     checker=False (remote scorer): no checker on this host, so nothing is reserved for it.
+    isolate (v7): one box per agent instead (`agent_boxes`): agent i's box has cpus_per_agent CPUs, its own cpuset
+    (i x c .. i x c + c - 1) and memory_per_agent_mb, the same as an independent run's box given the same arguments.
     """
     if min(cpus_per_agent, n_agents, parallel) < 1:
         raise ValueError("cpus_per_agent, n_agents and parallel must be >= 1")
+    if isolate != (memory_per_agent_mb is not None):
+        raise ValueError("per-agent boxes need memory_per_agent_mb (the same in every row), and only they take it")
+    if isolate:
+        return _isolated_resources(cpus_per_agent, n_agents, parallel, host_cpus, host_memory_mb, checker, memory_per_agent_mb)
     agent_cpus = cpus_per_agent * n_agents
     if not checker:
         if agent_cpus > host_cpus:
@@ -449,6 +468,37 @@ def box_resources(
     }
 
 
+def _isolated_resources(
+    c: int, n: int, parallel: int, host_cpus: int, host_memory_mb: int, checker: bool, memory_mb: int
+) -> dict:
+    agent_cpus = c * n
+    boxes = [{"service": "default" if i == 0 else f"agent_{i}", "cpus": c, "cpuset": f"{i * c}-{i * c + c - 1}",
+              "memory_mb": memory_mb} for i in range(n)]  # fmt: skip
+    need_cpus = agent_cpus + (CHECKER_CPUS if checker else 0)
+    need_mb = memory_mb * n * parallel + (CHECKER_MEMORY_MB if checker else 0) + HOST_HEADROOM_MB
+    if need_cpus > host_cpus or need_mb > host_memory_mb:
+        raise ValueError(
+            f"{n} agent boxes x {c} CPUs and {memory_mb} MiB (x {parallel} samples)"
+            + (f" + the checker's {CHECKER_CPUS} CPUs and {CHECKER_MEMORY_MB} MiB" if checker else "")
+            + f" + {HOST_HEADROOM_MB} MiB headroom need {need_cpus} CPUs and {need_mb} MiB; the Docker host has "
+            f"{host_cpus} and {host_memory_mb}"
+        )
+    out = {
+        "isolate_agents": True,
+        "cpus_per_agent": c,
+        "agent_cpus": agent_cpus,
+        "agent_cpuset": f"0-{agent_cpus - 1}",
+        "agent_memory_mb": memory_mb,
+        "agent_boxes": boxes,
+        "docker_host_cpus": host_cpus,
+        "docker_host_memory_mb": host_memory_mb,
+    }
+    if checker:
+        out |= {"checker_cpus": CHECKER_CPUS, "checker_cpuset": f"{agent_cpus}-{agent_cpus + CHECKER_CPUS - 1}",
+                "checker_memory_mb": CHECKER_MEMORY_MB}  # fmt: skip
+    return out
+
+
 def add_checker(config: ComposeConfig, resources: dict) -> None:
     """Add the `checker` service, a copy of `default` that only the dev_eval tool, final selection and scoring use.
 
@@ -461,6 +511,7 @@ def add_checker(config: ComposeConfig, resources: dict) -> None:
     default = _limit_agent_box(config, resources)
     checker = default.model_copy(deep=True)
     checker.cpus = None
+    checker.volumes = None  # per-agent boxes share the agents' files on volumes; the checker sees none of them
     env = checker.environment or {}
     if isinstance(env, list):
         env = dict(e.split("=", 1) if "=" in e else (e, None) for e in env)
@@ -471,11 +522,26 @@ def add_checker(config: ComposeConfig, resources: dict) -> None:
 
 
 def _limit_agent_box(config: ComposeConfig, resources: dict):
-    """Set the agent box's CPUs, memory and cpuset from `box_resources`; returns the service."""
+    """Set the agent box's CPUs, memory and cpuset from `box_resources`; returns the service.
+
+    Per-agent boxes (resources["agent_boxes"]): `default` is agent_0's box and `agent_<i>` a copy for each other agent,
+    each with its own CPUs, cpuset and memory, and all with SHARED_VOLUMES mounted.
+    """
     default = config.services["default"]
-    default.cpus = float(resources["agent_cpus"])
-    default.mem_limit = f"{resources['agent_memory_mb']}m"
-    default.__pydantic_extra__["cpuset"] = resources["agent_cpuset"]
+    boxes = resources.get("agent_boxes")
+    if boxes is None:
+        default.cpus = float(resources["agent_cpus"])
+        default.mem_limit = f"{resources['agent_memory_mb']}m"
+        default.__pydantic_extra__["cpuset"] = resources["agent_cpuset"]
+        return default
+    config.volumes = {**(config.volumes or {}), **{name: {} for name in SHARED_VOLUMES}}
+    default.volumes = [*(default.volumes or []), *(f"{name}:{path}" for name, path in SHARED_VOLUMES.items())]
+    for box in boxes:
+        service = default if box["service"] == "default" else default.model_copy(deep=True)
+        service.cpus = float(box["cpus"])
+        service.mem_limit = f"{box['memory_mb']}m"
+        service.__pydantic_extra__["cpuset"] = box["cpuset"]
+        config.services[box["service"]] = service
     return default
 
 
@@ -522,6 +588,8 @@ def algotune_task(
     n_agents: int = 1,
     parallel: int = 1,
     checker_backend: Literal["local", "remote"] = "local",
+    isolate_agents: bool = False,
+    memory_per_agent_mb: int | None = None,
 ) -> Task:
     """The inspect_harbor AlgoTune task restricted to one split of data/algotune_split.json.
 
@@ -541,10 +609,15 @@ def algotune_task(
     holds the seed offset and the seeded verifier. The sample gets no checker service, nothing is seeded here,
     and the task metadata records the service's /health (CPU model, version, seed offset fingerprint) instead of
     the offset.
+
+    isolate_agents (v7): one box per agent (`box_resources`), each with cpus_per_agent CPUs on its own cpuset and
+    memory_per_agent_mb, the agents' files on shared volumes; sample metadata "agent_boxes" lists the services by agent
+    index, and algotune_setup installs the toolkit and CPU_COUNT_SITECUSTOMIZE in each.
     """
     names = json.loads(SPLIT_PATH.read_text())[split]
     is_remote = checker_backend == "remote"
-    resources = box_resources(cpus_per_agent, n_agents, parallel, *docker_host(), checker=not is_remote)
+    resources = box_resources(cpus_per_agent, n_agents, parallel, *docker_host(), checker=not is_remote,
+                              isolate=isolate_agents, memory_per_agent_mb=memory_per_agent_mb)  # fmt: skip
     base = algotune(
         ref=ALGOTUNE_REF,
         dataset_task_names=[_harbor_name(n) for n in names],
@@ -578,6 +651,8 @@ def algotune_task(
             add_checker(config, resources)
         sample.metadata["checker_backend"] = checker_backend
         sample.metadata["algotune_task_name"] = names_by_id[str(sample.id)]
+        if isolate_agents:
+            sample.metadata["agent_boxes"] = [b["service"] for b in resources["agent_boxes"]]
         # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an
         # inline ComposeConfig when reading them, which rejects cpuset (only x- extras are allowed), so every
         # log would be unreadable. The YAML is what Inspect would generate; it is also kept in sample metadata.

@@ -3,7 +3,7 @@
 Arms (PLAN.md):
   solo         one agent at budget mult x b (duration scaling); mult in {1, 2, 4, 8}
   independent  one agent at budget b, repeated (--epochs) and resampled into teams afterwards
-  team         N agents in one container at budget b each, messaging + shared registry
+  team         N agents in one container (one each with --isolate-agents) at budget b each, messaging + shared registry
   registry     N agents, shared registry but no messaging (ablation)
 
 Every arm can save candidates (registry=True); only team/registry arms share them.
@@ -104,6 +104,11 @@ def main() -> None:
                    help="remote: every timed run goes to the scorer service at SCORER_URL (token SCORER_TOKEN)")
     p.add_argument("--cpus-per-agent", type=int, default=4,
                    help="agent box CPUs = this x agents in the sample; the checker has 8 more (the Docker host must have both)")
+    p.add_argument("--isolate-agents", action="store_true",
+                   help="v7: one box per agent (team agents too), each with --cpus-per-agent CPUs on its own cpuset and "
+                        "--agent-memory-mb, sharing the registry and working directories on volumes")
+    p.add_argument("--agent-memory-mb", type=int, default=None,
+                   help="with --isolate-agents: memory of every agent box; give every row of a comparison the same value")
     p.add_argument("--min-spend-frac", type=float, default=None,
                    help="submit is refused until an agent has used this fraction of its own budget; 0 = stop freely "
                         "(default 0.8; 0 with --end-on-budget)")
@@ -147,6 +152,8 @@ def main() -> None:
     if args.end_on_budget and args.min_spend_frac:
         p.error("--end-on-budget has no submit tool, so no submit gate: drop --min-spend-frac")
     min_spend_frac = 0.0 if args.end_on_budget else (0.8 if args.min_spend_frac is None else args.min_spend_frac)
+    if (args.agent_memory_mb is not None) != args.isolate_agents:
+        p.error("--isolate-agents needs --agent-memory-mb (the same in every row), and only it takes one")
     if args.elicit == "diversified-v7" and not args.end_on_budget:
         p.error("--elicit diversified-v7 tells agents the run ends when the budget is used up: it needs --end-on-budget")
     publish_notices = args.publish_notices
@@ -178,6 +185,8 @@ def main() -> None:
         "tool_fixes": args.tool_fixes,
         "parallel": args.parallel,
         "cpus_per_agent": args.cpus_per_agent,
+        "isolate_agents": args.isolate_agents,
+        "agent_memory_mb": args.agent_memory_mb,
         "checker": args.checker,  # cpusets and memory limits: algotune_task adds them to the log metadata
         "launched_at": time.time(),
     }
@@ -189,7 +198,8 @@ def main() -> None:
     wait_for_docker_images()
     logs = eval(
         algotune_task(split=args.split, cpus_per_agent=args.cpus_per_agent, n_agents=len(config["models"]),
-                      parallel=args.parallel, checker_backend=args.checker),
+                      parallel=args.parallel, checker_backend=args.checker, isolate_agents=args.isolate_agents,
+                      memory_per_agent_mb=args.agent_memory_mb),
         solver=swarm(
             models=config["models"],
             per_agent_tokens=config["per_agent_tokens"],

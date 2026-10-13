@@ -195,6 +195,7 @@ class Team:
         publish_notices: bool = False,
         known_score: Callable[[bytes], str | None] | None = None,
         end_on_budget: bool = False,
+        boxes: dict[str, str | None] | None = None,
     ) -> None:
         self.root = workspace_root.rstrip("/")
         self.registry_dir = f"{self.root}/registry"
@@ -206,6 +207,8 @@ class Team:
         self.known_score = known_score
         self.end_on_budget = end_on_budget  # agents cannot finish early, so nothing tells them to
         self.notices: list[PublishNotice] = []
+        # each agent's sandbox (per-agent boxes; None = the shared default box): its paths are resolved there
+        self.boxes = boxes or {}
         self.agents: dict[str, AgentRecord] = {
             aid: AgentRecord(aid, name, f"{self.root}/agents/{aid}")
             for aid, name in zip(agent_ids, model_names, strict=True)
@@ -419,7 +422,7 @@ class Team:
                 'mkdir -p "$(dirname "$dest")"\n'
                 'cp -R "$src" "$dest"\n'
             )
-            result = await sandbox().exec(["sh", "-c", script], timeout=120)
+            result = await sandbox(self.boxes.get(sender)).exec(["sh", "-c", script], timeout=120)
             if not result.success:
                 raise ToolError(f"send_file failed: {result.stderr.strip()}")
             rec.files_sent.append({"to": target, "source": path, "dest": dest, "note": note, "at": time.time()})
@@ -496,7 +499,8 @@ class Team:
             f'if [ -d "$src" ]; then cp -R "$src"/. "$dest"/; else cp "$src" {file_dest}; echo file; fi\n'
             'chmod -R a-w "$dest"\n'
         )
-        result = await sandbox().exec(["sh", "-c", script], timeout=120)
+        box = sandbox(self.boxes.get(agent_id))  # the path is the publisher's; the registry is shared
+        result = await box.exec(["sh", "-c", script], timeout=120)
         if not result.success:
             raise ToolError(f"publish_candidate failed: {result.stderr.strip()}")
         entry = RegistryEntry(
@@ -510,9 +514,7 @@ class Team:
         )
         self.entries.append(entry)
         rec.published.append(entry_id)
-        await sandbox().write_file(
-            f"{self.registry_dir}/{entry_id}.json", json.dumps(asdict(entry), indent=2)
-        )
+        await box.write_file(f"{self.registry_dir}/{entry_id}.json", json.dumps(asdict(entry), indent=2))
         renamed = (
             self.candidate_file is not None
             and result.stdout.strip() == "file"
@@ -528,7 +530,8 @@ class Team:
         score = None
         if self.known_score is not None and self.candidate_file is not None:
             try:
-                score = self.known_score(await sandbox().read_file(f"{entry.path}/{self.candidate_file}", text=False))
+                box = sandbox(self.boxes.get(entry.agent_id))
+                score = self.known_score(await box.read_file(f"{entry.path}/{self.candidate_file}", text=False))
             except FileNotFoundError:  # a published folder without the candidate file
                 pass
         notice = PublishNotice(f"n{len(self.notices)}", entry.id, entry.agent_id, entry.path, score, entry.note,

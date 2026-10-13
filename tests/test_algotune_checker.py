@@ -377,3 +377,33 @@ async def test_a_verifier_timeout_scores_as_no_speedup_instead_of_failing_the_ev
     assert result.value == 1.0 and result.explanation == "verifier timeout after 3600 s"
     assert result.metadata["scoring_timeout"] is True and result.metadata["log_speedup"] == 0.0
     assert not devkit.CHECKER_LOCK.locked()
+
+
+def test_isolated_team_agents_each_get_an_independents_box_and_share_only_the_registry_and_workdirs() -> None:
+    # v6: a team's 4 agents shared one 8-CPU box (56 bash timeouts, noisy local timings, 16-thread OpenMP choices),
+    # while each independent had 2 CPUs of its own.
+    from swarm_scaling.tasks import SHARED_VOLUMES, _limit_agent_box
+
+    def compose(n: int) -> dict:
+        res = box_resources(2, n, 1, host_cpus=16, host_memory_mb=23_492, isolate=True, memory_per_agent_mb=3072)
+        default = ComposeService(image="hb__x", cpus=8.0, mem_limit="12288m", network_mode="none")
+        default.__pydantic_extra__["x-local"] = True
+        config = ComposeConfig(services={"default": default})
+        add_checker(config, res)
+        return config.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    team, indep = compose(4), compose(1)
+    services = team["services"]
+    assert list(services) == ["default", "agent_1", "agent_2", "agent_3", "checker"]
+    boxes = [services[s] for s in ("default", "agent_1", "agent_2", "agent_3")]
+    assert [b["cpuset"] for b in boxes] == ["0-1", "2-3", "4-5", "6-7"]
+    shape = ("cpus", "mem_limit", "environment", "image", "network_mode", "init", "volumes")
+    assert all({k: b.get(k) for k in shape} == {k: indep["services"]["default"].get(k) for k in shape} for b in boxes)
+    assert boxes[0]["cpus"] == 2.0 and boxes[0]["mem_limit"] == "3072m"
+    mounts = sorted(f"{v}:{p}" for v, p in SHARED_VOLUMES.items())
+    assert all(sorted(b["volumes"]) == mounts for b in boxes) and set(team["volumes"]) == set(SHARED_VOLUMES)
+    assert "volumes" not in services["checker"] and services["checker"]["cpuset"] == "8-15"
+    with pytest.raises(ValueError, match="need 16 CPUs"):  # 4 x 2 CPUs + the checker's 8 on an 8-CPU host
+        box_resources(2, 4, 1, host_cpus=8, host_memory_mb=64_000, isolate=True, memory_per_agent_mb=3072)
+    with pytest.raises(ValueError, match="memory_per_agent_mb"):
+        box_resources(2, 4, 1, host_cpus=16, host_memory_mb=64_000, isolate=True)

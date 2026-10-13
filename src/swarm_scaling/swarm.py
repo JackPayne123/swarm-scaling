@@ -125,6 +125,13 @@ async def _continue_to_budget(state: AgentState) -> bool | str:
     return True if state.output.message.tool_calls else CONTINUE_TO_BUDGET
 
 
+def agent_box(state: TaskState, agent_id: str) -> str | None:
+    """The sandbox agent `agent_id` works in: its own box when the task gives one per agent (sample metadata
+    "agent_boxes", by agent index; the first is "default"), else the shared default box (None)."""
+    boxes = state.metadata.get("agent_boxes")
+    return boxes[int(agent_id.rsplit("_", 1)[1])] if boxes else None
+
+
 def channel_rule(frac: float, budget: float, budget_type: str) -> str:
     """When a two-phase team's channel opens, as the prompt and refusals state it."""
     share = "half your budget" if frac == 0.5 else f"{frac:.0%} of your budget"
@@ -277,11 +284,15 @@ def swarm(
         if setup is not None:
             state = await setup(state, generate)
 
+        if len(state.metadata.get("agent_boxes") or agent_ids) != n:
+            raise ValueError(f"the task gives {len(state.metadata['agent_boxes'])} agent boxes for {n} agents")
+        boxes = {aid: agent_box(state, aid) for aid in agent_ids}
         team = Team(
             agent_ids, model_names, workspace_root, reveal_model_family, tool_style, candidate_file,
             publish_notices=publish_notices, known_score=known_score(state) if known_score is not None else None,
-            end_on_budget=end_on_budget,
+            end_on_budget=end_on_budget, boxes=boxes,
         )  # fmt: skip
+        # per-agent boxes share these directories on volumes, so creating them in the default box creates them for all
         dirs = [team.registry_dir] + [a.private_dir for a in team.agents.values()]
         mk = await sandbox().exec(["mkdir", "-p", *dirs])
         if not mk.success:
@@ -289,6 +300,8 @@ def swarm(
 
         started = time.time()
         baseline_pids = await snapshot_container_pids()
+        # per-agent boxes besides the default one (agent_0's): each is snapshotted, monitored and cleaned up the same way
+        extra_pids = {b: await snapshot_container_pids(b) for b in boxes.values() if b not in (None, "default")}
         tools_for = agent_tools(state) if agent_tools is not None else None
 
         async def run_agent(agent_id: str, model: str | Model) -> AgentState | None:
@@ -320,7 +333,7 @@ def swarm(
             tools = _agent_tools(
                 team, agent_id, messaging, registry,
                 budget_tool(budget, budget_type, min_spend_frac, end_on_budget, tool_fixes), tool_style, extra,
-                summary_optional=tool_fixes,
+                summary_optional=tool_fixes, box=boxes[agent_id],
             )  # fmt: skip
             if blind_frac:
                 rec.channel_open = False
@@ -396,16 +409,19 @@ def swarm(
             return agent_state
 
         cpu = CpuMonitor(cpu_sample_interval) if baseline_pids is not None else None
+        box_cpu = {b: CpuMonitor(cpu_sample_interval, b) for b, pids in extra_pids.items() if pids is not None}
+        monitors = ([cpu] if cpu is not None else []) + list(box_cpu.values())
         async with anyio.create_task_group() as tg:
-            if cpu is not None:
-                tg.start_soon(cpu.run)
+            for m in monitors:
+                tg.start_soon(m.run)
             try:
                 results = await collect(*(run_agent(aid, m) for aid, m in zip(agent_ids, models)))
             finally:
-                if cpu is not None:
-                    cpu.stop()
+                for m in monitors:
+                    m.stop()
 
         cleanup = await kill_agent_processes(baseline_pids)
+        box_cleanup = {b: await kill_agent_processes(pids, b) for b, pids in extra_pids.items()}
 
         candidates = [
             Candidate(e.agent_id, e.model, e.path, e.note, e.published_at, "published")
@@ -447,6 +463,9 @@ def swarm(
             "ended_at": time.time(),
             "process_cleanup": cleanup,
             "cpu": cpu.summary() if cpu is not None else {"skipped": "not a Docker container"},
+            # per-agent boxes: "process_cleanup" and "cpu" are agent_0's box (default); these are the others'
+            **({"process_cleanup_boxes": box_cleanup, "cpu_boxes": {b: m.summary() for b, m in box_cpu.items()}}
+               if extra_pids else {}),  # fmt: skip
             "candidates": [asdict(c) for c in candidates],
             "agents": {
                 aid: {**team.agents[aid].as_log(), "priority_index": k if elicit != "loose" else None, "priority": p}
@@ -564,8 +583,10 @@ def _agent_tools(
     tool_style: ToolStyle = "default",
     extra: list[Tool] | None = None,
     summary_optional: bool = False,
+    box: str | None = None,
 ) -> list[Tool]:
-    tools: list[Tool] = [bash(timeout=300), python(timeout=300), update_plan()]
+    # `box`: the agent's own sandbox (per-agent boxes), so its commands and background processes stay there
+    tools: list[Tool] = [bash(timeout=300, sandbox=box), python(timeout=300, sandbox=box), update_plan()]
     if budget is not None:
         tools.append(budget)
     tools += extra or []
@@ -877,14 +898,15 @@ def summarise_cpu(samples: list[dict[str, float]]) -> dict[str, object]:
 class CpuMonitor:
     """Samples the container's cgroup CPU accounting while the agents run (Docker containers only)."""
 
-    def __init__(self, interval: float) -> None:
+    def __init__(self, interval: float, name: str | None = None) -> None:
         self.interval = interval
+        self.name = name  # the sandbox (default: the agents' box)
         self.samples: list[dict[str, float]] = []
         self._done = anyio.Event()
 
     async def sample(self) -> None:
         try:
-            result = await sandbox().exec(["sh", "-c", _CPU_PROBE], timeout=30)
+            result = await sandbox(self.name).exec(["sh", "-c", _CPU_PROBE], timeout=30)
         except Exception:
             return
         if result.success:

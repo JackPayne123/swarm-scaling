@@ -24,7 +24,7 @@ from inspect_ai.tool import Tool, ToolDef, ToolError
 from inspect_ai.util import sandbox
 
 from swarm_scaling import scorer_client
-from swarm_scaling.swarm import Candidate, kill_agent_processes, snapshot_container_pids
+from swarm_scaling.swarm import Candidate, agent_box, kill_agent_processes, snapshot_container_pids
 
 ASSETS = Path(__file__).parent / "algotune_assets"
 DEV_DIR = "/app/dev"
@@ -79,9 +79,10 @@ async def _install_toolkit(state: TaskState) -> None:
     evaluator = (Path(state.metadata["tests_dir"]) / "evaluator.py").read_text()
     problem_size = state.metadata["harbor_config"]["metadata"]["algotune_problem_size"]
 
-    box = sandbox()
-    await box.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
-    await box.write_file(f"{DEV_DIR}/README.md", (ASSETS / "README.md").read_text())
+    for name in state.metadata.get("agent_boxes") or [None]:  # per-agent boxes: each gets its own copy
+        box = sandbox(name)
+        await box.write_file(f"{DEV_DIR}/reference_task.py", evaluator)
+        await box.write_file(f"{DEV_DIR}/README.md", (ASSETS / "README.md").read_text())
     if remote(state):  # the scorer service holds its own copy
         return
 
@@ -92,12 +93,28 @@ async def _install_toolkit(state: TaskState) -> None:
     await checker.write_file(f"{DEV_DIR}/config.json", json.dumps({"problem_size": problem_size}))
 
 
+async def _install_cpu_count(name: str) -> None:
+    """Per-agent boxes: os.cpu_count() reports the box's CPUs (tasks.CPU_COUNT_SITECUSTOMIZE) in every Python run there."""
+    from swarm_scaling.tasks import CPU_COUNT_SITECUSTOMIZE
+
+    box = sandbox(name)
+    where = await box.exec(["python3", "-c", "import site; print(site.getsitepackages()[0])"])
+    if not where.success:
+        raise RuntimeError(f"could not find site-packages in {name}: {where.stderr}")
+    path = f"{where.stdout.strip()}/sitecustomize.py"
+    if (await box.exec(["test", "-e", path])).success:
+        raise RuntimeError(f"{name} already has {path}; os.cpu_count() cannot be set without replacing it")
+    await box.write_file(path, CPU_COUNT_SITECUSTOMIZE)
+
+
 @solver
 def algotune_setup() -> Solver:
     """Install the dev toolkit in /app/dev and point the task prompt at it."""
 
     async def setup(state: TaskState, generate: Generate) -> TaskState:
         await _install_toolkit(state)
+        for name in state.metadata.get("agent_boxes") or []:
+            await _install_cpu_count(name)
         if not remote(state):
             # before any solver has run, so only the checker's own processes are spared later
             state.metadata[CHECKER_PIDS] = await snapshot_container_pids(CHECKER)
@@ -288,7 +305,7 @@ class Checker:
             if seed >= DEV_SEED_CAP or seed + n >= DEV_SEED_CAP:
                 raise ToolError(f"seed + n must be below {DEV_SEED_CAP:,} (got seed {seed:,}, n {n}); use a smaller seed")
             try:
-                source = await sandbox().read_file(path, text=False)
+                source = await sandbox(agent_box(self.state, agent_id)).read_file(path, text=False)
             except (FileNotFoundError, IsADirectoryError):
                 raise ToolError(f"no such file: {path}")
             key = (agent_id, hashlib.sha256(source).hexdigest(), n, seed, reps, size)
