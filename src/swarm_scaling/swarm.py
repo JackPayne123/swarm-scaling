@@ -70,10 +70,12 @@ class Candidate:
 Finalize = Callable[[TaskState, list[Candidate]], Awaitable[None]]
 # Called once per sample with its state; returns each agent's extra tools by agent id.
 AgentTools = Callable[[TaskState], Callable[[str], list[Tool]]]
+# Called once per sample with its state; returns a lookup from a candidate file's bytes to its known dev score, if any.
+KnownScore = Callable[[TaskState], Callable[[bytes], str | None]]
 
 DEFAULT_SELECTION_RULE = "a rule fixed before the run"
 
-ELICITS = ("loose", "diversified")
+ELICITS = ("loose", "diversified", "diversified-v7")
 # v6 elicitation (PLAN.md decisions log, 2026-10-11): added to the loose protocol for the diversified arms, both
 # independent and team. No wording on precision, number formats or risk appetite.
 EXPLORATION_BLOCK = (
@@ -93,6 +95,34 @@ TEAM_SHARING = (
     "Share reproducible findings (what you measured and how), avoid duplicating a teammate's investigation, and "
     "build on useful artifacts while keeping alternatives alive."
 )
+# v7 elicitation (PLAN.md decisions log, 2026-10-14): the diversified prompt plus V7_PERSISTENCE in every arm, and for
+# teams V7_TEAM in place of TEAM_SHARING. It states that the run ends when the budget is used up, so it needs
+# end_on_budget.
+V7_PERSISTENCE = (
+    "You work autonomously on a fixed budget. Your run ends when the budget is used up; nobody will intervene or end "
+    "it earlier. Treat every working candidate as a baseline to beat, not a finish. Give a promising idea a fair test "
+    "with the smallest implementation that can assess it, measure it with dev_eval, and check that the measurement was "
+    "sound before you drop it; one local timing is not evidence. Spend your remaining budget on attempts to improve "
+    "your best candidate or on approaches you have not tried, not on waiting or on re-measuring unchanged code without "
+    "a specific reason."
+)
+V7_TEAM = (
+    "The team's result is the single fastest valid candidate anyone publishes, so several different fast candidates "
+    "are worth more than copies of one. Publish early and tell teammates what you measured and how, so they can use it "
+    "while they still have budget. When a teammate reports a strong result, do not stop: re-measure it yourself, then "
+    "improve it, combine it with your own work, or push a different approach. Say whether a negative finding means one "
+    "implementation failed or the whole approach did, and share it only after dev_eval confirms it."
+)
+# end_on_budget: what an agent is told after a turn with no tool call (react has no submit tool to end on).
+CONTINUE_TO_BUDGET = (
+    "Your run continues until your budget is used up. What is the next concrete improvement you will make? "
+    "Start it now with a tool call."
+)
+
+
+async def _continue_to_budget(state: AgentState) -> bool | str:
+    """react on_continue without a submit tool: keep going, and after a text-only turn say the run continues."""
+    return True if state.output.message.tool_calls else CONTINUE_TO_BUDGET
 
 
 def channel_rule(frac: float, budget: float, budget_type: str) -> str:
@@ -135,6 +165,10 @@ def swarm(
     elicit: str = "loose",
     priority_index: int | None = None,
     blind_frac: float = 0.0,
+    end_on_budget: bool = False,
+    publish_notices: bool = False,
+    known_score: KnownScore | None = None,
+    tool_fixes: bool = False,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -185,11 +219,21 @@ def swarm(
             after a gap of over 5 minutes since the sample's last call to that model, which teammates keep resetting).
         elicit: "loose" (the facts-only protocol) or "diversified": the protocol plus EXPLORATION_BLOCK and an initial
             method priority from PRIORITIES, and for teams TEAM_SHARING in place of "how you work together is up to you".
+            "diversified-v7": the diversified prompt plus V7_PERSISTENCE, and for teams V7_TEAM in place of
+            TEAM_SHARING; needs end_on_budget.
         priority_index: diversified single-agent runs: which of PRIORITIES this agent gets (independents are separate
             samples, so the plan row sets it). Team agent i gets PRIORITIES[i].
         blind_frac: two-phase teams: each agent works blind until it has spent this fraction of its own budget
             (messaging tools refused, nothing delivered, list_candidates shows only its own candidates; the prompt
             states the rule from the start), then its channel opens with a notice. 0 = channel open throughout.
+        end_on_budget: run to budget (v7): no submit tool, so an agent ends only by its budget or the time limit, both
+            normal ends (finalize runs as always); no submit gate (min_spend_frac must be 0) and no "agent_k has
+            finished" notices; after a turn with no tool call the agent is told the run continues (CONTINUE_TO_BUDGET).
+        publish_notices: teams: each publish adds a one-line notice (publisher, entry, path, dev score if known, note)
+            to every running teammate's next tool result; every notice and when it reached whom is logged.
+        known_score: per sample, a lookup from a published file's bytes to its known dev score, quoted in notices.
+        tool_fixes: v7 tool details: SendMessage's summary is optional, and check_budget shows dollars to 4 decimals
+            and the percent of the budget remaining.
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -211,13 +255,19 @@ def swarm(
     if priority_index is not None and n != 1:
         raise ValueError("priority_index sets one independent agent's priority; team agent i gets priority i")
     priority_indexes = [priority_index if priority_index is not None else i for i in range(n)]
-    if elicit == "diversified" and not all(0 <= k < len(PRIORITIES) for k in priority_indexes):
+    if elicit != "loose" and not all(0 <= k < len(PRIORITIES) for k in priority_indexes):
         raise ValueError(f"the diversified prompt has {len(PRIORITIES)} priorities; got indexes {priority_indexes}")
-    priorities = [PRIORITIES[k] if elicit == "diversified" else None for k in priority_indexes]
+    priorities = [PRIORITIES[k] if elicit != "loose" else None for k in priority_indexes]
     if not 0.0 <= blind_frac < 1.0:
         raise ValueError(f"blind_frac must be in [0, 1), got {blind_frac}")
     if blind_frac and not (messaging and n > 1):
         raise ValueError("blind_frac is for teams with messaging: it delays their team channel")
+    if end_on_budget and min_spend_frac:
+        raise ValueError("end_on_budget has no submit tool, so no submit gate: min_spend_frac must be 0")
+    if elicit == "diversified-v7" and not end_on_budget:
+        raise ValueError("the diversified-v7 prompt says the run ends when the budget is used up: it needs end_on_budget")
+    if publish_notices and not (messaging and n > 1):
+        raise ValueError("publish_notices tells teammates about each other's candidates: it is for teams with messaging")
     agent_ids = [f"agent_{i}" for i in range(n)]
     model_names = [m if isinstance(m, str) else m.name for m in models]
     messaging = messaging and n > 1
@@ -227,7 +277,11 @@ def swarm(
         if setup is not None:
             state = await setup(state, generate)
 
-        team = Team(agent_ids, model_names, workspace_root, reveal_model_family, tool_style, candidate_file)
+        team = Team(
+            agent_ids, model_names, workspace_root, reveal_model_family, tool_style, candidate_file,
+            publish_notices=publish_notices, known_score=known_score(state) if known_score is not None else None,
+            end_on_budget=end_on_budget,
+        )  # fmt: skip
         dirs = [team.registry_dir] + [a.private_dir for a in team.agents.values()]
         mk = await sandbox().exec(["mkdir", "-p", *dirs])
         if not mk.success:
@@ -264,9 +318,10 @@ def swarm(
 
             extra = tools_for(agent_id) if tools_for is not None else []
             tools = _agent_tools(
-                team, agent_id, messaging, registry, budget_tool(budget, budget_type, min_spend_frac), tool_style,
-                extra,
-            )
+                team, agent_id, messaging, registry,
+                budget_tool(budget, budget_type, min_spend_frac, end_on_budget, tool_fixes), tool_style, extra,
+                summary_optional=tool_fixes,
+            )  # fmt: skip
             if blind_frac:
                 rec.channel_open = False
 
@@ -287,7 +342,8 @@ def swarm(
                 name=agent_id,
                 tools=tools,
                 model=agent_model,
-                submit=AgentSubmit(tool=_submit_tool(submitted, refusal if min_spend_frac else None)),
+                submit=False if end_on_budget else AgentSubmit(tool=_submit_tool(submitted, refusal if min_spend_frac else None)),
+                on_continue=_continue_to_budget if end_on_budget else None,
                 compaction=CompactionEdit(),
             )
             protocol = protocol_prompt or default_protocol_prompt(
@@ -305,6 +361,9 @@ def swarm(
                 min_spend_frac=min_spend_frac,
                 priority=priorities[agent_ids.index(agent_id)],
                 blind_frac=blind_frac,
+                elicit=elicit,
+                end_on_budget=end_on_budget,
+                publish_notices=publish_notices,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -333,7 +392,7 @@ def swarm(
                 rec.tokens = {"metered": round(budget.usage, 6) if budget_type == "cost" else int(budget.usage)}
                 if usage is not None:
                     rec.tokens.update(usage.model_dump(exclude_none=True))
-                team.finish(agent_id, rec.end_reason, notify=messaging)
+                team.finish(agent_id, rec.end_reason, notify=messaging and not end_on_budget)
             return agent_state
 
         cpu = CpuMonitor(cpu_sample_interval) if baseline_pids is not None else None
@@ -379,6 +438,10 @@ def swarm(
             "anthropic_cache_ttl": anthropic_cache_ttl,
             "elicit": elicit,
             "blind_frac": blind_frac,
+            "end_on_budget": end_on_budget,
+            "publish_notices": publish_notices,
+            "tool_fixes": tool_fixes,
+            "registry_notices": [asdict(x) for x in team.notices],
             "tasks": team.task_events,
             "started_at": started,
             "ended_at": time.time(),
@@ -386,7 +449,7 @@ def swarm(
             "cpu": cpu.summary() if cpu is not None else {"skipped": "not a Docker container"},
             "candidates": [asdict(c) for c in candidates],
             "agents": {
-                aid: {**team.agents[aid].as_log(), "priority_index": k if elicit == "diversified" else None, "priority": p}
+                aid: {**team.agents[aid].as_log(), "priority_index": k if elicit != "loose" else None, "priority": p}
                 for aid, k, p in zip(agent_ids, priority_indexes, priorities)
             },
         }
@@ -446,8 +509,15 @@ class MeteredModel(Model):
         return output
 
 
-def budget_tool(limit, budget_type: str, min_spend_frac: float = 0.0) -> Tool:
-    """check_budget(): budget used and remaining under this agent's own limit (no effect on the budget)."""
+def budget_tool(
+    limit, budget_type: str, min_spend_frac: float = 0.0, end_on_budget: bool = False, precise: bool = False
+) -> Tool:
+    """check_budget(): budget used and remaining under this agent's own limit (no effect on the budget).
+
+    precise (v7 tool_fixes): dollars to 4 decimals and the percent of the budget remaining (v6 agents polled a display
+    that stayed at "$0.06").
+    """
+    decimals = 4 if precise else 2
 
     async def execute() -> str:
         """Show how much of your token budget you have used and how much remains.
@@ -457,10 +527,14 @@ def budget_tool(limit, budget_type: str, min_spend_frac: float = 0.0) -> Tool:
         used, cap = limit.usage, limit.limit
         unit = {"output": " output tokens", "cost": ""}.get(budget_type, " tokens")
         if cap is None:
-            return f"Used {budget_amount(used, budget_type)}{unit}; no limit."
-        left = budget_amount(max(cap - used, 0), budget_type)
-        return f"Used {budget_amount(used, budget_type)} of {budget_amount(cap, budget_type)}{unit}; {left} remaining."
+            return f"Used {budget_amount(used, budget_type, decimals)}{unit}; no limit."
+        left = budget_amount(max(cap - used, 0), budget_type, decimals)
+        pct = f" ({max(cap - used, 0) / cap:.1%} of your budget)" if precise else ""
+        return f"Used {budget_amount(used, budget_type, decimals)} of {budget_amount(cap, budget_type, decimals)}{unit}; {left} remaining{pct}."
 
+    if end_on_budget:
+        description = "Show how much of your budget you have used and how much remains. Your run ends when your budget is used up."
+        return ToolDef(execute, name="check_budget", description=description).as_tool()
     if min_spend_frac:
         description = (
             "Show how much of your budget you have used and how much remains. "
@@ -489,6 +563,7 @@ def _agent_tools(
     budget: Tool | None = None,
     tool_style: ToolStyle = "default",
     extra: list[Tool] | None = None,
+    summary_optional: bool = False,
 ) -> list[Tool]:
     tools: list[Tool] = [bash(timeout=300), python(timeout=300), update_plan()]
     if budget is not None:
@@ -500,8 +575,11 @@ def _agent_tools(
         return tools
     # every tool result is a delivery point; wait_for_message drains its own inbox
     tools = [with_delivery(t, team, agent_id) for t in tools]
-    send = send_message_cc_tool if tool_style == "claude_code" else send_message_tool
-    tools.append(with_delivery(send(team, agent_id), team, agent_id))
+    if tool_style == "claude_code":
+        send = send_message_cc_tool(team, agent_id, summary_optional)
+    else:
+        send = send_message_tool(team, agent_id)
+    tools.append(with_delivery(send, team, agent_id))
     tools.append(with_delivery(read_message_tool(team, agent_id), team, agent_id))
     tools.append(with_delivery(send_file_tool(team, agent_id), team, agent_id))
     if tool_style == "claude_code":
@@ -557,13 +635,17 @@ def default_protocol_prompt(
     min_spend_frac: float = 0.0,
     priority: str | None = None,
     blind_frac: float = 0.0,
+    elicit: str = "loose",
+    end_on_budget: bool = False,
+    publish_notices: bool = False,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
     # the size of the pool the final rule picks from does not depend on the arm; only
     # whether agents can see each other's candidates and messages does.
     # `priority` (the v6 diversified prompt) adds EXPLORATION_BLOCK and the agent's initial priority, and for teams
-    # TEAM_SHARING replaces the "up to you" line.
+    # TEAM_SHARING replaces the "up to you" line. elicit "diversified-v7" adds V7_PERSISTENCE, and teams get V7_TEAM
+    # instead of TEAM_SHARING.
     rec = team.agents[agent_id]
     others = [a.agent_id for a in team.others(agent_id)]
     lines = ["## Working protocol", ""]
@@ -612,6 +694,11 @@ def default_protocol_prompt(
             "- publish_candidate(path, note) saves a copy of a solution as a candidate; "
             "list_candidates() lists your saved candidates."
         )
+    if publish_notices and others:
+        lines.append(
+            "- When a teammate publishes a candidate, a one-line notice is added to your next tool result: who "
+            "published it, its registry path, its dev score if one is known, and its note."
+        )
     if blind_frac and others:
         lines.append(
             f"- {channel_rule(blind_frac, budget_tokens, budget_type)} Until then you work alone: the messaging tools "
@@ -626,9 +713,14 @@ def default_protocol_prompt(
         )
     if priority is not None:
         lines += ["", EXPLORATION_BLOCK, priority_text(priority)]
+    if elicit == "diversified-v7":
+        lines += ["", V7_PERSISTENCE]
     if others and (messaging or registry):
         lines.append("")
-        lines.append(TEAM_SHARING if priority is not None else "How you work together, if at all, is up to you.")
+        if elicit == "diversified-v7":
+            lines.append(V7_TEAM)
+        else:
+            lines.append(TEAM_SHARING if priority is not None else "How you work together, if at all, is up to you.")
     lines.append("")
     pool = "all published candidates" if others else "your saved candidates"
     if not registry:
@@ -662,7 +754,12 @@ def default_protocol_prompt(
             + (", messages you receive" if messaging else "")
             + " and your output)."
         )
-    if min_spend_frac:
+    if end_on_budget:
+        stopping = (
+            "There is no submit tool: your run ends when your budget is used up or when a wall-clock time limit is "
+            "reached."
+        )
+    elif min_spend_frac:
         stopping = (
             f"submit is refused until you have used {min_spend_frac:.0%} of your budget "
             f"({budget_amount(min_spend_frac * budget_tokens, budget_type)}). Your run ends when your budget is used "

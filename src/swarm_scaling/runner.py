@@ -25,7 +25,7 @@ from pathlib import Path
 
 from inspect_ai import eval
 
-from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize
+from swarm_scaling.algotune_devkit import SOLVER_PATH, algotune_agent_tools, algotune_finalize, known_dev_score
 from swarm_scaling.swarm import ELICITS, PRIORITIES, swarm
 from swarm_scaling.tasks import LOG_DIR, algotune_task
 
@@ -104,11 +104,21 @@ def main() -> None:
                    help="remote: every timed run goes to the scorer service at SCORER_URL (token SCORER_TOKEN)")
     p.add_argument("--cpus-per-agent", type=int, default=4,
                    help="agent box CPUs = this x agents in the sample; the checker has 8 more (the Docker host must have both)")
-    p.add_argument("--min-spend-frac", type=float, default=0.8,
-                   help="submit is refused until an agent has used this fraction of its own budget; 0 = stop freely")
+    p.add_argument("--min-spend-frac", type=float, default=None,
+                   help="submit is refused until an agent has used this fraction of its own budget; 0 = stop freely "
+                        "(default 0.8; 0 with --end-on-budget)")
+    p.add_argument("--end-on-budget", action="store_true",
+                   help="v7 run to budget: no submit tool and no submit gate; an agent ends when its budget is used "
+                        "up or at the time limit, and teammates get no finish notices")
     p.add_argument("--elicit", default="loose", choices=ELICITS,
                    help="diversified: the protocol plus the v6 exploration block and an initial method priority "
-                        "(team agent i gets priority i; teams also get the sharing instruction)")
+                        "(team agent i gets priority i; teams also get the sharing instruction); diversified-v7: "
+                        "that plus the v7 persistence block, and for teams the v7 team block (needs --end-on-budget)")
+    p.add_argument("--publish-notices", action=argparse.BooleanOptionalAction, default=None,
+                   help="team arm: tell every teammate about each publish in its next tool result "
+                        "(default: on for --arm team --elicit diversified-v7, else off)")
+    p.add_argument("--tool-fixes", action="store_true",
+                   help="v7: SendMessage's summary is optional; check_budget shows 4 decimals and the percent remaining")
     p.add_argument("--priority-index", type=int, default=None,
                    help=f"diversified independent runs: which initial priority (0-{len(PRIORITIES) - 1}) this agent gets")
     p.add_argument("--blind-frac", type=float, default=0.0,
@@ -128,12 +138,22 @@ def main() -> None:
             f"cost budget ${config['per_agent_tokens']:,.2f} per agent is above ${MAX_COST_PER_AGENT:.0f}; "
             "for a token budget pass --budget-type all"
         )
-    if args.priority_index is not None and (args.elicit != "diversified" or args.arm != "independent"):
-        p.error("--priority-index is for --arm independent --elicit diversified (team agent i gets priority i)")
-    if args.arm == "independent" and args.elicit == "diversified" and args.priority_index is None:
+    if args.priority_index is not None and (args.elicit == "loose" or args.arm != "independent"):
+        p.error("--priority-index is for --arm independent with a diversified --elicit (team agent i gets priority i)")
+    if args.arm == "independent" and args.elicit != "loose" and args.priority_index is None:
         p.error("a diversified independent run needs --priority-index")
     if args.blind_frac and args.arm != "team":
         p.error("--blind-frac delays a team's channel; it is for --arm team")
+    if args.end_on_budget and args.min_spend_frac:
+        p.error("--end-on-budget has no submit tool, so no submit gate: drop --min-spend-frac")
+    min_spend_frac = 0.0 if args.end_on_budget else (0.8 if args.min_spend_frac is None else args.min_spend_frac)
+    if args.elicit == "diversified-v7" and not args.end_on_budget:
+        p.error("--elicit diversified-v7 tells agents the run ends when the budget is used up: it needs --end-on-budget")
+    publish_notices = args.publish_notices
+    if publish_notices is None:
+        publish_notices = args.arm == "team" and args.elicit == "diversified-v7"
+    if publish_notices and args.arm != "team":
+        p.error("--publish-notices tells teammates about each publish: it is for --arm team")
     metadata = {
         "arm": args.arm,
         "n": args.n,
@@ -152,7 +172,10 @@ def main() -> None:
         "tool_style": args.tool_style,
         "reasoning_effort": args.reasoning_effort,
         "time_limit": args.time_limit,
-        "min_spend_frac": args.min_spend_frac,
+        "min_spend_frac": min_spend_frac,
+        "end_on_budget": args.end_on_budget,
+        "publish_notices": publish_notices,
+        "tool_fixes": args.tool_fixes,
         "parallel": args.parallel,
         "cpus_per_agent": args.cpus_per_agent,
         "checker": args.checker,  # cpusets and memory limits: algotune_task adds them to the log metadata
@@ -181,10 +204,14 @@ def main() -> None:
             agent_tools=algotune_agent_tools,
             final_path=SOLVER_PATH,
             candidate_file="solver.py",
-            min_spend_frac=args.min_spend_frac,
+            min_spend_frac=min_spend_frac,
             elicit=args.elicit,
             priority_index=args.priority_index,
             blind_frac=args.blind_frac,
+            end_on_budget=args.end_on_budget,
+            publish_notices=publish_notices,
+            known_score=known_dev_score,
+            tool_fixes=args.tool_fixes,
             reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
         ),
         model=config["models"][0],

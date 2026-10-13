@@ -772,3 +772,129 @@ def test_two_phase_team_works_blind_until_half_its_budget_then_the_channel_opens
     sample = resolve_sample_attachments(log.samples[0])
     prompts = [next(m.text for m in e.input if m.role == "user") for e in sample.events if e.event == "model"]
     assert all("The team channel opens once you have spent half your budget (500)." in p for p in prompts)
+
+
+def test_end_on_budget_has_no_submit_keeps_going_after_text_and_ends_cleanly_by_budget(tmp_path: Path) -> None:
+    # v7: v6 agents stopped, then padded to the 80% submit gate, and finish notices told teammates stopping was normal.
+    from swarm_scaling.swarm import CONTINUE_TO_BUDGET
+
+    seen_tools: set[str] = set()
+    inputs: list[list] = []
+
+    def agent_0(input, tools, tool_choice, config):
+        seen_tools.update(t.name for t in tools)
+        inputs.append(input)
+        if len(inputs) == 1:
+            out = ModelOutput.from_content(MODEL, "I think I am done.")  # text only: the run must continue
+            out.usage = used(100)
+            return out
+        return call("bash", usage=used(1000), command="true")  # past the budget: a clean end
+
+    finalized = []
+
+    async def finalize(state, candidates):
+        finalized.append([c.agent_id for c in candidates])
+
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[get_model(MODEL, custom_outputs=agent_0),
+                    scripted(call("bash", usage=used(10), command="sleep 1"), call("bash", usage=used(1000), command="true"))],
+            per_agent_tokens=1000, budget_type="all", workspace_root=str(tmp_path / "ws"), finalize=finalize,
+            end_on_budget=True,
+        ),
+    )  # fmt: skip
+    assert "submit" not in seen_tools
+    assert inputs[1][-1].role == "user" and inputs[1][-1].text == CONTINUE_TO_BUDGET
+    meta = swarm_meta(log)
+    assert [a["end_reason"] for a in meta["agents"].values()] == ["token", "token"]
+    assert all(a["error"] is None for a in meta["agents"].values()) and meta["end_on_budget"] is True
+    assert meta["agents"]["agent_1"]["messages_received"] == []  # no "agent_0 has finished" notice
+    assert finalized == [["agent_0", "agent_1"]]
+    prompt = inputs[0][-1].text
+    assert "There is no submit tool: your run ends when your budget is used up" in prompt
+    assert "submit is refused" not in prompt and "you do not have to use the whole budget" not in prompt
+    with pytest.raises(ValueError, match="min_spend_frac must be 0"):
+        swarm(models=[MODEL], per_agent_tokens=1000, end_on_budget=True, min_spend_frac=0.8)
+
+
+def test_v7_prompt_adds_the_persistence_block_to_every_arm_and_the_team_block_to_teams(tmp_path: Path) -> None:
+    from swarm_scaling.swarm import EXPLORATION_BLOCK, PRIORITIES, TEAM_SHARING, V7_PERSISTENCE, V7_TEAM
+
+    def capture(prompts: list[str]):
+        def script(input, tools, tool_choice, config):
+            prompts.append(input[-1].text)
+            return call("bash", usage=used(1000), command="true")
+
+        return get_model(MODEL, custom_outputs=script)
+
+    team: list[list[str]] = [[], []]
+    log = run_swarm(tmp_path / "team", swarm(models=[capture(p) for p in team], per_agent_tokens=1000, budget_type="all",
+                                             workspace_root=str(tmp_path / "ws_t"), elicit="diversified-v7",
+                                             end_on_budget=True))  # fmt: skip
+    indep: list[str] = []
+    run_swarm(tmp_path / "indep", swarm(models=[capture(indep)], per_agent_tokens=1000, budget_type="all", messaging=False,
+                                        workspace_root=str(tmp_path / "ws_i"), elicit="diversified-v7", priority_index=1,
+                                        end_on_budget=True))  # fmt: skip
+    for i, prompt in enumerate([team[0][0], team[1][0], indep[0]]):
+        assert EXPLORATION_BLOCK in prompt and V7_PERSISTENCE in prompt
+        assert f"Your initial priority is {PRIORITIES[1 if i == 2 else i]}." in prompt
+    assert all(V7_TEAM in p[0] and TEAM_SHARING not in p[0] for p in team)
+    assert V7_TEAM not in indep[0]
+    assert swarm_meta(log)["elicit"] == "diversified-v7"
+    with pytest.raises(ValueError, match="needs end_on_budget"):
+        swarm(models=[MODEL, MODEL], per_agent_tokens=1000, elicit="diversified-v7")
+
+
+def test_each_publish_reaches_every_running_teammate_as_a_one_line_notice_with_its_dev_score(tmp_path: Path) -> None:
+    # v6: the channel opened when an agent chose to write (mean spend 0.45, or never); the first publish came at 0.25-0.36.
+    ws = tmp_path / "ws"
+    solver = ws / "agents" / "agent_0" / "solver.py"
+    scores = {b"fast\n": "dev_eval 2.50x on n=20, seed 0"}
+    log = run_swarm(
+        tmp_path,
+        swarm(
+            models=[
+                scripted(call("bash", command=f"mkdir -p {solver.parent} && echo fast > {solver}"),
+                         call("publish_candidate", path=str(solver), note="numba kernel\nmeasured with dev_eval"),
+                         call("bash", command="sleep 1"), submit()),
+                scripted(call("bash", command="sleep 1"), submit()),  # its next tool result carries the notice
+                scripted(call("wait_for_message", timeout_s=30), submit()),  # woken by the notice
+            ],
+            per_agent_tokens=100_000, workspace_root=str(ws), candidate_file="solver.py", publish_notices=True,
+            known_score=lambda state: scores.get,
+        ),
+    )  # fmt: skip
+    line = (f"[registry] agent_0 published agent_0-0 at {ws}/registry/agent_0-0 (dev_eval 2.50x on n=20, seed 0). "
+            "Note: numba kernel measured with dev_eval")  # fmt: skip
+    assert line in str(tool_events(log, "bash")[1].result) or line in str(tool_events(log, "bash")[2].result)
+    assert str(tool_events(log, "wait_for_message")[0].result) == line
+    (notice,) = swarm_meta(log)["registry_notices"]
+    assert notice["entry"] == "agent_0-0" and notice["to"] == ["agent_1", "agent_2"]
+    assert set(notice["delivered"]) == {"agent_1", "agent_2"}
+    assert not any("[registry]" in str(e.result) for e in tool_events(log, "publish_candidate"))  # not to the publisher
+    from inspect_ai.log import resolve_sample_attachments
+
+    sample = resolve_sample_attachments(log.samples[0])
+    prompt = next(m.text for e in sample.events if e.event == "model" for m in e.input if m.role == "user")
+    assert "When a teammate publishes a candidate, a one-line notice is added to your next tool result" in prompt
+    with pytest.raises(ValueError, match="for teams with messaging"):
+        swarm(models=[MODEL], per_agent_tokens=1000, messaging=False, publish_notices=True)
+
+
+@pytest.mark.asyncio
+async def test_v7_tool_fixes_make_the_summary_optional_and_show_budget_to_four_decimals() -> None:
+    # v6: 11-16 SendMessage calls failed on a missing summary; check_budget's "$0.06" looked stuck to padding agents.
+    from types import SimpleNamespace
+
+    from swarm_scaling.swarm import budget_tool
+    from swarm_scaling.team import Team, send_message_cc_tool
+
+    limit = SimpleNamespace(usage=0.01234, limit=0.1)
+    assert await budget_tool(limit, "cost")() == "Used $0.01 of $0.10; $0.09 remaining."
+    assert await budget_tool(limit, "cost", precise=True)() == "Used $0.0123 of $0.1000; $0.0877 remaining (87.7% of your budget)."
+    team = Team(["agent_0", "agent_1"], ["m", "m"], "/app", tool_style="claude_code")
+    assert ToolDef(send_message_cc_tool(team, "agent_0")).parameters.required == ["to", "message", "summary"]
+    optional = send_message_cc_tool(team, "agent_0", summary_optional=True)
+    assert ToolDef(optional).parameters.required == ["to", "message"]
+    assert await optional(to="agent_1", message="hi") == "Delivered to agent_1."

@@ -120,3 +120,16 @@ def test_a_priority_index_is_refused_outside_diversified_independent_runs(monkey
         runner.main()
     assert "--blind-frac" in capsys.readouterr().err
     assert not (tmp_path / "x").exists()
+
+
+def test_the_v7_prompt_is_refused_without_run_to_budget_and_run_to_budget_without_a_gate(monkeypatch, tmp_path, capsys):
+    # The v7 prompt says the run ends when the budget is used up, which is only true without submit.
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    base = ["runner", "--models", GLM, "--budget", "1", "--name", "x", "--arm", "team", "--n", "2"]
+    for extra, why in ((["--elicit", "diversified-v7"], "needs --end-on-budget"),
+                       (["--end-on-budget", "--min-spend-frac", "0.8"], "drop --min-spend-frac")):  # fmt: skip
+        monkeypatch.setattr(sys, "argv", base + extra)
+        with pytest.raises(SystemExit):
+            runner.main()
+        assert why in capsys.readouterr().err
+    assert not (tmp_path / "x").exists()

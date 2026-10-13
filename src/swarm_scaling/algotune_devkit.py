@@ -296,7 +296,8 @@ class Checker:
                 i, report = self.done[key]
                 same = {k: self.calls[i][k] for k in ("valid", "speedup", "error", "first_call_ratio", "reference_inflation")}
                 self.calls.append({"agent_id": agent_id, "path": path, "started_at": time.time(), "queue_wait_s": 0.0,
-                                   "run_s": 0.0, **same, "n": n, "seed": seed, "cached": True, "same_as": i})  # fmt: skip
+                                   "run_s": 0.0, **same, "n": n, "seed": seed, "cached": True, "same_as": i,
+                                   "sha256": key[1]})  # fmt: skip
                 return (
                     "[dev_eval] same file contents and arguments as an earlier call of yours: this is its recorded "
                     f"result; no new evaluation was run.\n{report}"
@@ -320,6 +321,7 @@ class Checker:
                 "n": n,
                 "seed": seed,
                 "cached": False,
+                "sha256": key[1],
             })  # fmt: skip
             if detail is not None:  # a completed evaluation; errors (e.g. a timeout) may be retried
                 self.done[key] = (len(self.calls) - 1, report)
@@ -347,6 +349,23 @@ def queue_telemetry(calls: list[dict], agents: dict[str, dict], time_limit: floa
             "time_limit_s": time_limit,
         }
     return out
+
+
+def known_dev_score(state: TaskState) -> Callable[[bytes], str | None]:
+    """swarm(known_score=...): a file's latest completed dev_eval by any agent of this sample, as a publish notice
+    quotes it ("dev_eval 3.21x on n=20, seed 0"), or None if that exact file was never evaluated."""
+
+    def lookup(source: bytes) -> str | None:
+        digest = hashlib.sha256(source).hexdigest()
+        done = [c for c in state.metadata.get("checker", {}).get("calls", [])
+                if c.get("sha256") == digest and not c["cached"] and c["valid"] is not None]  # fmt: skip
+        if not done:
+            return None
+        c = done[-1]
+        result = "no valid instance timed" if c["speedup"] is None else f"{c['speedup']:.2f}x"
+        return f"dev_eval {result}{'' if c['valid'] else ', invalid'} on n={c['n']}, seed {c['seed']}"
+
+    return lookup
 
 
 def algotune_agent_tools(state: TaskState) -> Callable[[str], list[Tool]]:

@@ -13,7 +13,7 @@ import shlex
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import anyio
 from inspect_ai.model import ContentText
@@ -41,6 +41,9 @@ WAIT_MAX_S = 600
 
 # Why an agent ended (its end_reason: "submitted" or the limit type), as its teammates are told.
 FINISH_REASONS = {"submitted": "submitted", "token": "budget used", "cost": "budget used", "time": "time limit"}
+
+# Publish notices (v7): the note is cut to this many characters so a notice stays one line.
+NOTICE_NOTE_CHARS = 300
 
 
 @dataclass
@@ -96,12 +99,36 @@ class RegistryEntry:
 
 
 @dataclass
+class PublishNotice:
+    """One publish, as the publisher's teammates are told it (swarm publish_notices). `delivered` maps each teammate
+    to when the notice reached its tool result, so adoption chains can be traced from the log."""
+
+    id: str
+    entry: str
+    publisher: str
+    path: str
+    dev_score: str | None
+    note: str
+    at: float
+    to: list[str] = field(default_factory=list)
+    delivered: dict[str, float] = field(default_factory=dict)
+
+    def render(self) -> str:
+        note = " ".join(self.note.split())
+        if len(note) > NOTICE_NOTE_CHARS:
+            note = note[:NOTICE_NOTE_CHARS] + "..."
+        score = self.dev_score or "no dev score known"
+        return f"[registry] {self.publisher} published {self.entry} at {self.path} ({score}). Note: {note}"
+
+
+@dataclass
 class AgentRecord:
     agent_id: str
     model: str
     private_dir: str
     status: AgentStatus = "running"
     inbox: list[Message] = field(default_factory=list)
+    notices: list[PublishNotice] = field(default_factory=list)  # not yet delivered
     sent: list[dict[str, Any]] = field(default_factory=list)
     received: list[dict[str, Any]] = field(default_factory=list)
     dropped: list[dict[str, Any]] = field(default_factory=list)
@@ -165,6 +192,9 @@ class Team:
         reveal_model_family: bool = False,
         tool_style: ToolStyle = "default",
         candidate_file: str | None = None,
+        publish_notices: bool = False,
+        known_score: Callable[[bytes], str | None] | None = None,
+        end_on_budget: bool = False,
     ) -> None:
         self.root = workspace_root.rstrip("/")
         self.registry_dir = f"{self.root}/registry"
@@ -172,6 +202,10 @@ class Team:
         self.tool_style = tool_style
         # a published single file is saved under this name (AlgoTune: solver.py, the name finalize reads)
         self.candidate_file = candidate_file
+        self.publish_notices = publish_notices
+        self.known_score = known_score
+        self.end_on_budget = end_on_budget  # agents cannot finish early, so nothing tells them to
+        self.notices: list[PublishNotice] = []
         self.agents: dict[str, AgentRecord] = {
             aid: AgentRecord(aid, name, f"{self.root}/agents/{aid}")
             for aid, name in zip(agent_ids, model_names, strict=True)
@@ -279,6 +313,22 @@ class Team:
             )
         return msgs
 
+    def drain_notices(self, agent_id: str) -> list[PublishNotice]:
+        rec = self.agents[agent_id]
+        if not rec.channel_open:  # held until the agent's channel opens, as messages are
+            return []
+        notices, rec.notices = rec.notices, []
+        now = time.time()
+        for n in notices:
+            n.delivered[agent_id] = now
+        return notices
+
+    def pending_block(self, agent_id: str) -> str | None:
+        """Everything waiting for the agent, as appended to its next tool result: publish notices, then messages."""
+        notices, msgs = self.drain_notices(agent_id), self.drain(agent_id)
+        parts = [n.render() for n in notices] + ([self.render(msgs)] if msgs else [])
+        return "\n".join(parts) if parts else None
+
     def render(self, msgs: list[Message]) -> str:
         """Previews of each message, and headers only once the delivery cap is reached."""
         parts = [f"[team messages: {len(msgs)} new]"]
@@ -312,12 +362,13 @@ class Team:
                 # capture the event before checking, so a notify between the
                 # check and the wait is not lost
                 ev = self._change
-                if rec.inbox:
-                    return self.render(self.drain(agent_id))
+                if rec.inbox or rec.notices:
+                    return self.pending_block(agent_id) or ""
                 if all(o.status != "running" for o in self.others(agent_id)):
                     return (
                         "No messages: every teammate has finished or is also waiting, "
-                        "so no message can arrive right now. Continue working or finish."
+                        "so no message can arrive right now. "
+                        + ("Continue working." if self.end_on_budget else "Continue working or finish.")
                     )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -468,7 +519,26 @@ class Team:
             and path.rstrip("/").rsplit("/", 1)[-1] != self.candidate_file
         )
         saved_as = f", saved as {dest}/{self.candidate_file}" if renamed else ""
+        if self.publish_notices:
+            await self._notify_publish(entry)
         return f"Published {entry_id} at {dest} (read-only copy of {path}{saved_as})."
+
+    async def _notify_publish(self, entry: RegistryEntry) -> None:
+        """Queue a publish notice for every teammate still running; quote the candidate file's known dev score."""
+        score = None
+        if self.known_score is not None and self.candidate_file is not None:
+            try:
+                score = self.known_score(await sandbox().read_file(f"{entry.path}/{self.candidate_file}", text=False))
+            except FileNotFoundError:  # a published folder without the candidate file
+                pass
+        notice = PublishNotice(f"n{len(self.notices)}", entry.id, entry.agent_id, entry.path, score, entry.note,
+                               entry.published_at)  # fmt: skip
+        self.notices.append(notice)
+        for rec in self.others(entry.agent_id):
+            if rec.status != "finished":
+                notice.to.append(rec.agent_id)
+                rec.notices.append(notice)
+        self._notify()
 
     def visible_entries(self, agent_id: str) -> list[RegistryEntry]:
         """Every entry once the agent's channel is open; before that, only its own."""
@@ -514,7 +584,9 @@ def send_message_tool(team: Team, agent_id: str) -> Tool:
     return ToolDef(execute, name="send_message").as_tool()
 
 
-def send_message_cc_tool(team: Team, agent_id: str) -> Tool:
+def send_message_cc_tool(team: Team, agent_id: str, summary_optional: bool = False) -> Tool:
+    """Claude Code's SendMessage. summary_optional (v7 tool_fixes): v6 agents failed 11-16 calls on a missing summary."""
+
     async def execute(to: str, message: str, summary: str) -> str:
         """Send a message to a teammate. It is delivered with the recipient's next tool result.
 
@@ -525,7 +597,17 @@ def send_message_cc_tool(team: Team, agent_id: str) -> Tool:
         """
         return team.send(agent_id, to, message, summary=summary)
 
-    return ToolDef(execute, name="SendMessage").as_tool()
+    async def execute_optional(to: str, message: str, summary: str | None = None) -> str:
+        """Send a message to a teammate. It is delivered with the recipient's next tool result.
+
+        Args:
+            to: Recipient teammate id (for example "agent_1"), or "all" for every teammate.
+            message: The message. Recipients see up to 2,000 characters inline and can read the rest with read_message.
+            summary: Optional 5-10 word preview of the message, shown to the recipient with it.
+        """
+        return team.send(agent_id, to, message, summary=summary)
+
+    return ToolDef(execute_optional if summary_optional else execute, name="SendMessage").as_tool()
 
 
 def task_create_tool(team: Team, agent_id: str) -> Tool:
@@ -663,10 +745,10 @@ def with_delivery(tool: Tool, team: Team, agent_id: str) -> Tool:
         team.note_registry_reads(agent_id, kwargs)
         # a ToolError leaves the inbox intact for the next successful result
         result = await inner(**kwargs)
-        pending = team.drain(agent_id)
-        if not pending:
+        pending = team.pending_block(agent_id)
+        if pending is None:
             return result
-        return _append_messages(result, team.render(pending))
+        return _append_messages(result, pending)
 
     return _rewrap(tdef, execute)
 
@@ -711,15 +793,15 @@ def with_channel_gate(tool: Tool, team: Team, agent_id: str, ready: Any, closed_
             return result
         notice = ("[team] The team channel is now open: you can use the messaging tools, list_candidates shows "
                   "every published candidate, and you may read the registry and teammates' working directories.")  # fmt: skip
-        pending = team.drain(agent_id)
-        return _append_messages(result, notice + (f"\n\n{team.render(pending)}" if pending else ""))
+        pending = team.pending_block(agent_id)
+        return _append_messages(result, notice + (f"\n\n{pending}" if pending else ""))
 
     return _rewrap(tdef, execute)
 
 
-def budget_amount(value: float, budget_type: str) -> str:
+def budget_amount(value: float, budget_type: str, decimals: int = 2) -> str:
     """A budget quantity as agents see it: dollars for a cost budget ("$1.25"), else a token count ("1,250")."""
-    return f"${value:,.2f}" if budget_type == "cost" else f"{int(value):,}"
+    return f"${value:,.{decimals}f}" if budget_type == "cost" else f"{int(value):,}"
 
 
 def with_budget_notices(
