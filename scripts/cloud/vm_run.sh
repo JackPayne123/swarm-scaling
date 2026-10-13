@@ -15,9 +15,10 @@ UPLOAD=${SUDO_USER:+/home/$SUDO_USER}/swarm-upload
 
 if [ "$1" = start ]; then
   mkdir -p "$STATE" && chmod 700 "$STATE"
-  if [ -e "$UPLOAD/seed_offset" ]; then  # absent for --checker remote runs: only the scorer holds it
-    install -m 600 "$UPLOAD/seed_offset" "$REPO/data/.algotune_seed_offset" || exit 1
-  fi
+  for f in "$UPLOAD"/.algotune_seed_offset*; do  # absent for --checker remote runs: only the scorer holds it
+    [ -e "$f" ] || continue
+    install -m 600 "$f" "$REPO/data/$(basename "$f")" || exit 1  # the experiment's file (tasks.seed_offset_file)
+  done
   install -m 600 "$UPLOAD/env" "$STATE/env" || exit 1
   cp "$0" "$STATE/vm_run.sh"
   rm -rf "$UPLOAD"
@@ -61,7 +62,7 @@ run() {
 echo "[vm_run] $(date -u +%FT%TZ) start $name"
 run
 rc=$?
-rm -f data/.algotune_seed_offset
+rm -f data/.algotune_seed_offset data/.algotune_seed_offset.*
 rm -rf data/.algotune_verifier
 echo "[vm_run] $(date -u +%FT%TZ) exit $rc"
 if [ -n "$log_tgz" ]; then  # before exit_code, which tells the driver to fetch them; vm-exit-code last, as the done marker

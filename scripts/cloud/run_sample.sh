@@ -42,19 +42,23 @@ args=("$@")
 cloud=$(cloud_of "$mt")
 max_hours=${MAX_RUN_HOURS:-18}
 poll_s=${POLL_S:-60}
-seed_file=${SEED_OFFSET_FILE:-data/.algotune_seed_offset}
 logdir=logs/$name
 status=$logdir/cloud-status
 
-remote=0 models=
+remote=0 models= experiment=v6
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
     --models) models=${args[i + 1]:-} ;;
     --models=*) models=${args[i]#--models=} ;;
     --checker) [ "${args[i + 1]:-}" = remote ] && remote=1 ;;
     --checker=remote) remote=1 ;;
+    --experiment) experiment=${args[i + 1]:-} ;;
+    --experiment=*) experiment=${args[i]#--experiment=} ;;
   esac
 done
+offset_name=.algotune_seed_offset
+[ "$experiment" = v6 ] || offset_name=.algotune_seed_offset.$experiment  # tasks.seed_offset_file
+seed_file=${SEED_OFFSET_FILE:-data/$offset_name}
 [ -n "${TASK_IMAGE_REF:-}" ] || { echo "no scripts/cloud/task-image.env (build_image.sh publish)" >&2; exit 2; }
 if [ "$remote" = 0 ]; then
   [ -r "$seed_file" ] || { echo "no seed offset at $seed_file (set SEED_OFFSET_FILE)" >&2; exit 2; }
@@ -64,7 +68,10 @@ else
     { echo "the scorer runs task image '$(scorer_field task_image 2>/dev/null)', not $TASK_IMAGE_REF" >&2; exit 2; }
   scorer_url=$(scorer_field url) && scorer_token=$(scorer_field token) || { echo "--checker remote but no scorer is up (scorer.sh up)" >&2; exit 2; }
   curl -sf --max-time 20 -H "Authorization: Bearer $scorer_token" "$scorer_url/health" >/dev/null ||
+    { operator_ip_refresh && curl -sf --max-time 20 -H "Authorization: Bearer $scorer_token" "$scorer_url/health" >/dev/null; } ||
     { echo "scorer at $scorer_url does not answer /health" >&2; exit 2; }
+  [ "$(scorer_field experiment 2>/dev/null || echo v6)" = "$experiment" ] ||
+    { echo "this row is experiment $experiment; the scorer serves $(scorer_field experiment 2>/dev/null || echo v6)" >&2; exit 2; }
 fi
 if [ -e "$status" ]; then
   echo "$status exists: run name $name was used before" >&2
@@ -144,8 +151,8 @@ chmod 700 "$tmp"
 ) > "$tmp/env" || exit 2
 uploads=("$tmp/env")
 if [ "$remote" = 0 ]; then
-  cp "$seed_file" "$tmp/seed_offset"
-  uploads+=("$tmp/seed_offset")
+  cp "$seed_file" "$tmp/$offset_name"  # vm_run.sh installs it under this name in data/
+  uploads+=("$tmp/$offset_name")
 fi
 
 vm_create "$cloud" "$(vm_name "$name")" "$mt" "$max_hours" agent runner
@@ -162,7 +169,7 @@ note host "cpu=$(vm_cpu_model) task_image=$TASK_IMAGE_REF"
 vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" &&
   vm_put "${uploads[@]}" scripts/cloud/vm_run.sh swarm-upload/ &&
   vm_exec "sudo bash swarm-upload/vm_run.sh start $(printf '%q ' "$name" "$ref" "$script" "${args[@]}")" || exit 1
-rm -f "$tmp/env" "$tmp/seed_offset"
+rm -f "$tmp/env" "$tmp/$offset_name"
 note running "ref=$ref args=${args[*]}"
 
 # Poll for the exit code. Tolerates SSH drops; gives up when the VM is gone (e.g. hit its max run duration).

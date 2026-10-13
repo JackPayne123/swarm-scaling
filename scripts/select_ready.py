@@ -28,6 +28,7 @@ def main() -> None:
     p.add_argument("plan")
     p.add_argument("--scorer", required=True)
     p.add_argument("--parallel", type=int, default=3)
+    p.add_argument("--validity-n", type=int, default=0, help="select_portfolio.py --validity-n (v7: 1000)")
     args = p.parse_args()
     groups: dict[str, list[str]] = {}
     for r in fleet.parse_plan(Path(args.plan).read_text()):
@@ -45,7 +46,8 @@ def main() -> None:
                 print(f"[select_ready] {time.strftime('%H:%M:%S')} selecting {g}", flush=True)
                 running[g] = subprocess.Popen(
                     [sys.executable, "-u", "scripts/select_portfolio.py", *[f"logs/{n}" for n in names],
-                     "--scorer", args.scorer, "--concurrency", str(SELECT_CONCURRENCY)], cwd=ROOT)  # fmt: skip
+                     "--scorer", args.scorer, "--concurrency", str(SELECT_CONCURRENCY), "--validity-n", str(args.validity_n)],
+                    cwd=ROOT)  # fmt: skip
         unclaimed = [g for g, ns in groups.items() if not claim_path([n for n in ns if (ROOT / "logs" / n).is_dir()]).exists()]
         if not unclaimed and not running:
             print(f"[select_ready] {time.strftime('%H:%M:%S')} every group is claimed; done", flush=True)

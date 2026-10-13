@@ -2,7 +2,10 @@
 # The remote scorer VM: one AWS instance running scripts/scorer_service.sh (branch remote-scorer), holding the
 # seed offset; agent VMs reach it on SCORER_PORT with a bearer token (see scorer-api.md).
 # Usage:
-#   scorer.sh up --ref <git-ref> [--machine <AWS_FAMILY>.8xlarge: c7a in us-east-1, m7a in Sydney] [--hours 30] [-- <scorer_service.sh args, default --slots 2>]
+#   scorer.sh up --ref <git-ref> [--machine <AWS_FAMILY>.8xlarge: c7a in us-east-1, m7a in Sydney] [--hours 30] [--experiment v6]
+#                [-- <scorer_service.sh args, default --slots 2>]
+#     --experiment picks whose secret offset the scorer holds (data/.algotune_seed_offset for v6,
+#     data/.algotune_seed_offset.<experiment> after; tasks.seed_offset_file) and is recorded in the state and /health.
 #     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
 #     checks out <git-ref>, holds /dev/cpu_dma_latency at 0 (hold_cpu_dma_latency.py, log cpu_dma_latency.log),
 #     starts the service detached, opens the port to this machine only, and waits for
@@ -11,10 +14,12 @@
 #     Slots: each takes 8 CPUs from --first-cpu (default 0) and the service needs 8 more, so e.g.
 #     `--machine c7a.16xlarge -- --slots 4`. `fleet.py scorer up --plan <plan.tsv> --ref <ref>` picks both from a plan.
 #   scorer.sh status      state, instance state and /health
-#   scorer.sh down        copies the job log, queue samples (queue.jsonl), service and latency logs to logs/_scorer/<instance>/,
-#                         terminates the VM (and any other instance tagged role=scorer), closes every rule on the scorer
-#                         port, drops the state
-# Env: SEED_OFFSET_FILE (default data/.algotune_seed_offset).
+#   scorer.sh pull        copies the job log, queue samples (queue.jsonl), service and latency logs to logs/_scorer/<instance>/
+#                         (the drivers run it every 10 min, so a lost connection at teardown loses at most that much)
+#   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6)
+#   scorer.sh down        pulls the logs (retrying, as allow-me after each failure), terminates the VM (and any other
+#                         instance tagged role=scorer), closes every rule on the scorer port, drops the state
+# Env: SEED_OFFSET_FILE (default: the experiment's file).
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/cloud/common.sh
@@ -29,17 +34,21 @@ load_state() {
 }
 
 up() {
-  local ref= mt=$AWS_FAMILY.8xlarge hours=30 service_args=(--slots 2) seed_file=${SEED_OFFSET_FILE:-data/.algotune_seed_offset}
+  local ref= mt=$AWS_FAMILY.8xlarge hours=30 service_args=(--slots 2) experiment=v6 seed_file offset_name
   while [ $# -gt 0 ]; do
     case $1 in
       --ref) ref=$2; shift 2 ;;
       --machine) mt=$2; shift 2 ;;
       --hours) hours=$2; shift 2 ;;
+      --experiment) experiment=$2; shift 2 ;;
       --) shift; service_args=("$@"); break ;;
       *) echo "unknown argument $1" >&2; exit 2 ;;
     esac
   done
   [ -n "$ref" ] || { echo "--ref is required" >&2; exit 2; }
+  offset_name=.algotune_seed_offset
+  [ "$experiment" = v6 ] || offset_name=.algotune_seed_offset.$experiment  # tasks.seed_offset_file
+  seed_file=${SEED_OFFSET_FILE:-data/$offset_name}
   [ -r "$seed_file" ] || { echo "no seed offset at $seed_file (set SEED_OFFSET_FILE)" >&2; exit 2; }
   if load_state && [ "$(vm_state)" != gone ]; then
     echo "a scorer is already up ($VM_ID); scorer.sh down first" >&2
@@ -64,10 +73,12 @@ up() {
   cpu=$(vm_cpu_model)
   vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" && vm_put "$tmp/env" "$tmp/seed_offset" swarm-upload/ || exit 1
   # shellcheck disable=SC2016
-  vm_exec "sudo bash -s -- $(printf '%q ' "$REMOTE_REPO" "$REMOTE_STATE" "$ref" "${service_args[@]}")" <<'EOF' || exit 1
+  # v6 refs predate the service's --experiment, so it is passed only for later experiments
+  [ "$experiment" = v6 ] || service_args=(--experiment "$experiment" "${service_args[@]}")
+  vm_exec "sudo bash -s -- $(printf '%q ' "$REMOTE_REPO" "$REMOTE_STATE" "$ref" "$offset_name" "${service_args[@]}")" <<'EOF' || exit 1
 set -euo pipefail
-repo=$1 state=$2 ref=$3
-shift 3
+repo=$1 state=$2 ref=$3 offset_name=$4
+shift 4
 up=/home/$SUDO_USER/swarm-upload
 mkdir -p "$state" && chmod 700 "$state"
 cd "$repo"
@@ -81,7 +92,7 @@ uv sync --frozen --quiet
 start=$(date +%s)
 find /var/lib/containerd /var/lib/docker /opt /root/.cache /root/.local -type f -print0 2>/dev/null | xargs -0 -P 16 cat > /dev/null 2>&1 || true
 echo "volume warm-up $(( $(date +%s) - start )) s"
-install -m 600 "$up/seed_offset" data/.algotune_seed_offset
+install -m 600 "$up/seed_offset" "data/$offset_name"
 # Hold the CPU latency limit at 0 for the VM's life (no C2 exits with 800 us latency; scoring investigation).
 setsid nohup python3 scripts/cloud/hold_cpu_dma_latency.py > "$state/cpu_dma_latency.log" 2>&1 < /dev/null &
 sleep 1
@@ -98,7 +109,7 @@ EOF
     mkdir -p "$(dirname "$SCORER_STATE")"
     python3 -c 'import json, sys; json.dump(dict(zip(sys.argv[2::2], sys.argv[3::2])), open(sys.argv[1], "w"), indent=2)' "$SCORER_STATE" \
       cloud aws instance_id "$VM_ID" zone "$ZONE" ip "$VM_IP" url "http://$VM_IP:$SCORER_PORT" token "$token" \
-      ref "$ref" machine "$mt" cpu "$cpu" task_image "$TASK_IMAGE_REF" started "$(date -u +%FT%TZ)"
+      ref "$ref" machine "$mt" cpu "$cpu" task_image "$TASK_IMAGE_REF" experiment "$experiment" started "$(date -u +%FT%TZ)"
   )
   local i
   for i in $(seq 1 60); do
@@ -126,14 +137,31 @@ status() {
     Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].[InstanceId,InstanceType,State.Name]'
 }
 
+pull() {  # copies the scorer's logs into logs/_scorer/<instance>/ (whole files: jobs.jsonl only grows)
+  local dir
+  load_state && [ "$(vm_state)" != gone ] || { echo "no running scorer to pull from" >&2; return 1; }
+  dir=logs/_scorer/$VM_ID
+  mkdir -p "$dir"
+  vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_REPO#/}/data/.scorer/queue.jsonl ${REMOTE_STATE#/}/scorer.log ${REMOTE_STATE#/}/cpu_dma_latency.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
+    vm_get /tmp/scorer-logs.tgz "$dir/" && tar -C "$dir" -xzf "$dir/scorer-logs.tgz" && rm "$dir/scorer-logs.tgz" &&
+    echo "scorer logs in $dir ($(wc -l < "$dir/jobs.jsonl" 2>/dev/null || echo 0) jobs)"
+}
+
+allow_me() {
+  local ip
+  ip=$(my_ip) || { echo "could not read this machine's public IP" >&2; return 1; }
+  aws_ensure_access >/dev/null && scorer_allow "$ip" operator && echo "scorer port and SSH open to $ip"
+}
+
 down() {
-  local dir ids sg rules
+  local ids sg rules i
   if load_state && [ "$(vm_state)" != gone ]; then
-    dir=logs/_scorer/$VM_ID
-    mkdir -p "$dir"
-    vm_exec "sudo tar -C / -czf /tmp/scorer-logs.tgz --ignore-failed-read --transform 's,.*/,,' ${REMOTE_REPO#/}/data/.scorer/jobs.jsonl ${REMOTE_REPO#/}/data/.scorer/queue.jsonl ${REMOTE_STATE#/}/scorer.log ${REMOTE_STATE#/}/cpu_dma_latency.log; sudo chmod 644 /tmp/scorer-logs.tgz" &&
-      vm_get /tmp/scorer-logs.tgz "$dir/" && tar -C "$dir" -xzf "$dir/scorer-logs.tgz" && rm "$dir/scorer-logs.tgz" &&
-      echo "scorer logs in $dir" || echo "could not copy the scorer logs" >&2
+    for i in 1 2 3 4 5; do  # v6 lost the main scorer's job log when the copy failed once at teardown
+      pull && break
+      echo "could not copy the scorer logs (attempt $i of 5)" >&2
+      allow_me
+      [ "$i" -lt 5 ] && sleep 30
+    done
   fi
   ids=$(aw ec2 describe-instances --filters "Name=tag:tool,Values=$TOOL_LABEL" Name=tag:role,Values=scorer \
     Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].InstanceId')
@@ -153,6 +181,8 @@ shift || true
 case $cmd in
   up) up "$@" ;;
   status) status ;;
+  pull) pull ;;
+  allow-me) allow_me ;;
   down) down ;;
-  *) sed -n '2,17p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,24p' "$0" >&2; exit 2 ;;
 esac

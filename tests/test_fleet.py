@@ -191,3 +191,29 @@ def test_schedule_spaces_vm_starts_so_a_wave_does_not_hit_awss_volume_and_reques
     rows = fleet.parse_plan("a aws auto\nb aws auto\nc aws auto\n")
     fleet.schedule(rows, {"gcp": 0, "aws": 300}, lambda row, machine: starts.append(time.monotonic()) or 0, start_gap=0.2)
     assert len(starts) == 3 and all(b - a >= 0.19 for a, b in zip(starts, starts[1:]))
+
+
+def test_group_start_starts_a_groups_team_with_its_independents_instead_of_after_them():
+    """v6: 4-vCPU independents backfilled freed quota and a group's 16-vCPU team waited 83-166 min in 10 of 14 groups."""
+    import threading
+    import time
+
+    plan = "".join(f"v7-qp-r{k}-team aws auto --n 4 --cpus-per-agent 2\n"
+                   + "".join(f"v7-qp-r{k}-div-i{j} aws auto --cpus-per-agent 2\n" for j in range(4)) for k in (1, 2))  # fmt: skip
+    rows = fleet.parse_plan(plan)
+    lock, started = threading.Lock(), []
+
+    def launch(row, machine):
+        with lock:
+            started.append(row.name)
+        time.sleep(0.1 if "team" in row.name else 0.02)
+        return 0
+
+    # 40 free vCPUs: one group (16 + 4 x 4 = 32) at a time. Row by row, group 2's independents would fill the 8 left.
+    fleet.schedule(rows, {"gcp": 0, "aws": 40}, launch, group=fleet.group_of)
+    assert started == [r.name for r in rows]  # group 2 started only once group 1 ended, all at once, team first
+    assert fleet.group_of("v7-qp-r2-div-i3") == "v7-qp-r2"
+    # without group-start, group 2's independents start while group 1's team still runs and its team waits
+    started.clear()
+    fleet.schedule(rows, {"gcp": 0, "aws": 40}, launch)
+    assert started[5:7] == ["v7-qp-r2-div-i0", "v7-qp-r2-div-i1"]

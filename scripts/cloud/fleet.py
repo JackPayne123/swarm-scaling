@@ -2,7 +2,7 @@
 
 Usage:
   uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--max-agents N]
-                                         [--stop-file <path>] [--dry-run]
+                                         [--stop-file <path>] [--group-start] [--dry-run]
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
   uv run python scripts/cloud/fleet.py collect <plan.tsv>
@@ -19,7 +19,9 @@ Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when eve
 in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
 instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
-empty cloud fails at once. --max-agents caps the agents (sum of --n) running at once, e.g. to keep a ratio of agents
+empty cloud fails at once. With --group-start, a task-repeat group (rows `<prefix>-<task>-r<k>-...`, `group_of`) starts
+only when all its rows fit at once, and then all together in file order, so a team row never waits hours behind its
+group's independents (v6: teams started 83-166 min late in 10 of 14 groups); backfill is by whole groups. --max-agents caps the agents (sum of --n) running at once, e.g. to keep a ratio of agents
 to scorer slots. Once the --stop-file exists no further row starts (exit 3, "not started"); running rows finish.
 Each run's output goes to logs/<name>/driver.log and its progress to logs/<name>/cloud-status. Run a long plan
 under bgjob (--grace 60) and caffeinate.
@@ -140,6 +142,23 @@ def agents(row: Row) -> int:
     return arg_value(row.args, "--n", 1)
 
 
+def group_of(name: str) -> str:
+    """A row's task-repeat group: `<prefix>-<task>-r<k>` of `<prefix>-<task>-r<k>-<arm>[-i<j>]` (plans/v6-*.tsv)."""
+    return "-".join(name.split("-")[:3])
+
+
+def choose_all(rows: list[Row], free: dict[str, int]) -> list[tuple[str, str]] | None:
+    """(cloud, machine) for every row, all fitting in `free` at once (each placed as `choose` would, in order), or None."""
+    left, picks = dict(free), []
+    for row in rows:
+        pick = choose(row, left)
+        if pick is None:
+            return None
+        left[pick[0]] -= vcpus(pick[1])
+        picks.append(pick)
+    return picks
+
+
 def choose(row: Row, free: dict[str, int]) -> tuple[str, str] | None:
     """(cloud, machine) for the first candidate cloud with room for this row now, else None."""
     for cloud in candidates(row):
@@ -247,13 +266,14 @@ def last_state(name: str) -> str:
 
 def schedule(
     rows: list[Row], free: dict[str, int], launch, max_runs: int = 0, max_agents: int = 0, stop=lambda: False,
-    start_gap: float = 0,
+    start_gap: float = 0, group=None,
 ) -> dict[str, int]:
     """Start each row (in file order, with backfill) once a candidate cloud has room; release its vCPUs when it
     ends. `launch(row, machine)` runs one row and returns its exit code. Rows that still do not fit once nothing
     is running get exit code 1 without being run. With max_agents, the agents of running rows never exceed it.
     Once `stop()` is true, rows not yet started get exit code 3 and are never started. Consecutive starts are at
-    least `start_gap` seconds apart."""
+    least `start_gap` seconds apart. With `group` (name -> key, e.g. group_of), the rows of one group start together,
+    once all of them fit, in file order."""
     results: dict[str, int] = {}
     pending = list(rows)
     running = {}  # future -> (row, cloud, vcpus)
@@ -265,19 +285,22 @@ def schedule(
                     results[row.name] = 3
                     print(f"{row.name}: not started (stop file)", flush=True)
                 pending = []
-            for row in list(pending):
-                if max_runs and len(running) >= max_runs:
+            batches: dict[str, list[Row]] = {}
+            for i, row in enumerate(pending):
+                batches.setdefault(group(row.name) if group else str(i), []).append(row)
+            for batch in batches.values():
+                if max_runs and len(running) + len(batch) > max_runs:
                     break
-                if max_agents and sum(agents(r) for r, _, _ in running.values()) + agents(row) > max_agents:
+                if max_agents and sum(agents(r) for r, _, _ in running.values()) + sum(map(agents, batch)) > max_agents:
                     continue
-                if pick := choose(row, free):
-                    time.sleep(max(0.0, last_start + start_gap - time.monotonic()))
-                    last_start = time.monotonic()
-                    cloud, machine = pick
-                    free[cloud] -= vcpus(machine)
-                    pending.remove(row)
-                    running[pool.submit(launch, row, machine)] = (row, cloud, vcpus(machine))
-                    print(f"{datetime.now():%H:%M:%S} {row.name}: start on {cloud} {machine}", flush=True)
+                if picks := choose_all(batch, free):
+                    for row, (cloud, machine) in zip(batch, picks):
+                        time.sleep(max(0.0, last_start + start_gap - time.monotonic()))
+                        last_start = time.monotonic()
+                        free[cloud] -= vcpus(machine)
+                        pending.remove(row)
+                        running[pool.submit(launch, row, machine)] = (row, cloud, vcpus(machine))
+                        print(f"{datetime.now():%H:%M:%S} {row.name}: start on {cloud} {machine}", flush=True)
             if not running:  # nothing left that could free room
                 if not pending:
                     break
@@ -341,7 +364,8 @@ def plan(args: argparse.Namespace) -> None:
             return subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT).returncode
 
     stop = (lambda: Path(args.stop_file).exists()) if args.stop_file else (lambda: False)
-    results = schedule(rows, free, launch, args.max_runs, args.max_agents, stop, start_gap=START_GAP_S)
+    results = schedule(rows, free, launch, args.max_runs, args.max_agents, stop, start_gap=START_GAP_S,
+                       group=group_of if args.group_start else None)  # fmt: skip
     failed = [n for n, rc in results.items() if rc != 0]
     print(f"done: {len(results) - len(failed)} ok, {len(failed)} failed {failed}")
     if left := [vm for vm in live_vms() if vm["role"] != "scorer"]:
@@ -457,6 +481,8 @@ def main() -> None:
     pp.add_argument("--max-runs", type=int, default=0, help="cap on runs at once (default: only vCPU room)")
     pp.add_argument("--max-agents", type=int, default=0, help="cap on agents (sum of --n) running at once")
     pp.add_argument("--stop-file", help="once this file exists, start no further rows")
+    pp.add_argument("--group-start", action="store_true",
+                    help="start each task-repeat group's rows together, once all of them fit (v7)")
     pp.add_argument("--dry-run", action="store_true", help="print where and in which order rows would start; launch nothing")
     pp.set_defaults(fn=plan)
     sub.add_parser("status").set_defaults(fn=status)

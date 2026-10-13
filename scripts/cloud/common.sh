@@ -97,11 +97,32 @@ SSH_OPTS=(-oIdentitiesOnly=yes -oIdentityAgent=none -oConnectTimeout=20 -oServer
 # AWS public IPs are reused across instances, so host keys are not remembered.
 AWS_SSH_OPTS=("${SSH_OPTS[@]}" -i "$SSH_KEY" -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null)
 
+operator_ip_refresh() {  # re-open SSH (and, with a scorer up, its port) to this machine's current IP; at most once a minute
+  local stamp=$HOME/.cache/swarm-scaling/operator-ip-refresh ip
+  mkdir -p "$(dirname "$stamp")"
+  if [ -e "$stamp" ] && [ $(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp") )) -lt 60 ]; then
+    return 1
+  fi
+  touch "$stamp"
+  ip=$(my_ip) || return 1
+  aws_ensure_access >/dev/null || return 1
+  if [ -r "$SCORER_STATE" ]; then scorer_allow "$ip" operator || return 1; fi
+  echo "operator IP $ip: SSH and (with a scorer up) the scorer port re-opened" >&2
+}
+
 vm_exec() {  # vm_exec <command>
   if [ "$CLOUD" = gcp ]; then
     gc compute ssh "$VM_ID" --zone "$ZONE" --strict-host-key-checking=no "${SSH_OPTS[@]/#/--ssh-flag=}" --command "$1"
   else
+    local rc
     ssh "${AWS_SSH_OPTS[@]}" "ubuntu@$VM_IP" "$1"
+    rc=$?
+    # 255: ssh could not connect. This machine's public IP may have changed (twice in v6), so re-open and retry once.
+    if [ "$rc" = 255 ] && operator_ip_refresh; then
+      ssh "${AWS_SSH_OPTS[@]}" "ubuntu@$VM_IP" "$1"
+      rc=$?
+    fi
+    return "$rc"
   fi
 }
 
@@ -122,7 +143,7 @@ vm_get() {  # vm_get <remote file...> <local dir>
   if [ "$CLOUD" = gcp ]; then
     gc compute scp --zone "$ZONE" --strict-host-key-checking=no "${SSH_OPTS[@]/#/--scp-flag=}" "${srcs[@]}" "$dest"
   else
-    scp "${AWS_SSH_OPTS[@]}" "${srcs[@]}" "$dest"
+    scp "${AWS_SSH_OPTS[@]}" "${srcs[@]}" "$dest" || { operator_ip_refresh && scp "${AWS_SSH_OPTS[@]}" "${srcs[@]}" "$dest"; }
   fi
 }
 

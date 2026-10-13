@@ -16,6 +16,10 @@ budget of the largest row would exceed SPEND_CAP, no further row starts (fleet.p
 Groups: rows named <prefix>-<task>-r<k>-<arm>[-i<j>] (plans/v6-*.tsv); a group is <prefix>-<task>-r<k>, so its
 portfolios (one per arm) are selected together. Selections run one at a time with --concurrency 6 (main's scorer has 11 slots), so live agents
 keep most scorer slots.
+
+v7 options: --group-start (fleet.py: a group's rows start together), --validity-n N (select_portfolio.py's validity
+pass). Every PULL_S the scorer's logs are copied to logs/_scorer/<instance>/ (scorer.sh pull), so a connection lost at
+teardown loses at most that much of jobs.jsonl.
 """
 
 import argparse
@@ -34,6 +38,7 @@ from run_cost import call_costs  # noqa: E402
 MAX_SLOTS = 11  # c7a.24xlarge: 96 vCPUs = 11 slots x 8 + 8 for the service
 AGENTS_PER_SLOT = 8
 POLL_S = 60
+PULL_S = 600  # scorer log copies (v6: the main scorer's jobs.jsonl was lost when the one copy at teardown failed)
 SELECT_CONCURRENCY = 6  # 2026-10-12, after the pilot: at 3, main's 14 groups needed about 13 h of serial selection
 
 
@@ -57,8 +62,7 @@ def size(rows: list[fleet.Row], free: int) -> tuple[int, str, int]:
     return slots, machine, slots * AGENTS_PER_SLOT
 
 
-def group_of(name: str) -> str:
-    return "-".join(name.split("-")[:3])
+group_of = fleet.group_of
 
 
 def state(name: str) -> str | None:
@@ -83,7 +87,8 @@ def run(args: argparse.Namespace) -> int:
     stop.parent.mkdir(parents=True, exist_ok=True)
     stop.unlink(missing_ok=True)
     plan = subprocess.Popen([sys.executable, "-u", "scripts/cloud/fleet.py", "plan", args.plan, "--ref", args.ref,
-                             "--max-agents", str(args.max_agents), "--stop-file", str(stop)], cwd=ROOT)  # fmt: skip
+                             "--max-agents", str(args.max_agents), "--stop-file", str(stop),
+                             *(["--group-start"] if args.group_start else [])], cwd=ROOT)  # fmt: skip
     costs: dict[str, float] = {}
     selected: set[str] = set()
     queue: list[str] = []
@@ -95,10 +100,18 @@ def run(args: argparse.Namespace) -> int:
             return None
         print(f"[v6] {time.strftime('%H:%M:%S')} selecting {group}", flush=True)
         return subprocess.Popen([sys.executable, "-u", "scripts/select_portfolio.py", *dirs, "--scorer", args.scorer,
-                                 "--concurrency", str(SELECT_CONCURRENCY)], cwd=ROOT)  # fmt: skip
+                                 "--concurrency", str(SELECT_CONCURRENCY), "--validity-n", str(args.validity_n)], cwd=ROOT)  # fmt: skip
+
+    last_pull = time.monotonic()
 
     def step(plan_done: bool) -> None:
-        nonlocal selecting
+        nonlocal selecting, last_pull
+        if time.monotonic() - last_pull >= PULL_S:
+            last_pull = time.monotonic()
+            try:
+                subprocess.run(["bash", "scripts/cloud/scorer.sh", "pull"], cwd=ROOT, timeout=300)
+            except subprocess.TimeoutExpired:
+                print("[v6] scorer.sh pull timed out", flush=True)
         states = {r.name: state(r.name) for r in rows}
         for name, st in states.items():
             if st == "exit" and name not in costs:
@@ -143,6 +156,8 @@ def main() -> None:
     pr.add_argument("--ref", required=True)
     pr.add_argument("--scorer", required=True)
     pr.add_argument("--max-agents", type=int, required=True)
+    pr.add_argument("--group-start", action="store_true", help="start each task-repeat group's rows together (v7)")
+    pr.add_argument("--validity-n", type=int, default=0, help="select_portfolio.py --validity-n (v7: 1000)")
     args = p.parse_args()
     if args.cmd == "size":
         free = fleet.aws_free()
