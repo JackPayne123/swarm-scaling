@@ -245,23 +245,20 @@ def test_the_alone_score_does_not_move_with_thread_state_a_solver_leaves_behind(
 
     monkeypatch.delattr("builtins._fast_reference", raising=False)
     dev_eval = load_dev_eval(tmp_path, monkeypatch, (
-        "        time.sleep(0.001 if getattr(builtins, '_fast_reference', False) else 0.004)\n"
+        "        time.sleep(0.002 if getattr(builtins, '_fast_reference', False) else 0.008)\n"
         "        return sorted(problem)\n"
     ))  # fmt: skip
-    clean = tmp_path / "clean.py"
-    clean.write_text("import time\nclass Solver:\n    def solve(self, problem):\n        time.sleep(0.001)\n        return sorted(problem)\n")
     state = tmp_path / "state.py"
     state.write_text(
         "import builtins, time\n"
         "builtins._fast_reference = True  # stands in for thread state that speeds up the next reference call\n"
-        "class Solver:\n    def solve(self, problem):\n        time.sleep(0.001)\n        return sorted(problem)\n"
+        "class Solver:\n    def solve(self, problem):\n        time.sleep(0.002)\n        return sorted(problem)\n"
     )
-    a = dev_eval.evaluate(clean, n=3, seed=0, size=100, reps=3)
-    monkeypatch.setattr("builtins._fast_reference", False, raising=False)
+    monkeypatch.setattr("builtins._fast_reference", False, raising=False)  # removed again at teardown
     b = dev_eval.evaluate(state, n=3, seed=0, size=100, reps=3)
+    # the reference takes 8 ms alone and 2 ms after the solver; the solver takes 2 ms
     assert b["valid"] and b["reference_inflation"] < 0.5  # the guard is one-sided: a faster reference is allowed
-    assert b["speedup"] < 0.5 * a["speedup"]  # AlgoTune's score halves
-    assert b["alone_speedup"] == pytest.approx(a["alone_speedup"], rel=0.3)  # the alone score does not
+    assert b["speedup"] < 1.6 and b["alone_speedup"] > 2.4  # AlgoTune's score reads about 1x, the alone score about 4x
     patched = with_alone_score(with_first_call_ratio(with_thread_guard(seed_with_offset(VERIFIER.read_text()))))
     compile(patched, "test_outputs.py", "exec")
     assert "    _alone_raw = sum(_ALONE) / total_time_solver if validity and total_time_solver > 0 else 0.0\n" in patched
