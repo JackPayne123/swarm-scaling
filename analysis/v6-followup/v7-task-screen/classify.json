@@ -1,0 +1,861 @@
+{
+"aes_gcm_encryption": {
+"feats": [
+"crypto"
+],
+"solve_lines": 27
+},
+"affine_transform_2d": {
+"feats": [],
+"solve_lines": 26
+},
+"aircraft_wing_design": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 64
+},
+"articulation_points": {
+"feats": [
+"nx"
+],
+"solve_lines": 12
+},
+"base64_encoding": {
+"feats": [
+"crypto"
+],
+"solve_lines": 17
+},
+"battery_scheduling": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 53
+},
+"btsp": {
+"feats": [
+"nx"
+],
+"solve_lines": 141
+},
+"capacitated_facility_location": {
+"feats": [
+"cvxpy",
+"cvx_int"
+],
+"solve_lines": 43
+},
+"chacha_encryption": {
+"feats": [
+"crypto"
+],
+"solve_lines": 28
+},
+"channel_capacity": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 32
+},
+"chebyshev_center": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"cholesky_factorization": {
+"feats": [
+"linalg"
+],
+"solve_lines": 14
+},
+"clustering_outliers": {
+"feats": [],
+"solve_lines": 17
+},
+"communicability": {
+"feats": [
+"nx"
+],
+"solve_lines": 39
+},
+"convex_hull": {
+"feats": [],
+"solve_lines": 31
+},
+"convolve2d_full_fill": {
+"feats": [
+"conv"
+],
+"solve_lines": 10
+},
+"convolve_1d": {
+"feats": [
+"conv"
+],
+"solve_lines": 3
+},
+"correlate2d_full_fill": {
+"feats": [
+"conv"
+],
+"solve_lines": 10
+},
+"correlate_1d": {
+"feats": [
+"conv"
+],
+"solve_lines": 17
+},
+"count_connected_components": {
+"feats": [
+"nx"
+],
+"solve_lines": 26
+},
+"count_riemann_zeta_zeros": {
+"feats": [],
+"solve_lines": 7
+},
+"cumulative_simpson_1d": {
+"feats": [],
+"solve_lines": 8
+},
+"cumulative_simpson_multid": {
+"feats": [],
+"solve_lines": 8
+},
+"cvar_projection": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 30
+},
+"cyclic_independent_set": {
+"feats": [],
+"solve_lines": 69
+},
+"dct_type_I_scipy_fftpack": {
+"feats": [
+"fft"
+],
+"solve_lines": 6
+},
+"delaunay": {
+"feats": [],
+"solve_lines": 35
+},
+"dijkstra_from_indices": {
+"feats": [
+"sparse"
+],
+"solve_lines": 31
+},
+"discrete_log": {
+"feats": [],
+"solve_lines": 14
+},
+"dst_type_II_scipy_fftpack": {
+"feats": [
+"fft"
+],
+"solve_lines": 6
+},
+"dynamic_assortment_planning": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 35
+},
+"earth_movers_distance": {
+"feats": [],
+"solve_lines": 15
+},
+"edge_expansion": {
+"feats": [
+"nx"
+],
+"solve_lines": 49
+},
+"eigenvalues_complex": {
+"feats": [
+"linalg"
+],
+"solve_lines": 13
+},
+"eigenvalues_real": {
+"feats": [
+"linalg"
+],
+"solve_lines": 11
+},
+"eigenvectors_complex": {
+"feats": [
+"linalg"
+],
+"solve_lines": 22
+},
+"eigenvectors_real": {
+"feats": [
+"linalg"
+],
+"solve_lines": 17
+},
+"elementwise_integration": {
+"feats": [],
+"solve_lines": 9
+},
+"feedback_controller_design": {
+"feats": [
+"cvxpy",
+"linalg"
+],
+"solve_lines": 32
+},
+"fft_cmplx_scipy_fftpack": {
+"feats": [
+"fft"
+],
+"solve_lines": 5
+},
+"fft_convolution": {
+"feats": [
+"fft",
+"conv"
+],
+"solve_lines": 88
+},
+"fft_real_scipy_fftpack": {
+"feats": [
+"fft"
+],
+"solve_lines": 5
+},
+"firls": {
+"feats": [],
+"solve_lines": 11
+},
+"generalized_eigenvalues_complex": {
+"feats": [
+"linalg"
+],
+"solve_lines": 22
+},
+"generalized_eigenvalues_real": {
+"feats": [
+"linalg"
+],
+"solve_lines": 19
+},
+"generalized_eigenvectors_complex": {
+"feats": [
+"linalg"
+],
+"solve_lines": 31
+},
+"generalized_eigenvectors_real": {
+"feats": [
+"linalg"
+],
+"solve_lines": 32
+},
+"graph_coloring_assign": {
+"feats": [
+"cpsat",
+"nx"
+],
+"solve_lines": 84
+},
+"graph_global_efficiency": {
+"feats": [
+"nx"
+],
+"solve_lines": 29
+},
+"graph_isomorphism": {
+"feats": [
+"nx"
+],
+"solve_lines": 25
+},
+"graph_laplacian": {
+"feats": [
+"sparse"
+],
+"solve_lines": 32
+},
+"group_lasso": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 46
+},
+"gzip_compression": {
+"feats": [
+"crypto"
+],
+"solve_lines": 122
+},
+"integer_factorization": {
+"feats": [],
+"solve_lines": 18
+},
+"job_shop_scheduling": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 46
+},
+"kalman_filter": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 33
+},
+"kcenters": {
+"feats": [
+"sat",
+"nx"
+],
+"solve_lines": 128
+},
+"kd_tree": {
+"feats": [],
+"solve_lines": 24
+},
+"kernel_density_estimation": {
+"feats": [
+"linalg"
+],
+"solve_lines": 94
+},
+"kmeans": {
+"feats": [
+"sklearn"
+],
+"solve_lines": 8
+},
+"ks_test_2samp": {
+"feats": [],
+"solve_lines": 4
+},
+"l0_pruning": {
+"feats": [],
+"solve_lines": 19
+},
+"l1_pruning": {
+"feats": [],
+"solve_lines": 34
+},
+"lasso": {
+"feats": [],
+"solve_lines": 9
+},
+"least_squares": {
+"feats": [
+"optimize"
+],
+"solve_lines": 85
+},
+"linear_system_solver": {
+"feats": [
+"linalg"
+],
+"solve_lines": 29
+},
+"lp_box": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"lp_centering": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"lp_mdp": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 51
+},
+"lqr": {
+"feats": [
+"linalg"
+],
+"solve_lines": 31
+},
+"lti_simulation": {
+"feats": [],
+"solve_lines": 18
+},
+"lu_factorization": {
+"feats": [
+"linalg"
+],
+"solve_lines": 16
+},
+"lyapunov_stability": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 26
+},
+"markowitz": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"matrix_completion": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 34
+},
+"matrix_exponential": {
+"feats": [
+"linalg"
+],
+"solve_lines": 12
+},
+"matrix_exponential_sparse": {
+"feats": [
+"linalg",
+"sparse"
+],
+"solve_lines": 11
+},
+"matrix_multiplication": {
+"feats": [],
+"solve_lines": 32
+},
+"matrix_sqrt": {
+"feats": [
+"linalg"
+],
+"solve_lines": 28
+},
+"max_clique_cpsat": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 23
+},
+"max_common_subgraph": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 26
+},
+"max_flow_min_cost": {
+"feats": [
+"nx",
+"sparse"
+],
+"solve_lines": 84
+},
+"max_independent_set_cpsat": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 23
+},
+"max_weighted_independent_set": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 24
+},
+"min_dominating_set": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 25
+},
+"min_weight_assignment": {
+"feats": [
+"sparse"
+],
+"solve_lines": 17
+},
+"minimum_spanning_tree": {
+"feats": [
+"nx"
+],
+"solve_lines": 22
+},
+"minimum_volume_ellipsoid": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 30
+},
+"multi_dim_knapsack": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 22
+},
+"nmf": {
+"feats": [
+"sklearn"
+],
+"solve_lines": 14
+},
+"ode_brusselator": {
+"feats": [
+"ode"
+],
+"solve_lines": 26
+},
+"ode_fitzhughnagumo": {
+"feats": [
+"ode"
+],
+"solve_lines": 28
+},
+"ode_hires": {
+"feats": [
+"ode"
+],
+"solve_lines": 31
+},
+"ode_hodgkinhuxley": {
+"feats": [
+"ode"
+],
+"solve_lines": 52
+},
+"ode_lorenz96_nonchaotic": {
+"feats": [
+"ode"
+],
+"solve_lines": 27
+},
+"ode_lotkavolterra": {
+"feats": [
+"ode"
+],
+"solve_lines": 28
+},
+"ode_nbodyproblem": {
+"feats": [
+"ode"
+],
+"solve_lines": 36
+},
+"ode_seirs": {
+"feats": [
+"ode"
+],
+"solve_lines": 30
+},
+"ode_stiff_robertson": {
+"feats": [
+"ode"
+],
+"solve_lines": 29
+},
+"ode_stiff_vanderpol": {
+"feats": [
+"ode"
+],
+"solve_lines": 24
+},
+"odr": {
+"feats": [],
+"solve_lines": 10
+},
+"optimal_advertising": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 36
+},
+"outer_product": {
+"feats": [],
+"solve_lines": 4
+},
+"pagerank": {
+"feats": [
+"nx"
+],
+"solve_lines": 57
+},
+"pca": {
+"feats": [
+"sklearn"
+],
+"solve_lines": 16
+},
+"pde_burgers1d": {
+"feats": [
+"ode"
+],
+"solve_lines": 30
+},
+"pde_heat1d": {
+"feats": [
+"ode"
+],
+"solve_lines": 26
+},
+"polynomial_mixed": {
+"feats": [],
+"solve_lines": 23
+},
+"polynomial_real": {
+"feats": [],
+"solve_lines": 25
+},
+"power_control": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"procrustes": {
+"feats": [
+"linalg"
+],
+"solve_lines": 25
+},
+"psd_cone_projection": {
+"feats": [
+"linalg"
+],
+"solve_lines": 17
+},
+"qp": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 17
+},
+"qr_factorization": {
+"feats": [
+"linalg"
+],
+"solve_lines": 15
+},
+"quantile_regression": {
+"feats": [],
+"solve_lines": 16
+},
+"queens_with_obstacles": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 55
+},
+"queuing": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 32
+},
+"qz_factorization": {
+"feats": [
+"linalg"
+],
+"solve_lines": 18
+},
+"randomized_svd": {
+"feats": [
+"linalg"
+],
+"solve_lines": 46
+},
+"rbf_interpolation": {
+"feats": [],
+"solve_lines": 176
+},
+"rectanglepacking": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 69
+},
+"robust_kalman_filter": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 40
+},
+"robust_linear_program": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 36
+},
+"rocket_landing_optimization": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 44
+},
+"rotate_2d": {
+"feats": [],
+"solve_lines": 26
+},
+"set_cover": {
+"feats": [],
+"solve_lines": 69
+},
+"set_cover_conflicts": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 32
+},
+"sha256_hashing": {
+"feats": [
+"crypto"
+],
+"solve_lines": 17
+},
+"shift_2d": {
+"feats": [],
+"solve_lines": 26
+},
+"shortest_path_dijkstra": {
+"feats": [
+"sparse"
+],
+"solve_lines": 21
+},
+"sinkhorn": {
+"feats": [],
+"solve_lines": 13
+},
+"sparse_eigenvectors_complex": {
+"feats": [
+"linalg",
+"sparse"
+],
+"solve_lines": 17
+},
+"sparse_lowest_eigenvalues_posdef": {
+"feats": [
+"linalg",
+"sparse"
+],
+"solve_lines": 12
+},
+"sparse_lowest_eigenvectors_posdef": {
+"feats": [
+"linalg",
+"sparse"
+],
+"solve_lines": 12
+},
+"sparse_pca": {
+"feats": [
+"cvxpy",
+"linalg"
+],
+"solve_lines": 41
+},
+"spectral_clustering": {
+"feats": [
+"sklearn"
+],
+"solve_lines": 32
+},
+"stable_matching": {
+"feats": [],
+"solve_lines": 36
+},
+"svd": {
+"feats": [
+"linalg"
+],
+"solve_lines": 18
+},
+"svm": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 34
+},
+"sylvester_solver": {
+"feats": [],
+"solve_lines": 6
+},
+"tensor_completion_3d": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 46
+},
+"toeplitz_solver": {
+"feats": [],
+"solve_lines": 12
+},
+"tsp": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 30
+},
+"two_eigenvalues_around_0": {
+"feats": [
+"linalg"
+],
+"solve_lines": 23
+},
+"unit_simplex_projection": {
+"feats": [],
+"solve_lines": 18
+},
+"upfirdn1d": {
+"feats": [
+"conv"
+],
+"solve_lines": 12
+},
+"vector_quantization": {
+"feats": [],
+"solve_lines": 26
+},
+"vectorized_newton": {
+"feats": [
+"optimize"
+],
+"solve_lines": 48
+},
+"vehicle_routing": {
+"feats": [
+"cpsat"
+],
+"solve_lines": 56
+},
+"vertex_cover": {
+"feats": [
+"sat"
+],
+"solve_lines": 48
+},
+"voronoi_diagram": {
+"feats": [],
+"solve_lines": 18
+},
+"wasserstein_dist": {
+"feats": [],
+"solve_lines": 14
+},
+"water_filling": {
+"feats": [
+"cvxpy"
+],
+"solve_lines": 67
+},
+"zoom_2d": {
+"feats": [],
+"solve_lines": 26
+}
+}

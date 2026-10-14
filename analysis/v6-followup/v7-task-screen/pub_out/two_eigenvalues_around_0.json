@@ -1,0 +1,37 @@
+{
+"task": "two_eigenvalues_around_0",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 346.81746315956116,
+"solvers": {
+"Gemini 3 Pro Preview": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000096
+],
+"exceptions": [],
+"local_speedup": 2.2808218831442852,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.1477988846488953,
+"n_timed": 40
+},
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.031738918222776,
+"n_timed": 40
+}
+}
+}

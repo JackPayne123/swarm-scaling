@@ -1,0 +1,39 @@
+{
+"task": "robust_linear_program",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 144.28121423721313,
+"solvers": {
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000296
+],
+"exceptions": [],
+"local_speedup": 4.407095360225589,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000296
+],
+"exceptions": [],
+"local_speedup": 4.432935853629105,
+"n_timed": 40
+},
+"Gemini 3 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.458297472874535,
+"n_timed": 40
+}
+}
+}

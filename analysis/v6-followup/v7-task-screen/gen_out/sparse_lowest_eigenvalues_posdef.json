@@ -1,0 +1,14 @@
+{
+"task": "sparse_lowest_eigenvalues_posdef",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 966.4377332656001,
+"ess_per100": 96.64377332656,
+"max_over_median": 2.1628265461975733,
+"p99_over_median": 1.588089976074258,
+"elapsed": 240.4039387702942
+}

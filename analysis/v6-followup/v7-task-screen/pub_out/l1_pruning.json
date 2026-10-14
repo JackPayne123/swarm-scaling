@@ -1,0 +1,58 @@
+{
+"task": "l1_pruning",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 147.54207491874695,
+"solvers": {
+"o4-mini": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000373
+],
+"exceptions": [],
+"local_speedup": 9.147671292956172,
+"n_timed": 40
+},
+"GPT-5.2": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.467794214989914,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 400,
+"invalid_seeds": [],
+"exceptions": [
+[
+7000000,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000001,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000002,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000003,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000004,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+]
+],
+"local_speedup": null,
+"n_timed": 0
+}
+}
+}

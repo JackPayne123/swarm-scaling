@@ -1,0 +1,35 @@
+{
+"task": "kmeans",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 396.1096110343933,
+"solvers": {
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.3300956085837425,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.233611948427272,
+"n_timed": 40
+},
+"Claude Opus 4.6": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 3.4738110345469675,
+"n_timed": 40
+}
+}
+}

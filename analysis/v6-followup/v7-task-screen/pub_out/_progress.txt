@@ -1,0 +1,36 @@
+quantile_regression exit 0
+sinkhorn exit 0
+qp exit 0
+min_weight_assignment exit 0
+eigenvalues_real exit 0
+clustering_outliers exit 0
+sparse_lowest_eigenvalues_posdef exit 0
+sparse_lowest_eigenvectors_posdef exit 0
+generalized_eigenvectors_complex exit 0
+lasso exit 0
+shortest_path_dijkstra exit 0
+generalized_eigenvectors_real exit 0
+two_eigenvalues_around_0 exit 0
+randomized_svd exit 0
+pca exit 0
+robust_linear_program exit 0
+unit_simplex_projection exit 0
+least_squares exit 0
+chebyshev_center exit 0
+ode_lorenz96_nonchaotic exit 0
+psd_cone_projection exit 0
+l1_pruning exit 0
+robust_kalman_filter exit 0
+stable_matching exit 0
+l0_pruning exit 0
+minimum_spanning_tree exit 0
+linear_system_solver exit 0
+kmeans exit 0
+generalized_eigenvalues_complex exit 0
+pde_heat1d exit 0
+graph_global_efficiency exit 0
+pagerank exit 0
+ALLDONE
+robust_linear_program exit 0
+quantile_regression exit 0
+ALLDONE

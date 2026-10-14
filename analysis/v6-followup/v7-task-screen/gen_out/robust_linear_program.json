@@ -1,0 +1,14 @@
+{
+"task": "robust_linear_program",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 989.7939081106464,
+"ess_per100": 98.97939081106463,
+"max_over_median": 1.9238558603480551,
+"p99_over_median": 1.3267837538586338,
+"elapsed": 242.08603191375732
+}

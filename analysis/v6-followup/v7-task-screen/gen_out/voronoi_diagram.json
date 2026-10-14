@@ -1,0 +1,14 @@
+{
+"task": "voronoi_diagram",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 802.0961045771937,
+"ess_per100": 80.20961045771938,
+"max_over_median": 3.3817132285797467,
+"p99_over_median": 2.118189958652293,
+"elapsed": 441.3643991947174
+}

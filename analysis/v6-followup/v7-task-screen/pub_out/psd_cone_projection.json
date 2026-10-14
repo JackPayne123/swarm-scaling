@@ -1,0 +1,35 @@
+{
+"task": "psd_cone_projection",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 300.9162769317627,
+"solvers": {
+"GPT-5.2": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 7.7707828695117,
+"n_timed": 40
+},
+"Claude Opus 4.6": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 7.719188943399274,
+"n_timed": 40
+},
+"o4-mini": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 7.6389386418377185,
+"n_timed": 40
+}
+}
+}

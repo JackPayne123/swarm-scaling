@@ -1,0 +1,14 @@
+{
+"task": "shortest_path_dijkstra",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 995.0677044465209,
+"ess_per100": 99.5067704446521,
+"max_over_median": 1.6434513729353206,
+"p99_over_median": 1.2265778860157182,
+"elapsed": 129.5762059688568
+}

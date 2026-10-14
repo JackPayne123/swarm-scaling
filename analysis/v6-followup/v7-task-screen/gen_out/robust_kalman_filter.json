@@ -1,0 +1,14 @@
+{
+"task": "robust_kalman_filter",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 963.2388400263687,
+"ess_per100": 96.32388400263687,
+"max_over_median": 2.0556402426263336,
+"p99_over_median": 1.6611904765539125,
+"elapsed": 163.05624079704285
+}

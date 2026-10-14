@@ -1,0 +1,11 @@
+{
+"task": "robust_linear_program",
+"n_instances": 400,
+"load_errors": {
+"GPT-5.4": "ModuleNotFoundError: No module named 'ecos'",
+"Gemini 3.1 Pro Preview": "ModuleNotFoundError: No module named 'ecos'",
+"Gemini 3 Pro Preview": "ModuleNotFoundError: No module named 'ecos'"
+},
+"elapsed_s": 16.326702117919922,
+"solvers": {}
+}

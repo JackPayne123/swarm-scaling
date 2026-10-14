@@ -1,0 +1,14 @@
+{
+"task": "linear_system_solver",
+"n": 883,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 866.5741809711623,
+"ess_per100": 98.1397713444125,
+"max_over_median": 2.5885234013888176,
+"p99_over_median": 1.547590649217892,
+"elapsed": 600.3471069335938
+}

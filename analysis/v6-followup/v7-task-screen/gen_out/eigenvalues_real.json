@@ -1,0 +1,14 @@
+{
+"task": "eigenvalues_real",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 991.2100487937137,
+"ess_per100": 99.12100487937137,
+"max_over_median": 1.6911918648483113,
+"p99_over_median": 1.3092080171847837,
+"elapsed": 201.2777168750763
+}

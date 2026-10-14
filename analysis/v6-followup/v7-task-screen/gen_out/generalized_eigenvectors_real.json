@@ -1,0 +1,14 @@
+{
+"task": "generalized_eigenvectors_real",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 977.1353643761884,
+"ess_per100": 97.71353643761883,
+"max_over_median": 1.8381798137777414,
+"p99_over_median": 1.4332532599954915,
+"elapsed": 251.38032507896423
+}

@@ -1,0 +1,35 @@
+{
+"task": "randomized_svd",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 16.8058660030365,
+"solvers": {
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.606368898277073,
+"n_timed": 40
+},
+"GPT-5.2": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 3.8090211170721187,
+"n_timed": 40
+},
+"Gemini 3 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.244053197205627,
+"n_timed": 40
+}
+}
+}

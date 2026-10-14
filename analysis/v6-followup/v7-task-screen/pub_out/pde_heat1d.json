@@ -1,0 +1,39 @@
+{
+"task": "pde_heat1d",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 118.5307981967926,
+"solvers": {
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000161
+],
+"exceptions": [],
+"local_speedup": 3.5485549222733126,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000161
+],
+"exceptions": [],
+"local_speedup": 3.45599162599472,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 3.3202393821581015,
+"n_timed": 40
+}
+}
+}

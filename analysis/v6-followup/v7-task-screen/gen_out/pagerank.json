@@ -1,0 +1,14 @@
+{
+"task": "pagerank",
+"n": 435,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 410.5424808973965,
+"ess_per100": 94.37758181549344,
+"max_over_median": 4.553089821230365,
+"p99_over_median": 1.6294897121559944,
+"elapsed": 601.137512922287
+}

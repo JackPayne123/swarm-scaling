@@ -1,0 +1,14 @@
+{
+"task": "unit_simplex_projection",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 986.8273403052447,
+"ess_per100": 98.68273403052446,
+"max_over_median": 1.7251547814484118,
+"p99_over_median": 1.337121130841628,
+"elapsed": 258.25616002082825
+}

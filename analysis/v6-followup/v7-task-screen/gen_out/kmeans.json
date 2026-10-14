@@ -1,0 +1,14 @@
+{
+"task": "kmeans",
+"n": 929,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 903.1234641201329,
+"ess_per100": 97.21458171368491,
+"max_over_median": 2.2515625130639036,
+"p99_over_median": 1.6212297174205752,
+"elapsed": 600.2328131198883
+}

@@ -1,0 +1,14 @@
+{
+"task": "least_squares",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 587.7896525486059,
+"ess_per100": 58.77896525486058,
+"max_over_median": 9.5495591847197,
+"p99_over_median": 5.910207417001034,
+"elapsed": 354.1488211154938
+}

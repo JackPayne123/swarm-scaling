@@ -1,0 +1,35 @@
+{
+"task": "stable_matching",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 313.59627413749695,
+"solvers": {
+"o4-mini": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 0.9105249201846274,
+"n_timed": 40
+},
+"GPT-5 Pro (medium)": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 0.9104939715399671,
+"n_timed": 40
+},
+"Qwen3 Coder": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 0.91166652474009,
+"n_timed": 40
+}
+}
+}

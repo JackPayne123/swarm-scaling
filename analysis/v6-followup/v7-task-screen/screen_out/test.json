@@ -1,0 +1,128 @@
+{
+"task": "unit_simplex_projection",
+"size": 786432,
+"threads": "1",
+"n_target": 5,
+"instances": [
+{
+"seed": 9000000,
+"gen_s": 0.016970708999906492,
+"input_finite": true,
+"t_ref": 0.04383925,
+"t_ref_max": 0.0444435,
+"output_finite": true,
+"deterministic": true,
+"self_valid": true,
+"t_check": 0.04839937499946245,
+"self_valid_again": true,
+"self_valid_out2": true,
+"input_unchanged": true,
+"battery": {
+"zeros": false,
+"f32": true,
+"rel1e-6": true,
+"rel1e-3": false,
+"rel1e-1": false
+}
+},
+{
+"seed": 9000001,
+"gen_s": 0.017674665999948047,
+"input_finite": true,
+"t_ref": 0.0437185,
+"t_ref_max": 0.0462805,
+"output_finite": true,
+"deterministic": true,
+"self_valid": true,
+"t_check": 0.04648295800052438,
+"self_valid_again": true,
+"self_valid_out2": true,
+"input_unchanged": true,
+"battery": {
+"zeros": false,
+"f32": true,
+"rel1e-6": true,
+"rel1e-3": false,
+"rel1e-1": false,
+"other_instance": false
+}
+},
+{
+"seed": 9000002,
+"gen_s": 0.016640541999549896,
+"input_finite": true,
+"t_ref": 0.044039209,
+"t_ref_max": 0.046268042,
+"output_finite": true,
+"deterministic": true,
+"self_valid": true,
+"t_check": 0.04612158300005831,
+"self_valid_again": true,
+"self_valid_out2": true,
+"input_unchanged": true,
+"battery": {
+"zeros": false,
+"f32": true,
+"rel1e-6": true,
+"rel1e-3": false,
+"rel1e-1": false,
+"other_instance": false
+}
+},
+{
+"seed": 9000003,
+"gen_s": 0.016126958999848284,
+"input_finite": true,
+"t_ref": 0.043279208,
+"t_ref_max": 0.045099792,
+"output_finite": true,
+"deterministic": true,
+"self_valid": true,
+"t_check": 0.044261291999646346,
+"self_valid_again": true,
+"self_valid_out2": true,
+"input_unchanged": true,
+"battery": {
+"zeros": false,
+"f32": true,
+"rel1e-6": true,
+"rel1e-3": false,
+"rel1e-1": false,
+"other_instance": false
+}
+},
+{
+"seed": 9000004,
+"gen_s": 0.01693204200000764,
+"input_finite": true,
+"t_ref": 0.045650709,
+"t_ref_max": 0.049117208,
+"output_finite": true,
+"deterministic": true,
+"self_valid": true,
+"t_check": 0.048275042000568646,
+"self_valid_again": true,
+"self_valid_out2": true,
+"input_unchanged": true,
+"battery": {
+"zeros": false,
+"f32": true,
+"rel1e-6": true,
+"rel1e-3": false,
+"rel1e-1": false,
+"other_instance": false
+}
+}
+],
+"summary": {
+"n": 5,
+"median_s": 0.04383925,
+"max_over_median": 1.041320483356809,
+"p95_over_median": 1.0339686240070256,
+"ess": 4.998306486143098,
+"top_share": 0.20700746243736745,
+"cv": 0.01840699676256553,
+"rep_spread_median": 1.0506101960187342
+},
+"elapsed_s": 4.779301166534424
+}

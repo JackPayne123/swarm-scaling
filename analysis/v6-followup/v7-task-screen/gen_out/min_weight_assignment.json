@@ -1,0 +1,14 @@
+{
+"task": "min_weight_assignment",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 976.6555850915452,
+"ess_per100": 97.66555850915452,
+"max_over_median": 2.2313108305263842,
+"p99_over_median": 1.4226266166550892,
+"elapsed": 374.1622591018677
+}

@@ -1,0 +1,77 @@
+{
+"task": "quantile_regression",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 88.1647629737854,
+"solvers": {
+"GLM-4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 400,
+"invalid_seeds": [],
+"exceptions": [
+[
+7000000,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000001,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000002,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000003,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000004,
+"SolverError: The solver ECOS is not installed."
+]
+],
+"local_speedup": null,
+"n_timed": 0
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 400,
+"invalid_seeds": [],
+"exceptions": [
+[
+7000000,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000001,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000002,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000003,
+"SolverError: The solver ECOS is not installed."
+],
+[
+7000004,
+"SolverError: The solver ECOS is not installed."
+]
+],
+"local_speedup": null,
+"n_timed": 0
+},
+"Gemini 2.5 Pro": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.3932519207335468,
+"n_timed": 40
+}
+}
+}

@@ -1,0 +1,14 @@
+{
+"task": "generalized_eigenvalues_complex",
+"n": 360,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 350.78993650538035,
+"ess_per100": 97.44164902927231,
+"max_over_median": 1.6280997213549782,
+"p99_over_median": 1.4442402603688076,
+"elapsed": 601.5335800647736
+}

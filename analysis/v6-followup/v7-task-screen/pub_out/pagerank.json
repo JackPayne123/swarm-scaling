@@ -1,0 +1,35 @@
+{
+"task": "pagerank",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 359.0720820426941,
+"solvers": {
+"Gemini 2.5 Pro": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 32.94776018113613,
+"n_timed": 40
+},
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 33.49108175842778,
+"n_timed": 40
+},
+"GPT-5.2": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 18.53637826782231,
+"n_timed": 40
+}
+}
+}

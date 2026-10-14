@@ -1,0 +1,14 @@
+{
+"task": "generalized_eigenvectors_complex",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 990.7868280043267,
+"ess_per100": 99.07868280043269,
+"max_over_median": 2.0019166738821013,
+"p99_over_median": 1.2249854278962244,
+"elapsed": 144.40734100341797
+}

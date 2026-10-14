@@ -1,0 +1,35 @@
+{
+"task": "generalized_eigenvectors_complex",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 115.52755212783813,
+"solvers": {
+"R1": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 6.207821858505836,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.346074542115181,
+"n_timed": 40
+},
+"Gemini 3 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.489506462844592,
+"n_timed": 40
+}
+}
+}

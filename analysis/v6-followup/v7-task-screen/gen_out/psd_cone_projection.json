@@ -1,0 +1,14 @@
+{
+"task": "psd_cone_projection",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 988.8981952528483,
+"ess_per100": 98.88981952528482,
+"max_over_median": 1.660816271965933,
+"p99_over_median": 1.4403671548072299,
+"elapsed": 518.8024561405182
+}

@@ -1,0 +1,14 @@
+{
+"task": "stable_matching",
+"n": 668,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 648.9395957360529,
+"ess_per100": 97.1466460682714,
+"max_over_median": 2.0248845376381475,
+"p99_over_median": 1.7099964378841612,
+"elapsed": 600.6798160076141
+}

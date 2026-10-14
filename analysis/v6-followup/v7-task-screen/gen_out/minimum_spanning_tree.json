@@ -1,0 +1,14 @@
+{
+"task": "minimum_spanning_tree",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 965.9846372019371,
+"ess_per100": 96.5984637201937,
+"max_over_median": 4.200854902117408,
+"p99_over_median": 1.618234944536486,
+"elapsed": 544.6852068901062
+}

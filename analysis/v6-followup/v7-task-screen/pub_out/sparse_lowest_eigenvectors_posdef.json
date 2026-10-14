@@ -1,0 +1,41 @@
+{
+"task": "sparse_lowest_eigenvectors_posdef",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 228.0773160457611,
+"solvers": {
+"Qwen3 Coder": {
+"n": 400,
+"n_invalid": 3,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000220,
+7000266,
+7000364
+],
+"exceptions": [],
+"local_speedup": 3.1075089855823976,
+"n_timed": 40
+},
+"GLM-4.5": {
+"n": 400,
+"n_invalid": 1,
+"n_exceptions": 0,
+"invalid_seeds": [
+7000289
+],
+"exceptions": [],
+"local_speedup": 2.7500847092608165,
+"n_timed": 40
+},
+"R1": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.5994910778086355,
+"n_timed": 40
+}
+}
+}

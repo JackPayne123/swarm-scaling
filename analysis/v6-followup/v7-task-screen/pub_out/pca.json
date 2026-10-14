@@ -1,0 +1,56 @@
+{
+"task": "pca",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 68.90213704109192,
+"solvers": {
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.9542151384635056,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 400,
+"invalid_seeds": [],
+"exceptions": [
+[
+7000000,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000001,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000002,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000003,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+],
+[
+7000004,
+"ValueError: Unable to avoid copy while creating an array as requested.\nIf using `np.array(obj, copy=False)` replace it with `np.asarray(obj)` to allow a copy wh"
+]
+],
+"local_speedup": null,
+"n_timed": 0
+},
+"Gemini 3 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.335899070533931,
+"n_timed": 40
+}
+}
+}

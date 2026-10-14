@@ -1,0 +1,14 @@
+{
+"task": "generalized_eigenvalues_real",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 987.996104330636,
+"ess_per100": 98.79961043306359,
+"max_over_median": 1.534292253967864,
+"p99_over_median": 1.288369792649631,
+"elapsed": 351.6342079639435
+}

@@ -1,0 +1,35 @@
+{
+"task": "shortest_path_dijkstra",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 119.94737887382507,
+"solvers": {
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 3.9902403196892005,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.320306034888013,
+"n_timed": 40
+},
+"GPT-5.2": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 2.2923470762063523,
+"n_timed": 40
+}
+}
+}

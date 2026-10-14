@@ -1,0 +1,14 @@
+{
+"task": "l0_pruning",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 986.7225002077602,
+"ess_per100": 98.67225002077602,
+"max_over_median": 1.6908782051523783,
+"p99_over_median": 1.521928827385447,
+"elapsed": 556.6365509033203
+}

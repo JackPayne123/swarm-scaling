@@ -1,0 +1,56 @@
+{
+ "generalized-eigenvalues-complex": {
+  "QZ, no eigenvectors": {
+   "speedup": 2.0554949374859457,
+   "valid": "25/25"
+  },
+  "B^-1 A + eigvals, float64": {
+   "speedup": 6.564987710495548,
+   "valid": "25/25"
+  },
+  "B^-1 A + eigvals, float32": {
+   "speedup": 6.558402280809488,
+   "valid": "25/25"
+  }
+ },
+ "psd-cone-projection": {
+  "eig -> eigh": {
+   "speedup": 7.757779391569956,
+   "valid": "25/25"
+  }
+ },
+ "eigenvalues-real": {
+  "eigh -> eigvalsh": {
+   "speedup": 1.870676534769563,
+   "valid": "25/25"
+  }
+ },
+ "pca": {
+  "sklearn PCA -> eigh of X^T X": {
+   "speedup": 2.5952005129669273,
+   "valid": "25/25"
+  }
+ },
+ "min-weight-assignment": {
+  "dense linear_sum_assignment": {
+   "speedup": 1.2173903719733075,
+   "valid": "25/25"
+  }
+ },
+ "sparse-lowest-eigenvalues-posdef": {
+  "eigsh tol 1e-4": {
+   "speedup": 2.300252313200539,
+   "valid": "25/25"
+  },
+  "eigsh tol 5e-4": {
+   "speedup": 2.5252954058999872,
+   "valid": "25/25"
+  }
+ },
+ "lasso": {
+  "sklearn Lasso on float32": {
+   "speedup": 1.4251742322189407,
+   "valid": "25/25"
+  }
+ }
+}

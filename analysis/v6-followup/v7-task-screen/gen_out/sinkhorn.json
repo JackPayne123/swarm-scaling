@@ -1,0 +1,14 @@
+{
+"task": "sinkhorn",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 993.8503537365383,
+"ess_per100": 99.38503537365382,
+"max_over_median": 1.5537502644800776,
+"p99_over_median": 1.2826433967201805,
+"elapsed": 485.891863822937
+}

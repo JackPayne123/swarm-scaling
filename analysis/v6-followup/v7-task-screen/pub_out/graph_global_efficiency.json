@@ -1,0 +1,20 @@
+{
+"task": "graph_global_efficiency",
+"n_instances": 400,
+"load_errors": {
+"Claude Opus 4.6": "AssertionError: unexpected cycle in lookup()",
+"GPT-5.4": "RecursionError: maximum recursion depth exceeded"
+},
+"elapsed_s": 40.789849042892456,
+"solvers": {
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 12.80453626161358,
+"n_timed": 40
+}
+}
+}

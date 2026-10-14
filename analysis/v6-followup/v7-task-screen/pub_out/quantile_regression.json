@@ -1,0 +1,35 @@
+{
+"task": "quantile_regression",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 174.70048594474792,
+"solvers": {
+"GLM-4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.5405956603741244,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.5336387579679138,
+"n_timed": 40
+},
+"Gemini 2.5 Pro": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.391681159004196,
+"n_timed": 40
+}
+}
+}

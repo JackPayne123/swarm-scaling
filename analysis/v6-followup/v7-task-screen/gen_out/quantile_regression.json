@@ -1,0 +1,14 @@
+{
+"task": "quantile_regression",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 994.0361237138375,
+"ess_per100": 99.40361237138373,
+"max_over_median": 1.6829765286703358,
+"p99_over_median": 1.2934781676438,
+"elapsed": 179.3992657661438
+}

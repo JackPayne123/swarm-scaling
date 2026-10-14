@@ -1,0 +1,14 @@
+{
+"task": "lasso",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 989.5344034470753,
+"ess_per100": 98.95344034470753,
+"max_over_median": 1.806852909515719,
+"p99_over_median": 1.3368618333045255,
+"elapsed": 205.80776810646057
+}

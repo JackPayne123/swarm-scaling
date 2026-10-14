@@ -1,0 +1,35 @@
+{
+"task": "min_weight_assignment",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 286.5286009311676,
+"solvers": {
+"GPT-OSS-120b": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.7785156698191464,
+"n_timed": 40
+},
+"R1": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.6465053543992758,
+"n_timed": 40
+},
+"Claude Opus 4.1": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.656849954878031,
+"n_timed": 40
+}
+}
+}

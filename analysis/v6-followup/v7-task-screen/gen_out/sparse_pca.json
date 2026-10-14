@@ -1,0 +1,14 @@
+{
+"task": "sparse_pca",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 987.5083678557319,
+"ess_per100": 98.75083678557317,
+"max_over_median": 2.1496892114969595,
+"p99_over_median": 1.4855824831234976,
+"elapsed": 362.1968309879303
+}

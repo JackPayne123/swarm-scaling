@@ -1,0 +1,35 @@
+{
+"task": "minimum_spanning_tree",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 198.3238010406494,
+"solvers": {
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 5.830677103887928,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.1799730231494765,
+"n_timed": 40
+},
+"Claude Opus 4.6": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 4.170261327802555,
+"n_timed": 40
+}
+}
+}

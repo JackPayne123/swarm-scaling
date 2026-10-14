@@ -1,0 +1,14 @@
+{
+"task": "pde_heat1d",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 969.1052943968156,
+"ess_per100": 96.91052943968155,
+"max_over_median": 2.7342197126890477,
+"p99_over_median": 1.678072413412835,
+"elapsed": 193.2325279712677
+}

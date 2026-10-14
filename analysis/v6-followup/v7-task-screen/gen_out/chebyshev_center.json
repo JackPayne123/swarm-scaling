@@ -1,0 +1,14 @@
+{
+"task": "chebyshev_center",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 891.5478479322378,
+"ess_per100": 89.15478479322378,
+"max_over_median": 7.516681863341532,
+"p99_over_median": 2.5894164702017592,
+"elapsed": 249.1282398700714
+}

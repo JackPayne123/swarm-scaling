@@ -1,0 +1,14 @@
+{
+"task": "randomized_svd",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 986.2506889046108,
+"ess_per100": 98.6250688904611,
+"max_over_median": 1.4417863547998562,
+"p99_over_median": 1.2531342026366181,
+"elapsed": 22.181132793426514
+}

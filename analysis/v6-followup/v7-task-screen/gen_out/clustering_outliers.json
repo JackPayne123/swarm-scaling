@@ -1,0 +1,14 @@
+{
+"task": "clustering_outliers",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 988.5191965717871,
+"ess_per100": 98.85191965717871,
+"max_over_median": 1.7574051674892934,
+"p99_over_median": 1.3147116472269371,
+"elapsed": 179.11466693878174
+}

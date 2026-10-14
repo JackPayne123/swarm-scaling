@@ -1,0 +1,14 @@
+{
+"task": "ode_lorenz96_nonchaotic",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 988.8726455391525,
+"ess_per100": 98.88726455391524,
+"max_over_median": 1.9649425950850652,
+"p99_over_median": 1.3574114892689313,
+"elapsed": 216.08781504631042
+}

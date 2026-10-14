@@ -1,0 +1,35 @@
+{
+"task": "linear_system_solver",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 207.5294120311737,
+"solvers": {
+"GPT-5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.129701774706922,
+"n_timed": 40
+},
+"o4-mini": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.1214926573654376,
+"n_timed": 40
+},
+"Claude Opus 4.1": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 1.1188724670914898,
+"n_timed": 40
+}
+}
+}

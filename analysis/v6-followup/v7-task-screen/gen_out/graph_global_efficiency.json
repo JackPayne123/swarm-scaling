@@ -1,0 +1,14 @@
+{
+"task": "graph_global_efficiency",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 991.5264975658177,
+"ess_per100": 99.15264975658178,
+"max_over_median": 1.984005896665722,
+"p99_over_median": 1.3112289688747973,
+"elapsed": 185.3444321155548
+}

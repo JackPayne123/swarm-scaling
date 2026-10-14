@@ -1,0 +1,35 @@
+{
+"task": "robust_kalman_filter",
+"n_instances": 400,
+"load_errors": {},
+"elapsed_s": 118.51864981651306,
+"solvers": {
+"GPT-5.4": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 10.475499848691825,
+"n_timed": 40
+},
+"Claude Opus 4.5": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 22.719336842471886,
+"n_timed": 40
+},
+"Gemini 3.1 Pro Preview": {
+"n": 400,
+"n_invalid": 0,
+"n_exceptions": 0,
+"invalid_seeds": [],
+"exceptions": [],
+"local_speedup": 17.70963512793886,
+"n_timed": 40
+}
+}
+}
