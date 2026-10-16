@@ -2,8 +2,10 @@
 # secret is copied into the project.
 K="$HOME/.pa-oauth"
 export OPENAI_API_KEY="$(cat "$K/openai_key")"
-# Prefer the experiment's credit key (workspace-scoped) when present
-if [ -r "$K/anthropic_credit_key" ]; then
+# Prefer the experiment's credit key (workspace-scoped) when present: the second $200 grant (2026-10-16), then the first
+if [ -r "$K/anthropic_credit_key_2" ]; then
+  export ANTHROPIC_API_KEY="$(cat "$K/anthropic_credit_key_2")"
+elif [ -r "$K/anthropic_credit_key" ]; then
   export ANTHROPIC_API_KEY="$(cat "$K/anthropic_credit_key")"
 else
   export ANTHROPIC_API_KEY="$(cat "$K/anthropic_api_key")"
