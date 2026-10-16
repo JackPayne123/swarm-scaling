@@ -89,7 +89,7 @@ def main() -> None:
     p.add_argument("--budget", type=float, required=True,
                    help="base per-agent budget b: US dollars with --budget-type cost (default), else tokens")
     p.add_argument("--mult", type=int, default=1, help="solo arm: budget multiplier (1, 2, 4, 8)")
-    p.add_argument("--split", default="pilot", choices=("pilot", "heldout"))
+    p.add_argument("--split", default="pilot", choices=("pilot", "heldout", "v7"))
     p.add_argument("--sample", action="append", help="sample id(s); default: the whole split")
     p.add_argument("--epochs", type=int, default=1, help="repeats per sample")
     p.add_argument("--time-limit", type=int, default=57600,

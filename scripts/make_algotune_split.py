@@ -95,6 +95,8 @@ def main() -> None:
         "stats": {t: {"best": round(stats[t][0], 3), "median": round(stats[t][1], 3)} for t in selected},
     }
     OUT.parent.mkdir(exist_ok=True)
+    if OUT.exists():  # the v7 screen's lists (PLAN.md) are written by hand, not by this rule: keep them
+        result |= {k: v for k, v in json.loads(OUT.read_text()).items() if k.startswith("v7")}
     OUT.write_text(json.dumps(result, indent=2) + "\n")
     print(f"selected {len(selected)}: pilot {pilot}")
 

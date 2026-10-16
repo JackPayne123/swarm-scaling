@@ -53,6 +53,15 @@ def test_committed_split_is_what_the_rule_produces():
     assert committed["seed"] == split.SEED and committed["n_selected"] == len(chosen)
 
 
+def test_v7_candidates_never_include_a_pilot_task_and_survive_a_regenerated_split():
+    # Pilot and held-out tasks never overlap (CLAUDE.md); the v7 lists are written by hand, so regenerating the frozen
+    # split must not drop them.
+    committed = json.loads(split.OUT.read_text())
+    assert committed["v7"] and not set(committed["v7"]) & set(committed["pilot"])
+    harbor_names = {t["task_name"] for t in json.loads(split.HARBOR_META.read_text())}
+    assert all(split.harbor_name(t) in harbor_names for t in committed["v7"])
+
+
 def candidate(agent_id: str, published_at: float, kind: str = "published") -> Candidate:
     return Candidate(agent_id, "m", f"/workspace/{agent_id}", "", published_at, kind)
 

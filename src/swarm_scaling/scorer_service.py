@@ -586,18 +586,20 @@ def git_version(root: Path) -> str:
     return out.stdout.strip() or "unknown"
 
 
-def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, TaskAssets]:
-    """Seeded verifier copies and dev_eval assets for each task, from the Harbor task cache (as tasks.py does)."""
+def prepare_tasks(names: list[str], offset: int, work_dir: Path, experiment: str = "v6") -> dict[str, TaskAssets]:
+    """Seeded verifier copies and dev_eval assets for each task, from the Harbor task cache (as tasks.py does), with the
+    experiment's TASK_PATCHES."""
     from inspect_harbor import algotune
 
-    from swarm_scaling.tasks import ALGOTUNE_REF, _harbor_name, seed_verifier
+    from swarm_scaling.tasks import ALGOTUNE_REF, _harbor_name, patch_task, seed_verifier
 
     base = algotune(ref=ALGOTUNE_REF, dataset_task_names=[_harbor_name(n) for n in names])
     by_slug = {_harbor_name(n): n for n in names}
     tasks = {}
     for sample in base.dataset:
         name = by_slug[str(sample.id)]
-        evaluator = (Path(sample.metadata["tests_dir"]) / "evaluator.py").read_text()  # before seeding repoints it
+        # before seeding repoints it
+        evaluator = patch_task(name, (Path(sample.metadata["tests_dir"]) / "evaluator.py").read_text(), experiment)
         dev = work_dir / "assets" / name / "dev"
         dev.mkdir(parents=True, exist_ok=True)
         (dev / "reference_task.py").write_text(evaluator)
@@ -606,7 +608,7 @@ def prepare_tasks(names: list[str], offset: int, work_dir: Path) -> dict[str, Ta
         size = sample.metadata["harbor_config"]["metadata"]["algotune_problem_size"]
         (dev / "config.json").write_text(json.dumps({"problem_size": size}))
         image = sample.sandbox.config.services["default"].image
-        tasks[name] = TaskAssets(name, str(sample.id), image, dev, seed_verifier(sample, offset))
+        tasks[name] = TaskAssets(name, str(sample.id), image, dev, seed_verifier(sample, offset, experiment))
     return tasks
 
 
@@ -649,7 +651,7 @@ def main() -> None:
         os.sched_setaffinity(0, service_cpus)  # before any thread starts, so every worker inherits it
     offset = _seed_offset(offset_file, experiment=args.experiment)
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir)
+    tasks = prepare_tasks(sorted(task_names().values()), offset, args.work_dir, args.experiment)
     # one string when every task shares one image (AlgoTune does), else {image: digest}; None = built locally
     digests = {a.image: image_digest_with_retry(a.image, task_image_digest) for a in tasks.values()}
     digest = next(iter(digests.values())) if len(digests) == 1 else digests

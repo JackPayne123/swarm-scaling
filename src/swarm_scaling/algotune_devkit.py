@@ -106,8 +106,13 @@ DEV_TOOLKIT_NOTE = (
 
 
 async def _install_toolkit(state: TaskState) -> None:
+    from swarm_scaling.tasks import patch_task
+
     # Only evaluator.py is read from the verifier files: no test_outputs.py, no test instances.
-    evaluator = (Path(state.metadata["tests_dir"]) / "evaluator.py").read_text()
+    evaluator = patch_task(
+        state.metadata.get("algotune_task_name", ""), (Path(state.metadata["tests_dir"]) / "evaluator.py").read_text(),
+        state.metadata.get("experiment", "v6"),
+    )  # fmt: skip
     problem_size = state.metadata["harbor_config"]["metadata"]["algotune_problem_size"]
 
     for name in state.metadata.get("agent_boxes") or [None]:  # per-agent boxes: each gets its own copy

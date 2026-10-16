@@ -36,6 +36,8 @@ from swarm_scaling.algotune_devkit import (
 )
 
 SPLIT_PATH = Path(__file__).resolve().parents[2] / "data" / "algotune_split.json"
+# Task lists in SPLIT_PATH: pilot and heldout (the frozen 2026-10-05 rule), v7 (the v7 screen's candidates, PLAN.md)
+SPLITS = ("pilot", "heldout", "v7")
 
 # Harbor's verifier scores on generate_problem(random_seed=i) for i in 0..99, and agents hold generate_problem.
 # The offset is added to those seeds. Dev instances use seeds 10,000+ and selection 60,000+; np.random.seed needs < 2**32.
@@ -342,6 +344,87 @@ _ALONE_SCORE_PATCH = {
 }
 
 
+# v7 task fixes (experiments after v6; v6 keeps the Harbor code): per task, (anchor, replacement, shown in the
+# instruction) applied to evaluator.py (the reference Task: generate_problem, solve, is_solution) in the agents' toolkit,
+# the scorer's toolkit and the verifier copy, and to the instruction when it shows that code. Ports are verbatim from
+# upstream AlgoTune (github.com/oripress/AlgoTune HEAD dff9914, 2026-06-24); the Harbor snapshot predates them.
+TASK_PATCHES: dict[str, list[tuple[str, str, bool]]] = {
+    # Upstream port. Harbor's is_solution compares only the captured variance, so any rotation of the top-k subspace
+    # passes (20/20 rotated outputs locally; upstream 0/10). Upstream matches sklearn's components up to sign.
+    "pca": [
+        (
+            '            V = np.array(solution)\n            X = np.array(problem["X"])\n',
+            '            V = np.array(solution, dtype=float)\n            X = np.array(problem["X"], dtype=float)\n',
+            True,
+        ),
+        (
+            "            # check objective\n"
+            "            res = self.solve(problem)\n"
+            "            V_solver = np.array(res)\n"
+            "\n"
+            "            obj_solver = np.linalg.norm(X @ V_solver.T) ** 2\n"
+            "            obj_sol = np.linalg.norm(X @ V.T) ** 2\n"
+            "            if np.allclose(obj_sol, obj_solver, rtol=tol, atol=tol / 10):\n"
+            "                return True\n"
+            "            return False\n",
+            "            # Match sklearn's ordered principal components up to per-row sign flips.\n"
+            "            # A rotated basis for the same top-k subspace is not equivalent to the\n"
+            "            # reference PCA output, even if it preserves the aggregate objective.\n"
+            "            V_solver = np.array(self.solve(problem), dtype=float)\n"
+            "            if V_solver.shape != V.shape:\n"
+            "                return False\n"
+            "\n"
+            "            component_alignment = np.abs(V @ V_solver.T)\n"
+            "            return np.allclose(\n"
+            "                component_alignment,\n"
+            "                np.eye(n_components),\n"
+            "                rtol=tol,\n"
+            "                atol=tol / 10,\n"
+            "            )\n",
+            True,
+        ),
+    ],
+    # Upstream port. Harbor's tolerance exceeds 1 at this size (1.24), so U = I, S = 0, V = I passes (20/20 locally).
+    "randomized_svd": [
+        (
+            "        tol *= 1 + (1 - k / min(n, m)) * 2\n",
+            "        tol *= 1 + (1 - k / min(n, m)) * 2\n"
+            "        tol = min(tol, 0.9)  # Cap tolerance to reject trivial solutions\n",
+            True,
+        ),
+    ],
+    # Ours (upstream has the same code). scipy.sparse.random without random_state draws the sparsity pattern from
+    # numpy's global RNG, so a seed did not fix the instance and every scoring used a different set.
+    "sparse_lowest_eigenvalues_posdef": [
+        (
+            "            data_rvs=rng.standard_normal,\n",
+            "            data_rvs=rng.standard_normal,\n            random_state=rng,\n",
+            False,
+        ),
+    ],
+}
+
+
+def patch_task(name: str, text: str, experiment: str, instruction: bool = False) -> str:
+    """The task's code (evaluator.py, or with instruction=True the instruction) with its TASK_PATCHES for `experiment`.
+
+    v6 is never patched. Each anchor must occur exactly once, unless its replacement already does (the text was
+    patched before: a seeded verifier copy holds the patched evaluator.py), so a changed Harbor copy raises instead
+    of silently keeping the old code.
+    """
+    if experiment == "v6":
+        return text
+    for anchor, replacement, shown in TASK_PATCHES.get(name, []):
+        if instruction and not shown:
+            continue
+        if text.count(replacement) == 1:
+            continue
+        if text.count(anchor) != 1:
+            raise ValueError(f"{name}: expected exactly one {anchor!r} in the task's {'instruction' if instruction else 'code'}")
+        text = text.replace(anchor, replacement)
+    return text
+
+
 def with_alone_score(test_outputs: str) -> str:
     """The verifier also prints the speedup against the reference timed alone ("Alone score: <x>", v7's primary score).
 
@@ -615,14 +698,16 @@ def seed_offset_id(offset: int) -> str:
     return hashlib.sha256(f"algotune-seed-offset:{offset}".encode()).hexdigest()[:16]
 
 
-def seed_verifier(sample, offset: int) -> Path:
-    """Write our patched copy of the sample's Harbor tests (seed offset, thread check, first-call ratio, alone score) with the
-    offset file, point the sample's test_path and tests_dir at it, and return it. The hub cache is shared between
-    runs, so the seeded verifier is a copy."""
+def seed_verifier(sample, offset: int, experiment: str = "v6") -> Path:
+    """Write our patched copy of the sample's Harbor tests (seed offset, thread check, first-call ratio, alone score,
+    the experiment's TASK_PATCHES in evaluator.py) with the offset file, point the sample's test_path and tests_dir at
+    it, and return it. The hub cache is shared between runs, so the seeded verifier is a copy."""
     tests_dir = Path(sample.metadata["tests_dir"])
     seeded_dir = VERIFIER_DIR / str(sample.id).replace("/", "_")
     shutil.rmtree(seeded_dir, ignore_errors=True)
     shutil.copytree(tests_dir, seeded_dir)
+    evaluator = seeded_dir / "evaluator.py"
+    evaluator.write_text(patch_task(task_names()[str(sample.id)], evaluator.read_text(), experiment))
     test_outputs = seeded_dir / "test_outputs.py"
     test_outputs.write_text(with_alone_score(with_first_call_ratio(with_thread_guard(seed_with_offset(test_outputs.read_text())))))
     shutil.copy(ASSETS / "thread_guard.py", seeded_dir)
@@ -635,7 +720,7 @@ def seed_verifier(sample, offset: int) -> Path:
 def task_names() -> dict[str, str]:
     """Harbor sample id (algotune/dst-type-ii-scipy-fftpack) -> AlgoTune task name (dst_type_II_scipy_fftpack)."""
     split = json.loads(SPLIT_PATH.read_text())
-    return {_harbor_name(n): n for key in ("pilot", "heldout") for n in split[key]}
+    return {_harbor_name(n): n for key in SPLITS for n in split[key]}
 
 
 def _harbor_name(task_name: str) -> str:
@@ -645,7 +730,7 @@ def _harbor_name(task_name: str) -> str:
 
 @task
 def algotune_task(
-    split: Literal["pilot", "heldout"],
+    split: Literal["pilot", "heldout", "v7"],
     cpus_per_agent: int = 4,
     n_agents: int = 1,
     parallel: int = 1,
@@ -725,6 +810,8 @@ def algotune_task(
         sample.metadata["checker_backend"] = checker_backend
         sample.metadata["algotune_task_name"] = names_by_id[str(sample.id)]
         sample.metadata["primary_score"] = primary_score
+        sample.metadata["experiment"] = experiment  # algotune_devkit's toolkit applies the experiment's TASK_PATCHES
+        sample.input = patch_task(names_by_id[str(sample.id)], sample.input, experiment, instruction=True)
         if isolate_agents:
             sample.metadata["agent_boxes"] = [b["service"] for b in resources["agent_boxes"]]
         # Passed as a file, not inline: logs store each sample's sandbox config, and Inspect re-validates an
@@ -739,7 +826,7 @@ def algotune_task(
         sample.sandbox = SandboxEnvironmentSpec(sample.sandbox.type, str(compose_file))
         sample.metadata["compose_yaml"] = compose_yaml
         if not is_remote:  # only the local scorer reads it
-            seed_verifier(sample, offset)
+            seed_verifier(sample, offset, experiment)
     image_meta = {"task_images": {image: task_image_digest(image) for image in sorted(images)}}
     if len(images) == 1:
         (image,) = images

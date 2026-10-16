@@ -78,3 +78,30 @@ def test_each_experiment_has_its_own_offset_at_least_100_seeds_from_any_other(tm
     assert tasks._seed_offset(tasks.seed_offset_file("v7"), log_dir=tmp_path / "no-logs", experiment="v7") == v7
     with pytest.raises(ValueError, match="experiment must be one of"):
         tasks.seed_offset_file("v8")
+
+
+def test_v7_task_fixes_reach_the_pinned_harbor_code_and_v6_keeps_harbors():
+    # The fixes (upstream verifier ports, a seeded generator) must reach the agents' toolkit, the instruction and the
+    # verifier for v7, or a v7 pca would still accept any rotated subspace; v6 must still score on Harbor's code.
+    from inspect_harbor import algotune
+
+    from swarm_scaling.tasks import ALGOTUNE_REF, TASK_PATCHES, _harbor_name, patch_task
+
+    base = algotune(ref=ALGOTUNE_REF, dataset_task_names=[_harbor_name(n) for n in TASK_PATCHES])
+    for sample in base.dataset:
+        name = next(n for n in TASK_PATCHES if _harbor_name(n) == str(sample.id))
+        code = (Path(sample.metadata["tests_dir"]) / "evaluator.py").read_text()
+        assert patch_task(name, code, "v6") == code
+        fixed = patch_task(name, code, "v7")
+        assert all(fixed.count(new) == 1 for _, new, _ in TASK_PATCHES[name])
+        assert patch_task(name, fixed, "v7") == fixed  # a seeded verifier copy is already fixed
+        shown = patch_task(name, sample.input, "v7", instruction=True)
+        assert all(shown.count(new) == 1 for _, new, in_instruction in TASK_PATCHES[name] if in_instruction)
+
+
+def test_a_task_fix_whose_code_changed_is_refused_rather_than_skipped(monkeypatch):
+    from swarm_scaling import tasks
+
+    monkeypatch.setitem(tasks.TASK_PATCHES, "t", [("old line\n", "new line\n", False)])
+    with pytest.raises(ValueError):
+        tasks.patch_task("t", "something else\n", "v7")
