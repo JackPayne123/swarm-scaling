@@ -81,6 +81,19 @@ def wait_for_docker_images(timeout_s: int = 300) -> None:
         time.sleep(3)
 
 
+def effort_by_model(spec: str | None, models: list[str]) -> dict[str, str] | None:
+    """--reasoning-effort as {model: effort}: one effort for every model, or `model=effort,...` (a mixed team, 2026-10-16:
+    Opus at xhigh, GPT-6.1 Sol at high). Every model of the run must get one when the per-model form is used."""
+    if not spec:
+        return None
+    if "=" not in spec:
+        return {m: spec for m in models}
+    efforts = dict(part.split("=", 1) for part in spec.split(","))
+    if missing := [m for m in models if m not in efforts]:
+        raise SystemExit(f"--reasoning-effort gives no effort for {missing}")
+    return {m: efforts[m] for m in models}
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--arm", required=True, choices=ARMS)
@@ -98,7 +111,8 @@ def main() -> None:
     p.add_argument("--budget-type", default="cost",
                    help='what --budget meters: "cost" (default: dollars at swarm_scaling.prices), '
                         '"all" (input incl. cached + output tokens) or "output"')
-    p.add_argument("--reasoning-effort", default=None, help="explicit reasoning effort for every model (e.g. high)")
+    p.add_argument("--reasoning-effort", default=None,
+                   help="explicit reasoning effort for every model (e.g. high), or per model: model=effort,model=effort")
     p.add_argument("--tool-style", default="default", choices=("default", "claude_code"),
                    help="claude_code: SendMessage + shared task list instead of send_message (team arm only)")
     p.add_argument("--parallel", type=int, default=1,
@@ -236,7 +250,7 @@ def main() -> None:
             publish_notices=publish_notices,
             known_score=known_dev_score,
             tool_fixes=args.tool_fixes,
-            reasoning_effort={m: args.reasoning_effort for m in config["models"]} if args.reasoning_effort else None,
+            reasoning_effort=effort_by_model(args.reasoning_effort, config["models"]),
         ),
         model=config["models"][0],
         sample_id=args.sample,
