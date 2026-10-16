@@ -236,6 +236,8 @@ fallback_types() {  # fallback_types <machine-type>: it, then other x86 families
     case ${mt%%.*} in
       m*) fams="m7a m6a m7i r7a" ;;
       r*) fams="r7a r6a r7i" ;;
+      # t3a agent boxes (v7 cheap setup, 2026-10-16) stay t3a: a silent move to another family would change cost and box
+      t*) fams="t3a" ;;
       *) fams="c7a m7a m6a c6a m7i c7i" ;;
     esac
     for f in $fams; do [ "$f.${mt#*.}" = "$mt" ] || echo "$f.${mt#*.}"; done

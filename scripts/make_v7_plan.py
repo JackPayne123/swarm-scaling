@@ -21,13 +21,24 @@ V7_FLAGS = ("--experiment v7 --elicit diversified-v7 --end-on-budget --isolate-a
             "--tool-style claude_code --checker remote --cpus-per-agent 2 --split v7 --budget-type cost --time-limit 57600")
 
 
-def rows(prefix: str, task: str, repeat: int, model: str, effort: str, budget: float, big: bool) -> list[str]:
-    family, memory = ("m7a", BIG_AGENT_MEMORY_MB) if big else ("c7a", AGENT_MEMORY_MB)
+# Box types (team row, independent row) per --boxes and memory need. t3a (2026-10-16, Jack: cheapest boxes, more memory
+# where needed): t3a.large and t3a.2xlarge have the same memory as c7a.xlarge and c7a.4xlarge; t3a stops at 32 GiB, so a
+# big-memory team of 4 goes on m7a.4xlarge, the same box as with --boxes c7a.
+BOXES = {
+    ("c7a", False): ("c7a.4xlarge", "c7a.xlarge"), ("c7a", True): ("m7a.4xlarge", "m7a.xlarge"),
+    ("t3a", False): ("t3a.2xlarge", "t3a.large"), ("t3a", True): ("m7a.4xlarge", "t3a.xlarge"),
+}
+
+
+def rows(prefix: str, task: str, repeat: int, model: str, effort: str, budget: float, big: bool,
+         boxes: str = "c7a") -> list[str]:
+    team_box, indep_box = BOXES[(boxes, big)]
+    memory = BIG_AGENT_MEMORY_MB if big else AGENT_MEMORY_MB
     common = (f"--models {model} --reasoning-effort {effort} --budget {budget:g} --sample algotune/{task.replace('_', '-')} "
               f"{V7_FLAGS} --agent-memory-mb {memory}")
     group = f"{prefix}-{task}-r{repeat}"
-    out = [f"{group}-divteam aws {family}.4xlarge --arm team --n 4 {common}"]
-    out += [f"{group}-div-i{k} aws {family}.xlarge --arm independent {common} --priority-index {k}" for k in range(4)]
+    out = [f"{group}-divteam aws {team_box} --arm team --n 4 {common}"]
+    out += [f"{group}-div-i{k} aws {indep_box} --arm independent {common} --priority-index {k}" for k in range(4)]
     return out
 
 
@@ -39,6 +50,7 @@ def main() -> None:
     p.add_argument("--model", required=True)
     p.add_argument("--effort", required=True)
     p.add_argument("--budget", type=float, required=True, help="dollars per agent")
+    p.add_argument("--boxes", choices=("c7a", "t3a"), default="c7a", help="agent box family (t3a: burstable, cheapest)")
     args = p.parse_args()
     meta = json.loads((ROOT / "data/v7_tasks.json").read_text())["tasks"]
     tasks = args.tasks.split(",")
@@ -46,7 +58,7 @@ def main() -> None:
         raise SystemExit(f"not v7 candidates: {unknown}")
     for r in range(1, args.repeats + 1):  # repeat 1 of every task before repeat 2
         for t in tasks:
-            print("\n".join(rows(args.prefix, t, r, args.model, args.effort, args.budget, meta[t]["big_memory"])))
+            print("\n".join(rows(args.prefix, t, r, args.model, args.effort, args.budget, meta[t]["big_memory"], args.boxes)))
 
 
 if __name__ == "__main__":

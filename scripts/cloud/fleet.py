@@ -92,6 +92,9 @@ HOURLY_USD = {
     # pre-installed software), publication 2026-10-09T20:31Z, effective 2026-10-01, queried 2026-10-10
     "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448, "c7a.24xlarge": 4.92672,  # us-east-1 (24xlarge = 2 x 12xlarge, linear)
     "m7a.12xlarge": 3.4776, "m7a.16xlarge": 4.6368,  # ap-southeast-2
+    # burstable agent boxes (v7 cheap setup), us-east-1 Linux on-demand, AWS Price List API queried 2026-10-16; unlimited
+    # mode bills $0.05 per vCPU-hour above the 30-40% baseline (v6 agent boxes averaged 2-7% CPU)
+    "t3a.large": 0.0752, "t3a.xlarge": 0.1504, "t3a.2xlarge": 0.3008,
 }
 
 
