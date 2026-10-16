@@ -1,0 +1,24 @@
+{
+ "size": 24,
+ "a5i_accepted_of_10_per_instance": {
+  "reference": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ],
+  "eigh_f64_desc": [
+   10,
+   10,
+   10,
+   10,
+   10
+  ]
+ },
+ "rotated_accepted_of_20": 0,
+ "ablation_eigh_f64_desc": {
+  "speedup": 2.7569688585434347,
+  "valid": "25/25"
+ }
+}

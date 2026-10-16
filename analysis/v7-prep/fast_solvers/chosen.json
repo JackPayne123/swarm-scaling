@@ -1,0 +1,182 @@
+{
+ "chebyshev_center": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 9.26,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "generalized_eigenvectors_complex": {
+  "solver": "R1",
+  "local_speedup": 6.21,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "ode_lorenz96_nonchaotic": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 8.69,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "robust_kalman_filter": {
+  "solver": "Claude Opus 4.5",
+  "local_speedup": 22.72,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "graph_global_efficiency": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 12.8,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "pagerank": {
+  "solver": "GPT-5.4",
+  "local_speedup": 33.49,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "minimum_spanning_tree": {
+  "solver": "GPT-5.4",
+  "local_speedup": 5.83,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "shortest_path_dijkstra": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 3.99,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "l0_pruning": {
+  "solver": "GPT-5.4",
+  "local_speedup": 4.9,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "quantile_regression": {
+  "solver": "GLM-4.5",
+  "local_speedup": 1.54,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "clustering_outliers": {
+  "solver": "Qwen3 Coder",
+  "local_speedup": 2.79,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "generalized_eigenvectors_real": {
+  "solver": "Gemini 2.5 Pro",
+  "local_speedup": 2.72,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "eigenvalues_real": {
+  "solver": "GPT-5",
+  "local_speedup": 1.94,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "qp": {
+  "solver": "GPT-5",
+  "local_speedup": 1.91,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "psd_cone_projection": {
+  "solver": "GPT-5.2",
+  "local_speedup": 7.77,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "unit_simplex_projection": {
+  "solver": "o4-mini",
+  "local_speedup": 2.79,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "min_weight_assignment": {
+  "solver": "GPT-OSS-120b",
+  "local_speedup": 1.78,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "generalized_eigenvalues_complex": {
+  "solver": "Claude Opus 4.1",
+  "local_speedup": 10.41,
+  "invalid": "0/352",
+  "source": "scratchpad pub_out"
+ },
+ "lasso": {
+  "solver": "Qwen3 Coder",
+  "local_speedup": 1.39,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "two_eigenvalues_around_0": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 2.15,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "robust_linear_program": {
+  "solver": "Gemini 3 Pro Preview",
+  "local_speedup": 4.46,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "l1_pruning": {
+  "solver": "GPT-5.2",
+  "local_speedup": 2.47,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "pde_heat1d": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 3.32,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "sparse_lowest_eigenvalues_posdef": {
+  "solver": "Qwen3 Coder",
+  "local_speedup": 2.81,
+  "invalid": "0/400",
+  "source": "rescreen/pub_spl.json"
+ },
+ "least_squares": {
+  "solver": "GPT-5",
+  "local_speedup": 1.09,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "pca": {
+  "solver": "GPT-5 Pro (medium)",
+  "local_speedup": 2.77,
+  "invalid": "0/400",
+  "source": "rescreen/pub_pca.json"
+ },
+ "sinkhorn": {
+  "solver": "Qwen3 Coder",
+  "local_speedup": 1.16,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "stable_matching": {
+  "solver": "Gemini 3.1 Pro Preview (Cython, one file via pyximport)",
+  "local_speedup": 24.71,
+  "invalid": "0/40",
+  "source": "pub_cython.json + pyximport check"
+ },
+ "linear_system_solver": {
+  "solver": "GPT-5",
+  "local_speedup": 1.13,
+  "invalid": "0/400",
+  "source": "scratchpad pub_out"
+ },
+ "randomized_svd": {
+  "solver": "Gemini 3.1 Pro Preview",
+  "local_speedup": 4.63,
+  "invalid": "0/400",
+  "source": "ablations/pub_randomized_svd_patched.json"
+ }
+}

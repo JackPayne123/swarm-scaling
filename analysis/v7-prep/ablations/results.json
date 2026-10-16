@@ -1,0 +1,647 @@
+{
+ "rule": "2(b): log(variant)/log(best pub_out local speedup, 0 exceptions) >= 0.75 with 25/25 valid -> S",
+ "method": "ablate_m.py: Harbor input, 1 thread (OMP/OPENBLAS/MKL/NUMEXPR/NUMBA=1), seeds 3,000,000+i, 25 instances, warmup + min of 2",
+ "tasks": {
+  "chebyshev_center": {
+   "problem_size": 192,
+   "n_instances": 25,
+   "elapsed_s": 56.84299421310425,
+   "ref_cpu_over_wall": 0.4968139107210484,
+   "denominator": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "local_speedup": 9.259986553183463,
+    "n_invalid_of_400": 0,
+    "source": "chebyshev_center.json"
+   },
+   "same_run_published": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "speedup": 14.815247429006924,
+    "valid": "25/25",
+    "cpu_time_speedup": 8.35648518148554,
+    "cpu_over_wall": 0.8808034542815306
+   },
+   "variants": {
+    "C1 linprog highs-ds, presolve off": {
+     "speedup": 13.154843922631514,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.1577423030211107,
+     "share_vs_same_run_published": 0.9559043166838689,
+     "cpu_time_speedup": 6.603011472275358,
+     "cpu_share_vs_pub_out": 0.8480584205627889,
+     "cpu_over_wall": 0.9897770860415425,
+     "n_exceptions": 0
+    },
+    "C2 highspy passModel, dual simplex, presolve off": {
+     "speedup": 13.557622618347004,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.1712925833353436,
+     "share_vs_same_run_published": 0.9670922739787275,
+     "cpu_time_speedup": 7.29380690446948,
+     "cpu_share_vs_pub_out": 0.8927633107604817,
+     "cpu_over_wall": 0.9234705005658544,
+     "n_exceptions": 0
+    },
+    "C3 slab closed form (lstsq) with LP fallback": {
+     "speedup": 79.6806876805059,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.9670315569648302,
+     "share_vs_same_run_published": 1.6241040440946786,
+     "cpu_time_speedup": 40.48646795467266,
+     "cpu_share_vs_pub_out": 1.6628312333804465,
+     "cpu_over_wall": 0.9777705009934266,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "C1 linprog highs-ds, presolve off",
+    "C2 highspy passModel, dual simplex, presolve off",
+    "C3 slab closed form (lstsq) with LP fallback"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "generalized_eigenvectors_complex": {
+   "problem_size": 224,
+   "n_instances": 25,
+   "elapsed_s": 41.33260798454285,
+   "ref_cpu_over_wall": 0.6814403116725841,
+   "denominator": {
+    "solver": "R1",
+    "local_speedup": 6.207821858505836,
+    "n_invalid_of_400": 0,
+    "source": "generalized_eigenvectors_complex.json"
+   },
+   "same_run_published": {
+    "solver": "R1",
+    "speedup": 9.232622467000585,
+    "valid": "25/25",
+    "cpu_time_speedup": 6.526044714084729,
+    "cpu_over_wall": 0.9640573129831145
+   },
+   "variants": {
+    "G1 QZ to eig(solve(B, A)), reference post-processing": {
+     "speedup": 4.567989385071356,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.8319995378552304,
+     "share_vs_same_run_published": 0.6834227160262539,
+     "cpu_time_speedup": 4.268324882903516,
+     "cpu_share_vs_pub_out": 0.7948370213971925,
+     "cpu_over_wall": 0.7292819069954672,
+     "n_exceptions": 0
+    },
+    "G2 QZ kept, GPT-5.2 vectorised post-processing": {
+     "speedup": 1.0213912847634787,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.011592499519900313,
+     "share_vs_same_run_published": 0.00952233402418291,
+     "cpu_time_speedup": 1.0017686943141029,
+     "cpu_share_vs_pub_out": 0.00096786189800374,
+     "cpu_over_wall": 0.6947883272649475,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "G1 QZ to eig(solve(B, A)), reference post-processing"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "ode_lorenz96_nonchaotic": {
+   "problem_size": 6144,
+   "n_instances": 25,
+   "elapsed_s": 27.175901889801025,
+   "ref_cpu_over_wall": 0.6746806654880094,
+   "denominator": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "local_speedup": 8.691192564184517,
+    "n_invalid_of_400": 0,
+    "source": "ode_lorenz96_nonchaotic.json"
+   },
+   "same_run_published": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "speedup": 10.692238186815883,
+    "valid": "25/25",
+    "cpu_time_speedup": 8.959418306703467,
+    "cpu_over_wall": 0.805169055455288
+   },
+   "variants": {
+    "O1 numba RHS in solve_ivp": {
+     "speedup": 4.124092078302366,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.6552463735109847,
+     "share_vs_same_run_published": 0.597946860249419,
+     "cpu_time_speedup": 3.860710264922195,
+     "cpu_share_vs_pub_out": 0.6247259045120749,
+     "cpu_over_wall": 0.720708107314793,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [],
+   "route_class": "M",
+   "stratum": "M"
+  },
+  "graph_global_efficiency": {
+   "problem_size": 448,
+   "n_instances": 25,
+   "elapsed_s": 21.048911094665527,
+   "ref_cpu_over_wall": 0.6881762160713281,
+   "denominator": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "local_speedup": 12.80453626161358,
+    "n_invalid_of_400": 0,
+    "source": "graph_global_efficiency.json"
+   },
+   "same_run_published": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "speedup": 19.16851774673854,
+    "valid": "25/25",
+    "cpu_time_speedup": 13.821219296964866,
+    "cpu_over_wall": 0.9544250566622177
+   },
+   "variants": {
+    "E1 fromiter CSR + numba BFS summing 1/d (Opus 4.6 kernel)": {
+     "speedup": 17.87910848237587,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.1309253544397768,
+     "share_vs_same_run_published": 0.9764205970599855,
+     "cpu_time_speedup": 14.118436326612613,
+     "cpu_share_vs_pub_out": 1.0383096712009612,
+     "cpu_over_wall": 0.8714829983641864,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "E1 fromiter CSR + numba BFS summing 1/d (Opus 4.6 kernel)"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "pagerank": {
+   "problem_size": 4329,
+   "n_instances": 25,
+   "elapsed_s": 50.905930042266846,
+   "ref_cpu_over_wall": 0.7149899511820614,
+   "denominator": {
+    "solver": "GPT-5.4",
+    "local_speedup": 33.49108175842778,
+    "n_invalid_of_400": 0,
+    "source": "pagerank.json"
+   },
+   "same_run_published": {
+    "solver": "GPT-5.4",
+    "speedup": 47.168018674283836,
+    "valid": "25/25",
+    "cpu_time_speedup": 33.79946871800519,
+    "cpu_over_wall": 0.9977866708690432
+   },
+   "variants": {
+    "P1 fromiter CSR + numba power iteration": {
+     "speedup": 32.628034704942124,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.9925647301915218,
+     "share_vs_same_run_published": 0.9043665375082234,
+     "cpu_time_speedup": 33.177938939581956,
+     "cpu_share_vs_pub_out": 0.9973246154912948,
+     "cpu_over_wall": 0.7031394259702354,
+     "n_exceptions": 0
+    },
+    "P2 same CSR, scipy matvec + numpy loop": {
+     "speedup": 40.52377729759583,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.0542849765632145,
+     "share_vs_same_run_published": 0.960602391762839,
+     "cpu_time_speedup": 30.087171781852888,
+     "cpu_share_vs_pub_out": 0.9694754283991983,
+     "cpu_over_wall": 0.9630048899842599,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "P1 fromiter CSR + numba power iteration",
+    "P2 same CSR, scipy matvec + numpy loop"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "minimum_spanning_tree": {
+   "problem_size": 575,
+   "n_instances": 25,
+   "elapsed_s": 41.987982988357544,
+   "ref_cpu_over_wall": 0.7358020571210071,
+   "denominator": {
+    "solver": "GPT-5.4",
+    "local_speedup": 5.830677103887928,
+    "n_invalid_of_400": 0,
+    "source": "minimum_spanning_tree.json"
+   },
+   "same_run_published": {
+    "solver": "GPT-5.4",
+    "speedup": 7.460048962081177,
+    "valid": "25/25",
+    "cpu_time_speedup": 6.202445371741239,
+    "cpu_over_wall": 0.8849927800302062
+   },
+   "variants": {
+    "T1 asarray + stable argsort + numba union-find": {
+     "speedup": 8.007331373417474,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.1799208479926493,
+     "share_vs_same_run_published": 1.0352293519765836,
+     "cpu_time_speedup": 6.598733563898061,
+     "cpu_share_vs_pub_out": 1.070184496549419,
+     "cpu_over_wall": 0.8928699483859286,
+     "n_exceptions": 0
+    },
+    "T2 scipy minimum_spanning_tree": {
+     "speedup": 5.059219374844836,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.9195063977455207,
+     "share_vs_same_run_published": 0.806749040747815,
+     "cpu_time_speedup": 4.457655403259228,
+     "cpu_share_vs_pub_out": 0.8477084933934931,
+     "cpu_over_wall": 0.8350991018093296,
+     "n_exceptions": 0
+    },
+    "T3 plain Python Kruskal": {
+     "speedup": 10.596171131789093,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.3388057175650816,
+     "share_vs_same_run_published": 1.174630465912472,
+     "cpu_time_speedup": 9.359162892097986,
+     "cpu_share_vs_pub_out": 1.2683987428803678,
+     "cpu_over_wall": 0.8330536188187777,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "T1 asarray + stable argsort + numba union-find",
+    "T2 scipy minimum_spanning_tree",
+    "T3 plain Python Kruskal"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "shortest_path_dijkstra": {
+   "problem_size": 319,
+   "n_instances": 25,
+   "elapsed_s": 18.672982215881348,
+   "ref_cpu_over_wall": 0.7140143202099642,
+   "denominator": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "local_speedup": 3.9902403196892005,
+    "n_invalid_of_400": 0,
+    "source": "shortest_path_dijkstra.json"
+   },
+   "same_run_published": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "speedup": 5.769289643519991,
+    "valid": "25/25",
+    "cpu_time_speedup": 4.246427130901478,
+    "cpu_over_wall": 0.9700756179084159
+   },
+   "variants": {
+    "D1 output via dist_matrix.tolist()": {
+     "speedup": 2.32872484048659,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.610846513293681,
+     "share_vs_same_run_published": 0.4823379305596928,
+     "cpu_time_speedup": 2.227199278813446,
+     "cpu_share_vs_pub_out": 0.578634984125058,
+     "cpu_over_wall": 0.7465622406370059,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [],
+   "route_class": "M",
+   "stratum": "M"
+  },
+  "l0_pruning": {
+   "problem_size": 655360,
+   "n_instances": 25,
+   "elapsed_s": 44.18298387527466,
+   "ref_cpu_over_wall": 0.8038872712108741,
+   "denominator": {
+    "solver": "GPT-5.4",
+    "local_speedup": 4.896060686893034,
+    "n_invalid_of_400": 0,
+    "source": "l0_pruning.json"
+   },
+   "same_run_published": {
+    "solver": "GPT-5.4",
+    "speedup": 4.9135077731139685,
+    "valid": "25/25",
+    "cpu_time_speedup": 4.651706524962371,
+    "cpu_over_wall": 0.8491306006958292
+   },
+   "variants": {
+    "L0a argsort to argpartition": {
+     "speedup": 3.3502938070464006,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.7611587100755646,
+     "share_vs_same_run_published": 0.7594579664080179,
+     "cpu_time_speedup": 3.4671845247733475,
+     "cpu_share_vs_pub_out": 0.7827490996927717,
+     "cpu_over_wall": 0.7767854658607425,
+     "n_exceptions": 0
+    },
+    "L0b ndarray output": {
+     "speedup": 1.1249181795955459,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.0741047663919723,
+     "share_vs_same_run_published": 0.07393918566549851,
+     "cpu_time_speedup": 1.0847495734454122,
+     "cpu_share_vs_pub_out": 0.05121352801826628,
+     "cpu_over_wall": 0.833655461009568,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "L0a argsort to argpartition"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "l1_pruning": {
+   "problem_size": 393216,
+   "n_instances": 25,
+   "elapsed_s": 49.13114905357361,
+   "ref_cpu_over_wall": 0.7634703335774115,
+   "denominator": {
+    "solver": "o4-mini",
+    "local_speedup": 9.147671292956172,
+    "n_invalid_of_400": 1,
+    "source": "l1_pruning.json"
+   },
+   "same_run_published": {
+    "solver": "o4-mini",
+    "speedup": 9.567280850621506,
+    "valid": "25/25",
+    "cpu_time_speedup": 9.205377042405086,
+    "cpu_over_wall": 0.7934857061046987
+   },
+   "variants": {
+    "L1a ndarray output": {
+     "speedup": 0.9955663361660624,
+     "valid": "25/25",
+     "share_of_best_log_speedup": -0.002007464643276236,
+     "share_vs_same_run_published": -0.0019675973934629217,
+     "cpu_time_speedup": 1.054598104449723,
+     "cpu_share_vs_pub_out": 0.024016158333033923,
+     "cpu_over_wall": 0.7207346187747499,
+     "n_exceptions": 0
+    },
+    "L1b loop vectorised": {
+     "speedup": 1.5729616794842913,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.20463537236184146,
+     "share_vs_same_run_published": 0.20057141560030384,
+     "cpu_time_speedup": 1.5641312927955249,
+     "cpu_share_vs_pub_out": 0.20209203437762013,
+     "cpu_over_wall": 0.7677805460908641,
+     "n_exceptions": 0
+    },
+    "L1c sort + loop to numba Michelot": {
+     "speedup": 4.84439912015899,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.7128184707863127,
+     "share_vs_same_run_published": 0.6986622503310406,
+     "cpu_time_speedup": 4.5604419509751555,
+     "cpu_share_vs_pub_out": 0.6855296986792199,
+     "cpu_over_wall": 0.8110080233471768,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [],
+   "route_class": "M",
+   "stratum": "M"
+  },
+  "pde_heat1d": {
+   "problem_size": 8,
+   "n_instances": 25,
+   "elapsed_s": 30.848127126693726,
+   "ref_cpu_over_wall": 0.7216615565758694,
+   "denominator": {
+    "solver": "GPT-5.4",
+    "local_speedup": 3.5485549222733126,
+    "n_invalid_of_400": 1,
+    "source": "pde_heat1d.json"
+   },
+   "same_run_published": {
+    "solver": "GPT-5.4",
+    "speedup": 3.0006223837737687,
+    "valid": "25/25",
+    "cpu_time_speedup": 3.0724421356260017,
+    "cpu_over_wall": 0.7047923848789988
+   },
+   "variants": {
+    "H1 np.pad to preallocated buffer": {
+     "speedup": 2.2213463693894404,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.6301523813766955,
+     "share_vs_same_run_published": 0.7263370543114913,
+     "cpu_time_speedup": 2.1763498749780714,
+     "cpu_share_vs_pub_out": 0.6139946815215972,
+     "cpu_over_wall": 0.736582062038114,
+     "n_exceptions": 0
+    },
+    "H2 numba RHS in solve_ivp": {
+     "speedup": 3.8041128075912845,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 1.0549073205005104,
+     "share_vs_same_run_published": 1.2159253831113197,
+     "cpu_time_speedup": 3.299379894383606,
+     "cpu_share_vs_pub_out": 0.9425159172199877,
+     "cpu_over_wall": 0.8320599803586437,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "H2 numba RHS in solve_ivp"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "randomized_svd": {
+   "problem_size": 480,
+   "n_instances": 25,
+   "elapsed_s": 4.318742990493774,
+   "ref_cpu_over_wall": 0.8349602005720332,
+   "denominator": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "local_speedup": 4.634202204092629,
+    "n_invalid_of_400": 0,
+    "source": "pub_randomized_svd_patched.json"
+   },
+   "same_run_published": {
+    "solver": "Gemini 3.1 Pro Preview",
+    "speedup": 4.889406015940075,
+    "valid": "25/25",
+    "cpu_time_speedup": 4.533923327185374,
+    "cpu_over_wall": 0.9004253343388126
+   },
+   "variants": {
+    "R1 n_iter=0": {
+     "speedup": 2.197788008685655,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.5135114832672004,
+     "share_vs_same_run_published": 0.4961665166908631,
+     "cpu_time_speedup": 1.874056454066861,
+     "cpu_share_vs_pub_out": 0.4095989757235511,
+     "cpu_over_wall": 0.9791943634167138,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [],
+   "route_class": "M",
+   "stratum": "M"
+  }
+ },
+ "replicate_borderline": {
+  "generalized_eigenvectors_complex": {
+   "problem_size": 224,
+   "n_instances": 25,
+   "elapsed_s": 36.704376220703125,
+   "ref_cpu_over_wall": 0.7239925460793597,
+   "denominator": {
+    "solver": "R1",
+    "local_speedup": 6.207821858505836,
+    "n_invalid_of_400": 0,
+    "source": "generalized_eigenvectors_complex.json"
+   },
+   "same_run_published": {
+    "solver": "R1",
+    "speedup": 8.852913893416163,
+    "valid": "25/25",
+    "cpu_time_speedup": 6.437695099091617,
+    "cpu_over_wall": 0.9956115614764206
+   },
+   "variants": {
+    "G1 QZ to eig(solve(B, A)), reference post-processing": {
+     "speedup": 4.762552211545069,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.854844495910464,
+     "share_vs_same_run_published": 0.7157106936247132,
+     "cpu_time_speedup": 4.237275350458989,
+     "cpu_share_vs_pub_out": 0.7908382514391393,
+     "cpu_over_wall": 0.8137427984468606,
+     "n_exceptions": 0
+    },
+    "G2 QZ kept, GPT-5.2 vectorised post-processing": {
+     "speedup": 1.0792587733302756,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.04177569456035085,
+     "share_vs_same_run_published": 0.03497631612940104,
+     "cpu_time_speedup": 1.0065965251661753,
+     "cpu_share_vs_pub_out": 0.003601066370866115,
+     "cpu_over_wall": 0.7762547233638409,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "G1 QZ to eig(solve(B, A)), reference post-processing"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "l0_pruning": {
+   "problem_size": 655360,
+   "n_instances": 25,
+   "elapsed_s": 40.466634035110474,
+   "ref_cpu_over_wall": 0.8762060821361254,
+   "denominator": {
+    "solver": "GPT-5.4",
+    "local_speedup": 4.896060686893034,
+    "n_invalid_of_400": 0,
+    "source": "l0_pruning.json"
+   },
+   "same_run_published": {
+    "solver": "GPT-5.4",
+    "speedup": 4.902897414338291,
+    "valid": "25/25",
+    "cpu_time_speedup": 4.614905381579828,
+    "cpu_over_wall": 0.9308855067061103
+   },
+   "variants": {
+    "L0a argsort to argpartition": {
+     "speedup": 3.343236578536325,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.759831191033405,
+     "share_vs_same_run_published": 0.7591642831341919,
+     "cpu_time_speedup": 3.4172255504364513,
+     "cpu_share_vs_pub_out": 0.7736118379940119,
+     "cpu_over_wall": 0.8572346720746475,
+     "n_exceptions": 0
+    },
+    "L0b ndarray output": {
+     "speedup": 1.0362584442585103,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.022422489635574878,
+     "share_vs_same_run_published": 0.022402809296527923,
+     "cpu_time_speedup": 1.0783245703431306,
+     "cpu_share_vs_pub_out": 0.04747358598755707,
+     "cpu_over_wall": 0.8420247265953528,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [
+    "L0a argsort to argpartition"
+   ],
+   "route_class": "M",
+   "stratum": "S"
+  },
+  "l1_pruning": {
+   "problem_size": 393216,
+   "n_instances": 25,
+   "elapsed_s": 46.48642587661743,
+   "ref_cpu_over_wall": 0.7878847614715544,
+   "denominator": {
+    "solver": "o4-mini",
+    "local_speedup": 9.147671292956172,
+    "n_invalid_of_400": 1,
+    "source": "l1_pruning.json"
+   },
+   "same_run_published": {
+    "solver": "o4-mini",
+    "speedup": 10.899859378555902,
+    "valid": "25/25",
+    "cpu_time_speedup": 9.05458664898307,
+    "cpu_over_wall": 0.9484511485139424
+   },
+   "variants": {
+    "L1a ndarray output": {
+     "speedup": 1.0500382727726874,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.02205856256996941,
+     "share_vs_same_run_published": 0.020440236965803073,
+     "cpu_time_speedup": 1.0385423762044865,
+     "cpu_share_vs_pub_out": 0.017085240534864106,
+     "cpu_over_wall": 0.7966060634935676,
+     "n_exceptions": 0
+    },
+    "L1b loop vectorised": {
+     "speedup": 1.5599114082032342,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.2008715436769966,
+     "share_vs_same_run_published": 0.18613461051329813,
+     "cpu_time_speedup": 1.5486381396509323,
+     "cpu_share_vs_pub_out": 0.19759478422436766,
+     "cpu_over_wall": 0.7936201468252544,
+     "n_exceptions": 0
+    },
+    "L1c sort + loop to numba Michelot": {
+     "speedup": 4.542297210697531,
+     "valid": "25/25",
+     "share_of_best_log_speedup": 0.6837286318354726,
+     "share_vs_same_run_published": 0.6335669067597258,
+     "cpu_time_speedup": 4.453898511487318,
+     "cpu_share_vs_pub_out": 0.6748498874002886,
+     "cpu_over_wall": 0.8035222951652389,
+     "n_exceptions": 0
+    }
+   },
+   "variants_reaching_75pct_valid": [],
+   "route_class": "M",
+   "stratum": "M"
+  }
+ }
+}

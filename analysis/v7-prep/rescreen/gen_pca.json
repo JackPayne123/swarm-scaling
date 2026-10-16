@@ -1,0 +1,14 @@
+{
+"task": "pca",
+"n": 1000,
+"bad_in": [],
+"bad_out": [],
+"ref_invalid": [],
+"errors": [],
+"n_errors": 0,
+"ess": 892.9811288854443,
+"ess_per100": 89.29811288854442,
+"max_over_median": 9.11456207375682,
+"p99_over_median": 2.203616324107263,
+"elapsed": 134.44824075698853
+}

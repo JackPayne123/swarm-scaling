@@ -206,6 +206,39 @@ Built after the v6 reviews (four transcript reports, the harness audit, the anom
 
 Not built: non-blocking dev_eval (deferred).
 
+## v7: task screen, strata and scorer checks (pre-registered 2026-10-16, before any v7 run or scorer check)
+
+Written and committed before any Phase B scorer job or any v7 agent run. The screen's evidence and reasoning are in `analysis/v6-followup/v7-tasks.md` (2026-10-14); local measurements made for this section are in `analysis/v7-prep/`.
+
+**Pool.** The frozen headroom rule (best published speedup in [1.5, 10], median at least 1.05) extended once: the upper bound is raised to 50x, everything else unchanged, tasks in (50, 100] not screened. Pilot tasks are barred. Rules (a) and (b) of the v6 selection apply (rule (a) read to include MILP branch and bound). Duplicates are dropped (sparse_lowest_eigenvectors_posdef).
+
+**Local screen (A1-A5, done).** A1 upstream fixes ported or the task excluded; A2 no degenerate instance in 1,000 and no generator that reads global RNG state; A3 reference-time ESS at least 50 per 100 and no instance above 10% of the total; A4 no trivial output accepted on 30 instances; A5i the same output never gets different verdicts; A5ii rare failures admitted only with the selection validity pass of 1,000 instances; A5iii the pass must cost at most 30 core-minutes per candidate. Results: v7-tasks.md, plus:
+
+- Task fixes (`tasks.TASK_PATCHES`, experiments after v6 only; v6 keeps Harbor's code): pca and randomized_svd get upstream AlgoTune's verifier (HEAD dff9914), verbatim, in the agents' toolkit, the instruction, the scorer's toolkit and the verifier; sparse_lowest_eigenvalues_posdef's generator gets `random_state=rng` (our patch; upstream has the same bug). optimal_advertising (upstream's NaN generator fix) is a pilot task, outside the pool, and is not patched.
+- Rescreen of the three patched tasks with the same scripts (`analysis/v7-prep/rescreen/`): A2 0 degenerate of 1,000 each; A3 ESS 89-96 per 100; A4 zeros and another instance's output rejected 30/30 and 29/29; the trivial randomized_svd output (U = I, S = 0, V = I) 0/20 and a rotated pca subspace 0/20; A5i the pca reference and its eigh variant accepted 10 of 10 calls on each of 5 instances (the verifier re-runs a randomized sklearn PCA); sparse_lowest instances now identical under different global seeds. Published solvers under the ports: pca's float32 and ascending-order solvers fail 400/400, the float64 descending ones pass 0/400 invalid (best GPT-5 Pro 2.77 locally); randomized_svd's top 3 pass 0/400 (best 4.63); sparse_lowest's top 3 pass 0/400 on the seeded generator (4/400 and 1/400 before). randomized_svd is readmitted.
+- stable_matching: the published Cython solvers, compiled locally, run at 24.7x (Gemini 3.1 Pro), 12.5x and 12.1x in Harbor format, 0/400 invalid; Gemini 3.1 Pro's also runs as one solver.py that compiles its .pyx with pyximport at import. Its Harbor headroom is demonstrated.
+- Memory: tasks whose 100 generated problems take more than 4 GiB on the Mac (sinkhorn 8.9, stable_matching 8.5, linear_system_solver 6.3, lasso 5.5, two_eigenvalues_around_0 5.2, min_weight_assignment 4.3) run on m7a with 13,056 MiB per agent box; every other task on c7a with 5,376 MiB (`scripts/make_v7_plan.py`). Scorer slots get 16 GB.
+
+Candidates after the local screen: 30 tasks, `data/algotune_split.json` key `v7` (runner `--split v7`).
+
+**Strata (frozen now; never exclusions).** Rule 1, the published route class from the published solvers' code: S (every solver within 1.5x of the best gets most of its gain from one change; no other component above about 1.2x), M (two or more components each about 1.3x or more, acting on different parts, stacking), A (several routes replace the same computation), U (none of these). Rule 2, overrides to S: (a) converting the input lists takes at least 50% of the reference's time; (b) a one-change variant of the reference reaches at least 75% of the best published solver's local log speedup in Harbor format (1 thread, 25 instances, variants named in the route reports before timing, each alternative tested alone). Rule 2(b) was applied to every task of route class M (11 tasks, `analysis/v7-prep/ablations/ablations.md`; 7 moved to S) and earlier to 7 others; it was not applied to A and U tasks. Result, per task in `data/v7_tasks.json`: S 21, M 4 (ode_lorenz96_nonchaotic, shortest_path_dijkstra, l1_pruning, randomized_svd), A 3 (robust_kalman_filter, quantile_regression, clustering_outliers), U 2 (generalized_eigenvectors_real, least_squares).
+
+**Scorer checks (Phase B), one c7a.24xlarge scorer serving experiment v7, `scripts/v7_scorer_checks.py`.** For every candidate: 3 score jobs of the reference against itself (A6i), 3 score jobs of a known fast solver (A6ii; the fastest published single-file solver with 0 invalid and 0 exceptions in the local run, or for stable_matching the one-file Cython solver; `analysis/v7-prep/fast_solvers/`), 1 final_eval job of that solver on finalize's stage-1 instances (A6iv), and 1 validity job of the reference on 1,000 fresh instances (300 for generalized_eigenvalues_complex). Scores are the primary alone scores. A task is excluded when:
+
+| Check | Exclude when |
+|---|---|
+| A6i | the reference's 3 alone raw speedups differ by more than 5% (max/min) |
+| A6ii | any fast-solver job has reference inflation outside [0.87, 1.15], or a first-call ratio above 5 from a solver that does not compile on its first call (numba or pyximport solvers above 5 are flagged and read instead) |
+| A6iii | the fast solver's 3 alone scores differ by more than 10%: 3 more jobs, and exclude when the 6 differ by more than 1.25x (two timing modes 1.25x apart, or noise as wide); whether the six look bimodal is reported |
+| A6iv | never excludes: flag when the stage-1 dev score and the hidden interleaved median differ by more than 1.28x (log 0.25) |
+| Reference validity | the reference fails any of its validity instances |
+
+A job that fails (crash, timeout, out of memory) is rerun once before any verdict; a task whose job fails twice is excluded. The reference's validity run time sets the main run's `--validity-n-task`: 1,000 (300 for generalized_eigenvalues_complex) when it takes at most 1,800 s, else cut in proportion to a multiple of 100. Excluded tasks are not replaced and the pool is not refilled. Since 30 or fewer pass, there is no draw: every passing task is in the final list. Once, on the same scorer: `scripts/slot_interference.py` (never run on a multi-slot scorer) with one repeat.
+
+**Calibration tasks (Phase C), fixed now.** From the final list, `rng = random.Random(20261016)`, `m = rng.choice(sorted(final M tasks))`, then `s = rng.choice(sorted(final S tasks))` from the same generator. If no M task survives Phase B, the M draw uses the A tasks instead and the report says so. The two calibration tasks become pilot tasks: they leave the main run's held-out set (pilot and held-out tasks never overlap).
+
+**Analysis of the main run (fixed now, in addition to the v6 section's).** Every result for every final task; the bootstrap resamples tasks with repeats nested, and as a sensitivity resamples families. Pre-registered sensitivity analyses: without stratum S; M only (exploratory, few tasks); new tasks only (the v6 seven are labelled a replication; v7 pca is a different task from v6 pca because of the verifier port).
+
 ## Decisions log
 
 | Date | Decision | Why |
@@ -250,6 +283,8 @@ Not built: non-blocking dev_eval (deferred).
 | 2026-10-14 | v7 group starts (`--group-start`) | Teams started 83-166 min after their group's independents in 10 of 14 v6 groups |
 | 2026-10-14 | v7 secret offset (`--experiment v7`, `data/.algotune_seed_offset.v7`); v6 keeps its own | The v6 hidden instances informed the v6 diagnosis (Sol review); v6 must still reproduce |
 | 2026-10-14 | v7 elicitation `--elicit diversified-v7` (persistence block in every arm, v7 team block in place of TEAM_SHARING), only with `--end-on-budget` | Fable's tightened draft with the Sol review's "smallest implementation" wording; the text says the run ends at the budget, which is true only without submit |
+| 2026-10-16 | v7 task screen, strata, scorer-check thresholds and calibration-task rule pre-registered (section "v7: task screen, strata and scorer checks"); 30 candidates in `--split v7`; pca and randomized_svd on upstream's verifiers, sparse_lowest's generator seeded (v7 only) | Jack approved the scorer checks and an Opus calibration (2026-10-16). Harbor's pca accepts rotated subspaces and randomized_svd a no-computation answer; sparse_lowest's instances changed at every scoring |
+| 2026-10-16 | v7 agent memory 5,376 MiB per box on c7a, 13,056 MiB on m7a for tasks whose 100 problems exceed 4 GiB | The same value in every row of a task; both fit the Docker hosts v6 measured with headroom |
 
 ## Must fix before the Harvey pilot
 
