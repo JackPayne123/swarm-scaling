@@ -195,5 +195,38 @@
       "best": 3.617,
       "median": 1.22
     }
-  }
+  },
+  "v7": [
+    "chebyshev_center",
+    "clustering_outliers",
+    "eigenvalues_real",
+    "generalized_eigenvalues_complex",
+    "generalized_eigenvectors_complex",
+    "generalized_eigenvectors_real",
+    "graph_global_efficiency",
+    "l0_pruning",
+    "l1_pruning",
+    "lasso",
+    "least_squares",
+    "linear_system_solver",
+    "min_weight_assignment",
+    "minimum_spanning_tree",
+    "ode_lorenz96_nonchaotic",
+    "pagerank",
+    "pca",
+    "pde_heat1d",
+    "psd_cone_projection",
+    "qp",
+    "quantile_regression",
+    "randomized_svd",
+    "robust_kalman_filter",
+    "robust_linear_program",
+    "shortest_path_dijkstra",
+    "sinkhorn",
+    "sparse_lowest_eigenvalues_posdef",
+    "stable_matching",
+    "two_eigenvalues_around_0",
+    "unit_simplex_projection"
+  ],
+  "v7_rule": "the v7 screen's candidates (PLAN.md, v7 task screen; analysis/v6-followup/v7-tasks.md): the frozen rule with the best-model bound raised to 50x, minus pilot tasks, rules (a) and (b), and the local screen A0-A5; randomized_svd and pca with upstream AlgoTune's verifier (tasks.TASK_PATCHES)"
 }

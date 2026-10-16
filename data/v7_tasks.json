@@ -1,0 +1,185 @@
+{
+ "note": "v7 candidate tasks: stratum (PLAN.md strata rule, frozen 2026-10-16 before any v7 run) and memory class (100 generated problems above 4 GiB, measured on the Mac: m7a boxes)",
+ "tasks": {
+  "chebyshev_center": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) linprog without presolve 116%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "clustering_outliers": {
+   "stratum": "A",
+   "stratum_basis": "route class A",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "eigenvalues_real": {
+   "stratum": "S",
+   "stratum_basis": "route class S; 2(b) eigvalsh 95%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "generalized_eigenvalues_complex": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) eigvals(solve(B, A)) 80%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "generalized_eigenvectors_complex": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) eig(solve(B, A)) 83%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "generalized_eigenvectors_real": {
+   "stratum": "U",
+   "stratum_basis": "route class U",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "graph_global_efficiency": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) numba BFS 113%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "l0_pruning": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) argpartition 76%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "l1_pruning": {
+   "stratum": "M",
+   "stratum_basis": "route class M; best one change (numba Michelot) 71%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "lasso": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) float32 Lasso above 100%",
+   "memory_100_problems_gib": 5.5,
+   "big_memory": true
+  },
+  "least_squares": {
+   "stratum": "U",
+   "stratum_basis": "route class U",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "linear_system_solver": {
+   "stratum": "S",
+   "stratum_basis": "2(a) list conversion 58% of reference time",
+   "memory_100_problems_gib": 6.3,
+   "big_memory": true
+  },
+  "min_weight_assignment": {
+   "stratum": "S",
+   "stratum_basis": "route class S",
+   "memory_100_problems_gib": 4.3,
+   "big_memory": true
+  },
+  "minimum_spanning_tree": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) plain Python Kruskal 134%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "ode_lorenz96_nonchaotic": {
+   "stratum": "M",
+   "stratum_basis": "route class M; best one change (numba RHS) 66%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "pagerank": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) numba power iteration 99%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "pca": {
+   "stratum": "S",
+   "stratum_basis": "route class S; 2(b) eigh of X^T X 100% under the upstream verifier port",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "pde_heat1d": {
+   "stratum": "S",
+   "stratum_basis": "route class M; 2(b) numba RHS 105%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "psd_cone_projection": {
+   "stratum": "S",
+   "stratum_basis": "route class S; 2(b) eigh 100%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "qp": {
+   "stratum": "S",
+   "stratum_basis": "route class S (OSQP direct)",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "quantile_regression": {
+   "stratum": "A",
+   "stratum_basis": "route class A",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "randomized_svd": {
+   "stratum": "M",
+   "stratum_basis": "route class M; best one change (n_iter=0) 51% under the upstream verifier port",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "robust_kalman_filter": {
+   "stratum": "A",
+   "stratum_basis": "route class A",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "robust_linear_program": {
+   "stratum": "S",
+   "stratum_basis": "route class S",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "shortest_path_dijkstra": {
+   "stratum": "M",
+   "stratum_basis": "route class M; best one change (tolist output) 61%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "sinkhorn": {
+   "stratum": "S",
+   "stratum_basis": "route class A; 2(a) list conversion 76-81% of reference time",
+   "memory_100_problems_gib": 8.9,
+   "big_memory": true
+  },
+  "sparse_lowest_eigenvalues_posdef": {
+   "stratum": "S",
+   "stratum_basis": "route class S; 2(b) ARPACK tol 5e-4 87%",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  },
+  "stable_matching": {
+   "stratum": "S",
+   "stratum_basis": "2(a) list conversion 123% of reference time",
+   "memory_100_problems_gib": 8.5,
+   "big_memory": true
+  },
+  "two_eigenvalues_around_0": {
+   "stratum": "S",
+   "stratum_basis": "route class S",
+   "memory_100_problems_gib": 5.2,
+   "big_memory": true
+  },
+  "unit_simplex_projection": {
+   "stratum": "S",
+   "stratum_basis": "route class S",
+   "memory_100_problems_gib": null,
+   "big_memory": false
+  }
+ }
+}
