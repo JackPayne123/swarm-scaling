@@ -158,3 +158,35 @@ async def test_each_portfolio_is_written_when_it_is_done_and_every_job_has_a_sta
     assert written == ["fast", "slow"] and [r["portfolio"] for r in rows] == ["slow", "fast"]
     assert len(ids) == len(set(ids)) == 8  # 2 x (1 stage-2 + 3 hidden repeats)
     assert "claim/fast/sha-B/score/r2" in ids
+
+
+@pytest.mark.asyncio
+async def test_hidden_jobs_run_exclusively_and_must_all_come_from_the_scorer_session_selection_started_on() -> None:
+    # v7 calibration: the same ode solver scored up to 1.17x apart by slot and load in one session; a comparison's hidden
+    # scores now run with the other slots idle, on one slot, in one session (one machine type).
+    def portfolio(name: str) -> dict:
+        return {"portfolio": name, "task": "algotune/qp", "arm": "team", "protocol": "diversified-v7", "runs": [name],
+                "priority_indexes": [0], "sources": {"sha-A": "A"},
+                "candidates": [{"sha256": "sha-A", "valid": True, "speedup": 2.0, "run": name, "agent_id": "agent_0",
+                                "kind": "published"}]}  # fmt: skip
+
+    jobs = []
+
+    def fake(session_of_hidden: str):
+        async def run_job(job: dict) -> dict:
+            jobs.append(job)
+            result = {"score": 2.0, "alone_score": 2.0, "valid": True, "scoring_timeout": False, "first_call_ratio": 1.0,
+                      "reference_inflation": 1.0}  # fmt: skip
+            return {"status": "done", "result": result, "job_id": "j",
+                    "session": session_of_hidden if job["kind"] == "score" else "s1"}  # fmt: skip
+
+        return run_job
+
+    scorer = {"session": "s1", "machine_type": "c7a.8xlarge", "cpu_model": "AMD EPYC 9R14", "slots": 3, "exclusive_slot": 0}
+    (row,) = await sp.select([portfolio("p1")], {"algotune/qp": "qp"}, run_job=fake("s1"), exclusive_hidden=True, scorer=scorer)
+    assert {j["kind"]: j.get("exclusive", False) for j in jobs} == {"score_dev": False, "score": True}
+    assert row["exclusive_hidden"] is True and row["scorer"] == scorer
+    assert [r["job"]["session"] for r in row["hidden"]["sha-A"]["scores"]] == ["s1"] * 3
+    with pytest.raises(BaseExceptionGroup) as failed:  # a restarted service: fail, write no mixed row
+        await sp.select([portfolio("p2")], {"algotune/qp": "qp"}, run_job=fake("s2"), exclusive_hidden=True, scorer=scorer)
+    assert failed.group_contains(RuntimeError, match="scorer sessions")

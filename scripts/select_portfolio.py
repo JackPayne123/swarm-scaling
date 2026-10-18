@@ -19,6 +19,11 @@ pick is fixed before any of its hidden jobs is submitted, so hidden scores never
 shortlist (the pick's median, the others' single score) is reported as an oracle bound.
 Scores: stage 2 and hidden use the logs' primary score (run metadata primary_score: "alone", against the reference
 timed alone, for v7; AlgoTune's interleaved "score" before), unless --primary-score overrides; both are recorded.
+Exclusive hidden scoring (--exclusive-hidden, default on for v7 logs; 2026-10-18): every hidden job runs as an
+exclusive scorer job, with every other slot idle and always on the same slot's CPUs, because in the v7 calibration the
+same multi-threaded ode solver scored up to 1.17x apart by slot and load (HARNESS.md, "Scorer noise"). Every hidden
+job must come from the scorer session /health named when the selection started (one service run on one machine
+type); a selection whose hidden jobs ran in another session fails instead of writing a mixed row.
 
     SCORER_TOKEN=... uv run python scripts/select_portfolio.py 'logs/v6p-*' --scorer http://<scorer>:8770
 
@@ -153,10 +158,12 @@ async def select(
     shortlist: int = SHORTLIST, repeats: int = REPEATS, seed: int = SELECT_SEED, concurrency: int = 8,
     primary: str = "interleaved", validity_n: int = 0, validity_seed: int = VALIDITY_SEED,
     on_row: Callable[[dict], None] | None = None, request_prefix: str = "", validity_n_by_task: dict[str, int] | None = None,
+    exclusive_hidden: bool = False, scorer: dict | None = None,
 ) -> list[dict]:
     """One output row per portfolio. Portfolios run concurrently (jobs share `concurrency`); within one, the validity
     pass (validity_n > 0) and stage 2 come first and the pick is fixed before its hidden jobs. on_row(row) gets each
-    row as soon as it is final. Every job's request_id starts with request_prefix."""
+    row as soon as it is final. Every job's request_id starts with request_prefix. exclusive_hidden: hidden jobs run
+    as exclusive scorer jobs. scorer: the service's /health at the start; every hidden job must carry its session."""
     limiter = anyio.CapacityLimiter(concurrency)
     key = SCORE_KEYS[primary]
 
@@ -206,9 +213,14 @@ async def select(
             row["hidden"][e["sha256"]] = {"scores": []}
             picked = row["pick"] is not None and e["sha256"] == row["pick"]["sha256"]
             for r in range(repeats if picked else 1):  # the others only feed the oracle bound
-                calls.append((job(p, e["sha256"], "score", f"r{r}"),
+                calls.append((job(p, e["sha256"], "score", f"r{r}", **({"exclusive": True} if exclusive_hidden else {})),
                               lambda rec, h=row["hidden"][e["sha256"]]: h["scores"].append(_result(rec))))  # fmt: skip
         await run_all(calls)
+        if scorer is not None:
+            sessions = {r["job"].get("session") for h in row["hidden"].values() for r in h["scores"]}
+            if sessions - {scorer["session"]}:
+                raise RuntimeError(f"{p['portfolio']}: hidden jobs ran in scorer sessions {sorted(sessions, key=str)}, not "
+                                   f"only {scorer['session']}: rerun the selection on one scorer")  # fmt: skip
 
         for h in row["hidden"].values():
             for name, field in (("median", key), ("median_algotune", "score"), ("median_alone", "alone_score")):
@@ -230,7 +242,8 @@ async def select(
             "primary_score": primary, "stage1": ranked,
             "validity_n": (validity_n_by_task or {}).get(names[p["task"]], validity_n) if validity_n else 0,
             "validity_seed": validity_seed if validity_n else None, "validity": [], "stage2_seed": seed, "stage2": [],
-            "pick": None, "hidden": {},
+            "pick": None, "hidden": {}, "exclusive_hidden": exclusive_hidden,
+            "scorer": None if scorer is None else {k: scorer.get(k) for k in ("session", "machine_type", "cpu_model", "slots", "exclusive_slot")},
         })  # fmt: skip
     async with anyio.create_task_group() as tg:
         for p, row in zip(portfolios, rows):
@@ -299,6 +312,8 @@ def main() -> None:
     p.add_argument("--validity-n-task", action="append", default=[], metavar="TASK=N",
                    help="a task's own validity-pass size (repeatable), e.g. generalized_eigenvalues_complex=100")
     p.add_argument("--fresh", action="store_true", help="new request ids: re-time instead of resuming earlier jobs")
+    p.add_argument("--exclusive-hidden", action=argparse.BooleanOptionalAction, default=None,
+                   help="hidden jobs run with every other scorer slot idle, on one slot (default: on for v7 logs)")
     args = p.parse_args()
     os.environ["SCORER_URL"] = args.scorer
     if not claim(args.logs):
@@ -317,6 +332,9 @@ def main() -> None:
     if service.get("experiment", "v6") != experiment:
         sys.exit(f"logs are experiment {experiment}, the scorer serves {service.get('experiment', 'v6')}")
     primary = args.primary_score or logged_primary
+    exclusive = args.exclusive_hidden if args.exclusive_hidden is not None else experiment == "v7"
+    if exclusive and "exclusive_slot" not in service:
+        sys.exit("the scorer predates exclusive jobs: it would run hidden jobs beside others (--no-exclusive-hidden to accept that)")
     prefix = claim_path([Path(x).name for x in args.logs]).name + (f"-{time.time_ns()}" if args.fresh else "")
 
     out = PROJECT_ROOT / "analysis" / "portfolio" / f"{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}.jsonl"
@@ -330,7 +348,8 @@ def main() -> None:
     rows = anyio.run(lambda: select(list(portfolios.values()), task_names(), shortlist=args.shortlist,
                                     repeats=args.repeats, concurrency=args.concurrency, primary=primary,
                                     validity_n=args.validity_n, on_row=write, request_prefix=prefix,
-                                    validity_n_by_task={k: int(v) for k, v in (x.split("=", 1) for x in args.validity_n_task)}))  # fmt: skip
+                                    validity_n_by_task={k: int(v) for k, v in (x.split("=", 1) for x in args.validity_n_task)},
+                                    exclusive_hidden=exclusive, scorer=service if "session" in service else None))  # fmt: skip
     print(f"{'portfolio':40} {'arm':12} {'prompt':12} {'runs':>4} {'distinct':>8} {'s1 rank':>7} {'stage 2':>8} "
           f"{'hidden':>8} {'oracle*':>8}")  # fmt: skip
     for r in sorted(rows, key=lambda r: r["portfolio"]):
