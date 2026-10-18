@@ -162,7 +162,7 @@ async def test_each_portfolio_is_written_when_it_is_done_and_every_job_has_a_sta
 
 @pytest.mark.asyncio
 async def test_hidden_jobs_run_exclusively_alternating_arms_and_all_in_the_scorer_session_selection_started_on() -> None:
-    # v7 calibration: the same ode solver scored up to 1.17x apart by slot and load in one session; a comparison's hidden
+    # v7 calibration: the same ode solver scored up to 1.16x apart by slot and load in one session; a comparison's hidden
     # scores now run with the other slots idle, on one slot, in one session (one machine type).
     def portfolio(name: str) -> dict:
         return {"portfolio": name, "task": "algotune/qp", "arm": "team", "protocol": "diversified-v7", "runs": [name],

@@ -21,7 +21,7 @@ Scores: stage 2 and hidden use the logs' primary score (run metadata primary_sco
 timed alone, for v7; AlgoTune's interleaved "score" before), unless --primary-score overrides; both are recorded.
 Exclusive hidden scoring (--exclusive-hidden, default on for v7 logs; 2026-10-18): every hidden job runs as an
 exclusive scorer job, with every other slot idle and always on the same slot's CPUs, because in the v7 calibration the
-same multi-threaded ode solver scored up to 1.17x apart by slot and load (HARNESS.md, "Scorer noise"). Every hidden
+same multi-threaded ode solver scored up to 1.16x apart by slot and load (HARNESS.md, "Scorer noise"). Every hidden
 job must come from the scorer session /health named when the selection started (one service run on one machine
 type); a selection whose hidden jobs ran in another session fails instead of writing a mixed row.
 

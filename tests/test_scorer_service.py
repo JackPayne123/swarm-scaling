@@ -449,7 +449,7 @@ def test_health_gives_the_hardware_the_prompt_states_and_jobs_carry_the_service_
 
 
 def test_an_exclusive_job_waits_for_running_jobs_runs_alone_on_its_slot_and_later_jobs_wait_for_it(serve) -> None:
-    # v7 calibration: one ode solver scored up to 1.17x apart by slot and load; hidden scoring now runs with the other
+    # v7 calibration: one ode solver scored up to 1.16x apart by slot and load; hidden scoring now runs with the other
     # slots idle, always on the same CPUs, and later jobs cannot jump ahead of it.
     import time
 
