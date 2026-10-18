@@ -22,6 +22,8 @@ SPEND_CAP=${2:?usage: v6.sh <plan.tsv> <SPEND_CAP dollars> [ref]}
 REF=${3:-v6}
 shift $(( $# < 3 ? $# : 3 ))
 SEL=(${SELECTION_SCORER:+--selection-scorer "$SELECTION_SCORER"})
+# `bgjob stop` (TERM) or Ctrl+C must not leave scorers billing until their HOURS backstop
+trap 'SCORER_NAME=agent bash scripts/cloud/scorer.sh down; SCORER_NAME=select bash scripts/cloud/scorer.sh down; exit 143' TERM INT
 
 read -r SLOTS MACHINE MAX_AGENTS < <(uv run python scripts/v6_drive.py size "$PLAN" ${SCORER_MACHINE:+--machine "$SCORER_MACHINE"} ${SEL[@]+"${SEL[@]}"})
 [ -n "${MAX_AGENTS:-}" ] || { echo "[v6] could not size the scorer for $PLAN" >&2; exit 1; }
