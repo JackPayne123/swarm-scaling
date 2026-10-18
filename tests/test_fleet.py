@@ -271,3 +271,65 @@ def test_the_public_ip_lookup_retries_with_backoff_until_the_network_returns_and
     assert my_ip(4, 900) == (0, "203.0.113.7", ["5", "10", "20", "40"])  # a non-IP answer counts as a failure
     rc, out, slept = my_ip(1000, 900)  # never returns: about 15 min of backoff, capped at 60 s per wait, then fails
     assert rc == 1 and out == "" and slept[:6] == ["5", "10", "20", "40", "60", "60"] and sum(map(int, slept)) in range(900, 961)
+
+
+def _common(tmp_path, script: str, name: str | None = None, path: str | None = None):
+    """Run `script` after sourcing common.sh with HOME in tmp_path (never the real scorer state) and SCORER_NAME=name."""
+    import os
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "SCORER_NAME"} | {"HOME": str(tmp_path)}
+    env |= {"SCORER_NAME": name} if name else {}
+    env |= {"PATH": f"{path}:{env['PATH']}"} if path else {}
+    return subprocess.run(["bash", "-c", script], cwd=ROOT, env=env, capture_output=True, text=True)
+
+
+def test_each_scorer_has_its_own_state_vm_and_security_group_and_an_ip_refresh_reopens_every_scorer_that_is_up(tmp_path):
+    """v7 selection gets a scorer of its own (v6_drive.py --selection-scorer) while agents use theirs: scorer.sh must act
+    on one of them, and a changed operator IP (twice in v6) must be re-opened on both. Network calls are stubbed."""
+    show = 'source scripts/cloud/common.sh && echo "$SCORER_NAME $SCORER_STATE $SCORER_VM $AWS_SG_SCORER"'
+    cache = tmp_path / ".cache/swarm-scaling"
+    assert _common(tmp_path, show).stdout.split() == ["agent", f"{cache}/scorer.json", "ss-scorer", "swarm-scorer"]
+    assert _common(tmp_path, show, "select").stdout.split() == [
+        "select", f"{cache}/scorer-select.json", "ss-scorer-select", "swarm-scorer-select"
+    ]
+    assert _common(tmp_path, show, "other").returncode == 2
+    refresh = """source scripts/cloud/common.sh
+        my_ip() { echo 203.0.113.7; }; aws_ensure_access() { :; }; scorer_allow() { echo "$AWS_SG_SCORER $1 $2"; }
+        rm -f ~/.cache/swarm-scaling/operator-ip-refresh  # its at-most-once-a-minute stamp
+        operator_ip_refresh 2>/dev/null; echo "still $SCORER_NAME" """
+    cache.mkdir(parents=True)
+    (cache / "scorer-select.json").write_text("{}")  # only the selection scorer is up
+    assert _common(tmp_path, refresh).stdout.splitlines() == ["swarm-scorer-select 203.0.113.7 operator", "still agent"]
+    (cache / "scorer.json").write_text("{}")  # both are up
+    assert _common(tmp_path, refresh, "select").stdout.splitlines() == [
+        "swarm-scorer 203.0.113.7 operator", "swarm-scorer-select 203.0.113.7 operator", "still select"
+    ]
+
+
+def test_scorer_down_terminates_and_closes_only_its_own_scorer(tmp_path):
+    """Taking the selection scorer down must leave the agent scorer's VM and rules alone, and the other way round
+    (until 2026-10-18 down terminated every role=scorer instance and revoked every rule of one shared group). A fake
+    `aws` on PATH logs every call; the agent scorer's VM is i-agent, the selection scorer's i-sel."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "aws").write_text(f"""#!/bin/bash
+echo "$*" >> {tmp_path}/aws.log
+case "$*" in
+  *describe-vpcs*) echo vpc-1 ;;
+  *describe-security-groups*) for a; do case $a in Name=group-name,Values=*) echo "sg-${{a#*Values=}}" ;; esac; done ;;
+  *describe-security-group-rules*) echo sgr-1 ;;
+  *describe-instances*tag:run,Values=ss-scorer-select*) echo i-sel ;;
+  *describe-instances*tag:run,Values=ss-scorer\\ *) echo i-agent ;;
+esac
+""")
+    (bin_dir / "aws").chmod(0o755)
+    for name, vm, other in (("select", "i-sel", "i-agent"), ("agent", "i-agent", "i-sel")):
+        (tmp_path / "aws.log").write_text("")
+        out = _common(tmp_path, "bash scripts/cloud/scorer.sh down", name, str(bin_dir))
+        assert out.returncode == 0 and out.stdout.strip().endswith(f"{name} scorer down"), out.stdout + out.stderr
+        log = (tmp_path / "aws.log").read_text()
+        sg = "sg-swarm-scorer-select" if name == "select" else "sg-swarm-scorer"
+        assert f"terminate-instances --instance-ids {vm}" in log and other not in log
+        assert f"revoke-security-group-ingress --group-id {sg} --security-group-rule-ids sgr-1" in log
+        assert log.count("revoke-security-group-ingress") == 1

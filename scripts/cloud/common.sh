@@ -12,7 +12,6 @@ REMOTE_REPO=/opt/swarm-scaling
 REMOTE_STATE=/var/lib/swarm-run
 DISK_GB=60
 SSH_KEY=$HOME/.ssh/google_compute_engine  # no passphrase; gcloud's key, imported to AWS as key pair swarm-runner
-SCORER_STATE=$HOME/.cache/swarm-scaling/scorer.json  # mode 600; holds the scorer's URL and token
 SCORER_PORT=8770
 
 GCP_ACCOUNT=jacktpayne51@gmail.com
@@ -31,7 +30,6 @@ AWS_REGION=${AWS_REGION:-us-east-1}
 case $AWS_REGION in ap-southeast-2) AWS_FAMILY=m7a ;; *) AWS_FAMILY=c7a ;; esac  # scorer and `auto` agent types
 AWS_KEY_NAME=swarm-runner
 AWS_SG_SSH=swarm-runner-ssh
-AWS_SG_SCORER=swarm-scorer
 UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
 # Durable run logs (2026-10-10): when a run ends, its VM uploads logs/<name>/ (logs.tgz, then vm-exit-code as the
@@ -43,6 +41,19 @@ UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64
 # Created by log_storage_setup.
 LOG_BUCKET=swarm-scaling-jp-run-logs  # us-central1
 LOG_SA=swarm-runner-logs@swarm-scaling-jp.iam.gserviceaccount.com
+
+# Two scorers can be up at once (2026-10-18): SCORER_NAME=agent (the default), the one agent VMs use, and select, v7
+# selection's own scorer (v6_drive.py run --selection-scorer). Each has its own state file (mode 600, URL and token),
+# VM name (tag run=) and security group, so scorer.sh up/down/pull/allow-me act on one of them only.
+SCORER_NAMES="agent select"
+scorer_use() {  # scorer_use <name>: point SCORER_STATE, SCORER_VM and AWS_SG_SCORER at scorer <name>
+  case $1 in
+    agent) SCORER_NAME=agent SCORER_STATE=$HOME/.cache/swarm-scaling/scorer.json SCORER_VM=ss-scorer AWS_SG_SCORER=swarm-scorer ;;
+    select) SCORER_NAME=select SCORER_STATE=$HOME/.cache/swarm-scaling/scorer-select.json SCORER_VM=ss-scorer-select AWS_SG_SCORER=swarm-scorer-select ;;
+    *) echo "unknown scorer '$1' (SCORER_NAME: agent or select)" >&2; return 1 ;;
+  esac
+}
+scorer_use "${SCORER_NAME:-agent}" || exit 2
 
 gc() { gcloud --account="$GCP_ACCOUNT" --project="$GCP_PROJECT" --quiet "$@"; }
 # Adaptive retries back off when AWS throttles the account (v6 main: 71 RunInstances RequestLimitExceeded when
@@ -111,8 +122,8 @@ SSH_OPTS=(-oIdentitiesOnly=yes -oIdentityAgent=none -oConnectTimeout=20 -oServer
 # AWS public IPs are reused across instances, so host keys are not remembered.
 AWS_SSH_OPTS=("${SSH_OPTS[@]}" -i "$SSH_KEY" -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null)
 
-operator_ip_refresh() {  # re-open SSH (and, with a scorer up, its port) to this machine's current IP; at most once a minute
-  local stamp=$HOME/.cache/swarm-scaling/operator-ip-refresh ip
+operator_ip_refresh() {  # re-open SSH (and every scorer's port, agent and selection, that is up) to this machine's current IP; at most once a minute
+  local stamp=$HOME/.cache/swarm-scaling/operator-ip-refresh ip n
   mkdir -p "$(dirname "$stamp")"
   if [ -e "$stamp" ] && [ $(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp") )) -lt 60 ]; then
     return 1
@@ -120,8 +131,10 @@ operator_ip_refresh() {  # re-open SSH (and, with a scorer up, its port) to this
   touch "$stamp"
   ip=$(my_ip) || return 1
   aws_ensure_access >/dev/null || return 1
-  if [ -r "$SCORER_STATE" ]; then scorer_allow "$ip" operator || return 1; fi
-  echo "operator IP $ip: SSH and (with a scorer up) the scorer port re-opened" >&2
+  for n in $SCORER_NAMES; do  # a subshell each, so the caller keeps its own scorer
+    ( scorer_use "$n" && { [ ! -r "$SCORER_STATE" ] || scorer_allow "$ip" operator; } ) || return 1
+  done
+  echo "operator IP $ip: SSH and (with a scorer up) the scorer ports re-opened" >&2
 }
 
 vm_exec() {  # vm_exec <command>

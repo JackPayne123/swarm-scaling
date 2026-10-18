@@ -12,7 +12,8 @@
 #   too. If the driver cannot (an expired AWS login overnight, a stopped Mac), the logs stay in the bucket:
 #   `fleet.py collect <plan>` fetches them later, and the VM ends itself at MAX_RUN_HOURS.
 #   With `--checker remote` in the runner args the VM gets no seed offset; its env carries SCORER_URL and
-#   SCORER_TOKEN from the running scorer (scorer.sh up), and its IP is allowed on the scorer port for the run.
+#   SCORER_TOKEN from the running agent scorer (scorer.sh up; never the selection scorer, whatever SCORER_NAME says),
+#   and its IP is allowed on that scorer's port for the run.
 #   Such a VM times nothing, so when <machine-type> has no capacity or quota anywhere it may get another x86
 #   family with the same vCPUs, in any US zone (CREATE_FALLBACK, common.sh); cloud-status records what it got.
 #   Every VM must hold the task image pulled by TASK_IMAGE_REF (task-image.env), as the scorer does; a run
@@ -25,6 +26,7 @@
 #   CREATE_WAIT_S for stockouts (common.sh). Under bgjob, use --grace 30 or more.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
+SCORER_NAME=agent  # agent VMs use the agent scorer, never v7 selection's (common.sh scorer_use)
 source scripts/cloud/common.sh
 
 script=-
@@ -33,7 +35,7 @@ if [ "${1:-}" = --script ]; then
   shift 2
 fi
 if [ $# -lt 4 ] || [ "$4" != -- ]; then
-  sed -n '2,25p' "$0" >&2
+  sed -n '2,26p' "$0" >&2
   exit 2
 fi
 name=$1 mt=$2 ref=$3

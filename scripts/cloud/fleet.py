@@ -2,7 +2,7 @@
 
 Usage:
   uv run python scripts/cloud/fleet.py plan <plan.tsv> --ref <git-ref> [--script <path>] [--max-runs N] [--max-agents N]
-                                         [--stop-file <path>] [--group-start] [--dry-run]
+                                         [--stop-file <path>] [--group-start] [--reserve-vcpus N] [--dry-run]
   uv run python scripts/cloud/fleet.py status
   uv run python scripts/cloud/fleet.py cleanup [--yes]
   uv run python scripts/cloud/fleet.py collect <plan.tsv>
@@ -17,7 +17,8 @@ a shell would), blank lines and # comments ignored.
 Free vCPUs per cloud are read once at launch: GCP CPUS_ALL_REGIONS left when every row is `--checker remote`
 (their agent VMs may fall back to other x86 families and US regions, see run_sample.sh), else min(T2D_CPUS, CPUS
 in us-central1, CPUS_ALL_REGIONS) left; AWS the on-demand standard quota (service-quotas) minus every running
-instance's vCPUs (a scorer VM included). Machine types are what a row asks for; cloud-status records what it got.
+instance's vCPUs (a scorer VM included), less --reserve-vcpus (v6_drive.py: the selection scorer it starts later).
+Machine types are what a row asks for; cloud-status records what it got.
 Rows start as soon as their cloud has room, in file order with backfill; a row that cannot fit even in an
 empty cloud fails at once. With --group-start, a task-repeat group (rows `<prefix>-<task>-r<k>-...`, `group_of`) starts
 only when all its rows fit at once, and then all together in file order, so a team row never waits hours behind its
@@ -27,7 +28,7 @@ Each run's output goes to logs/<name>/driver.log and its progress to logs/<name>
 under bgjob (--grace 60) and caffeinate.
 
 cleanup lists every VM tagged/labelled tool=swarm-runner on both clouds and, with --yes, deletes them (running
-plans included) and runs `scorer.sh down`.
+plans included) and runs `scorer.sh down` for both scorers (SCORERS: the agent scorer and the selection scorer).
 
 collect copies each row's logs from the bucket its VM uploaded them to when the run ended (common.sh log_url,
 gs://<LOG_BUCKET>/runs/<name>/, for VMs on both clouds) into logs/<name>/, for runs whose driver could not (an
@@ -41,6 +42,7 @@ the service). An explicit --machine or `-- --slots S` overrides either.
 import argparse
 import json
 import math
+import os
 import re
 import shlex
 import subprocess
@@ -75,6 +77,7 @@ AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32
              "24xlarge": 96, "32xlarge": 128, "48xlarge": 192}
 AGENTS_PER_SLOT = 4  # one scorer slot per 4 agents (decided 2026-10-10)
 SLOT_VCPUS, SCORER_SERVICE_VCPUS = 8, 8  # as scorer_service.py's SLOT_CPUS and SERVICE_CPUS
+SCORERS = ("agent", "select")  # SCORER_NAME values, common.sh scorer_use
 
 # On-demand compute USD per hour, by region: a price is looked up only in the region the VM runs in (`hourly_usd`), so a
 # rate from one region can never price another's VM (until 2026-10-18 one flat table priced us-east-1 m7a VMs at
@@ -366,7 +369,7 @@ def dry_run(rows: list[Row], free: dict[str, int], max_runs: int = 0) -> list[tu
 def plan(args: argparse.Namespace) -> None:
     rows = parse_plan(Path(args.plan).read_text())
     if args.dry_run:
-        free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
+        free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free() - args.reserve_vcpus}
         print(f"{len(rows)} runs; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']} (nothing is launched)")
         for i, (name, cloud, machine, when) in enumerate(dry_run(rows, free, args.max_runs), 1):
             print(f"  {i:2} {name:30} {cloud:4} {machine:16} {when}")
@@ -375,8 +378,9 @@ def plan(args: argparse.Namespace) -> None:
     if used := [r.name for r in rows if status_path(r.name).exists()]:
         raise SystemExit(f"run names already used (logs/<name>/cloud-status exists): {used}")
     script = ["--script", args.script] if args.script else []
-    free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free()}
-    print(f"{len(rows)} runs, ref {args.ref}; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']}", flush=True)
+    free = {"gcp": gcp_free(t2d_only=not all(is_remote(r.args) for r in rows)), "aws": aws_free() - args.reserve_vcpus}
+    print(f"{len(rows)} runs, ref {args.ref}; free vCPUs now: GCP {free['gcp']}, AWS {free['aws']}"
+          + (f" ({args.reserve_vcpus} more kept for the selection scorer)" if args.reserve_vcpus else ""), flush=True)
 
     def launch(row: Row, machine: str) -> int:
         log = ROOT / "logs" / row.name / "driver.log"
@@ -437,7 +441,8 @@ def status(_: argparse.Namespace) -> None:
         total += (hourly_usd(vm["machine"], vm["zone"]) or 0) * h
         print(f"  {vm['cloud']} {vm['name']:34} {vm['zone']:16} {vm['machine']:16} {vm['role']:11} {vm['state']:10} up {h:5.2f} h  ~{cost(vm['machine'], vm['zone'], h)}")
     print(f"  estimated compute so far: ~${total:.2f} (on-demand estimates, see HOURLY_USD_BY_REGION)", flush=True)
-    subprocess.run(["bash", "scripts/cloud/scorer.sh", "status"], cwd=ROOT)
+    for name in SCORERS:
+        subprocess.run(["bash", "scripts/cloud/scorer.sh", "status"], cwd=ROOT, env={**os.environ, "SCORER_NAME": name})
 
     rows = []
     for f in sorted((ROOT / "logs").glob("*/cloud-status")):
@@ -489,7 +494,8 @@ def cleanup(args: argparse.Namespace) -> None:
         subprocess.run([*GCLOUD, "compute", "instances", "delete", *names, "--zone", zone, "--delete-disks=all"], check=True)
     if ids := [vm["id"] for vm in vms if vm["cloud"] == "aws" and vm["role"] != "scorer"]:
         subprocess.run([*AWS, "ec2", "terminate-instances", "--instance-ids", *ids], check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["bash", "scripts/cloud/scorer.sh", "down"], cwd=ROOT, check=True)
+    for name in SCORERS:
+        subprocess.run(["bash", "scripts/cloud/scorer.sh", "down"], cwd=ROOT, check=True, env={**os.environ, "SCORER_NAME": name})
     print(f"left: {[vm['name'] for vm in live_vms() if vm['state'] not in ('shutting-down', 'terminated')]}")
 
 
@@ -507,6 +513,8 @@ def main() -> None:
     pp.add_argument("--stop-file", help="once this file exists, start no further rows")
     pp.add_argument("--group-start", action="store_true",
                     help="start each task-repeat group's rows together, once all of them fit (v7)")
+    pp.add_argument("--reserve-vcpus", type=int, default=0,
+                    help="AWS vCPUs to leave free for a VM started later (v6_drive.py: the selection scorer)")
     pp.add_argument("--dry-run", action="store_true", help="print where and in which order rows would start; launch nothing")
     pp.set_defaults(fn=plan)
     sub.add_parser("status").set_defaults(fn=status)

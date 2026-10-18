@@ -20,8 +20,12 @@
 #   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6);
 #                         waits up to 15 min for the network when the IP lookup fails (common.sh my_ip)
 #   scorer.sh down        pulls the logs (retrying, as allow-me after each failure), terminates the VM (and any other
-#                         instance tagged role=scorer), closes every rule on the scorer port, drops the state
-# Env: SEED_OFFSET_FILE (default: the experiment's file).
+#                         instance tagged role=scorer with this scorer's VM name), closes every rule on this scorer's
+#                         security group, drops the state
+# Env: SEED_OFFSET_FILE (default: the experiment's file). SCORER_NAME picks the scorer every command acts on (common.sh
+#   scorer_use): agent (default; state ~/.cache/swarm-scaling/scorer.json, VM ss-scorer, security group swarm-scorer),
+#   the one agent VMs use, or select (scorer-select.json, ss-scorer-select, swarm-scorer-select), v7 selection's own
+#   scorer, which v6_drive.py brings up when the first group is ready. Agent VMs are never allowed on the select one.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/cloud/common.sh
@@ -32,7 +36,7 @@ health() {  # prints /health without the token
 
 load_state() {
   [ -r "$SCORER_STATE" ] || return 1
-  CLOUD=aws VM=ss-scorer VM_ID=$(scorer_field instance_id) VM_IP=$(scorer_field ip) ZONE=$(scorer_field zone)
+  CLOUD=aws VM=$SCORER_VM VM_ID=$(scorer_field instance_id) VM_IP=$(scorer_field ip) ZONE=$(scorer_field zone)
 }
 
 up() {
@@ -53,7 +57,7 @@ up() {
   seed_file=${SEED_OFFSET_FILE:-data/$offset_name}
   [ -r "$seed_file" ] || { echo "no seed offset at $seed_file (set SEED_OFFSET_FILE)" >&2; exit 2; }
   if load_state && [ "$(vm_state)" != gone ]; then
-    echo "a scorer is already up ($VM_ID); scorer.sh down first" >&2
+    echo "the $SCORER_NAME scorer is already up ($VM_ID); SCORER_NAME=$SCORER_NAME scorer.sh down first" >&2
     exit 2
   fi
   rm -f "$SCORER_STATE"  # stale: its VM is gone
@@ -67,7 +71,7 @@ up() {
   trap '[ -n "$VM_ID" ] && [ ! -e "$SCORER_STATE" ] && vm_delete && echo "deleted $VM_ID (scorer did not come up)"; rm -rf "$tmp"' EXIT
   trap 'exit 130' INT TERM
 
-  vm_create aws ss-scorer "$mt" "$hours" scorer runner || exit 1
+  vm_create aws "$SCORER_VM" "$mt" "$hours" scorer runner || exit 1
   echo "created $VM_ID ($mt) in $ZONE, $VM_IP"
   ip=$(my_ip) && scorer_allow "$ip" operator || exit 1
   vm_wait_ssh || exit 1
@@ -129,9 +133,9 @@ EOF
 
 status() {
   if ! load_state; then
-    echo "no scorer state ($SCORER_STATE)"
+    echo "no $SCORER_NAME scorer state ($SCORER_STATE)"
   else
-    echo "scorer $VM_ID ($(scorer_field machine), $(scorer_field cpu)) at $(scorer_field url), ref $(scorer_field ref), since $(scorer_field started): $(vm_state)"
+    echo "$SCORER_NAME scorer $VM_ID ($(scorer_field machine), $(scorer_field cpu)) at $(scorer_field url), ref $(scorer_field ref), since $(scorer_field started): $(vm_state)"
     echo "task image $(scorer_field task_image)"
     health | cut -c1-600 || echo "/health did not answer"
   fi
@@ -165,7 +169,7 @@ down() {
       [ "$i" -lt 5 ] && sleep 30
     done
   fi
-  ids=$(aw ec2 describe-instances --filters "Name=tag:tool,Values=$TOOL_LABEL" Name=tag:role,Values=scorer \
+  ids=$(aw ec2 describe-instances --filters "Name=tag:tool,Values=$TOOL_LABEL" Name=tag:role,Values=scorer "Name=tag:run,Values=$SCORER_VM" \
     Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].InstanceId')
   if [ -n "$ids" ]; then
     aw ec2 terminate-instances --instance-ids $ids >/dev/null && aw ec2 wait instance-terminated --instance-ids $ids &&
@@ -175,7 +179,7 @@ down() {
   rules=$(aw ec2 describe-security-group-rules --filters "Name=group-id,Values=$sg" --query 'SecurityGroupRules[?!IsEgress].SecurityGroupRuleId')
   [ -z "$rules" ] || aw ec2 revoke-security-group-ingress --group-id "$sg" --security-group-rule-ids $rules >/dev/null || return 1
   rm -f "$SCORER_STATE"
-  echo "scorer down"
+  echo "$SCORER_NAME scorer down"
 }
 
 cmd=${1:-}
@@ -186,5 +190,5 @@ case $cmd in
   pull) pull ;;
   allow-me) allow_me ;;
   down) down ;;
-  *) sed -n '2,24p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,28p' "$0" >&2; exit 2 ;;
 esac
