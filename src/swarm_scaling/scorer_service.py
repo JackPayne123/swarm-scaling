@@ -391,7 +391,7 @@ class Scorer:
             "cpu_dma_latency_us": cpu_dma_latency(),
             "tasks": sorted({a.name for a in self.tasks.values()}),
             "session": self.session, "service_started_at": self.started_at, "machine_type": self.machine_type,
-            "slot_cpus": SLOT_CPUS, "exclusive_slot": self.exclusive_slot, **self.hardware,
+            "slot_cpus": cpuset_size(self.cpusets[0]), "exclusive_slot": self.exclusive_slot, **self.hardware,
         }  # fmt: skip
 
     def stats(self) -> dict:
@@ -637,6 +637,11 @@ def docker_cpus(docker: str = "docker") -> int:
     if out.returncode != 0:
         raise SystemExit(f"docker info failed: {out.stderr.strip()}")
     return int(out.stdout)
+
+
+def cpuset_size(cpuset: str) -> int:
+    """CPUs in a cpuset string such as "0-7" or "0-3,8"."""
+    return sum(int(b or a) - int(a) + 1 for a, _, b in (part.partition("-") for part in cpuset.split(",")))
 
 
 def slot_cpus(slots: int, first_cpu: int, host_cpus: int) -> tuple[list[str], set[int]]:
