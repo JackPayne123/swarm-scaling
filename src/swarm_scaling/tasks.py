@@ -405,8 +405,14 @@ TASK_PATCHES: dict[str, list[tuple[str, str, bool]]] = {
 }
 
 
+# Appended to every task's evaluator.py after v6 (not to the instruction): upstream's non-concrete solution guard
+# around Task.is_solution (algotune_assets/concrete_guard.py, 2026-10-18).
+CONCRETE_GUARD = (ASSETS / "concrete_guard.py").read_text() + "\n\nguard_is_solution(Task)\n"
+
+
 def patch_task(name: str, text: str, experiment: str, instruction: bool = False) -> str:
-    """The task's code (evaluator.py, or with instruction=True the instruction) with its TASK_PATCHES for `experiment`.
+    """The task's code (evaluator.py, or with instruction=True the instruction) with its TASK_PATCHES for `experiment`,
+    and for the code CONCRETE_GUARD at the end.
 
     v6 is never patched. Each anchor must occur exactly once, unless its replacement already does (the text was
     patched before: a seeded verifier copy holds the patched evaluator.py), so a changed Harbor copy raises instead
@@ -422,6 +428,8 @@ def patch_task(name: str, text: str, experiment: str, instruction: bool = False)
         if text.count(anchor) != 1:
             raise ValueError(f"{name}: expected exactly one {anchor!r} in the task's {'instruction' if instruction else 'code'}")
         text = text.replace(anchor, replacement)
+    if not instruction and CONCRETE_GUARD not in text:
+        text = text.rstrip("\n") + "\n\n\n" + CONCRETE_GUARD
     return text
 
 

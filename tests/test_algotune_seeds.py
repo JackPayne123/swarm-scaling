@@ -105,3 +105,30 @@ def test_a_task_fix_whose_code_changed_is_refused_rather_than_skipped(monkeypatc
     monkeypatch.setitem(tasks.TASK_PATCHES, "t", [("old line\n", "new line\n", False)])
     with pytest.raises(ValueError):
         tasks.patch_task("t", "something else\n", "v7")
+
+
+def test_v7_is_solution_rejects_a_non_concrete_output_as_upstream_does_and_v6_keeps_accepting_it():
+    # v7 calibration: the ode team's pick returned array.array('d'); Harbor's is_solution converts it with np.asarray and
+    # passes it, upstream AlgoTune's validator rejects any non-list iterable before is_solution is called.
+    import array
+
+    from swarm_scaling.tasks import CONCRETE_GUARD, patch_task
+
+    code = ("import numpy as np\n\n\nclass Task:\n"
+            "    def is_solution(self, problem, solution, atol=1e-8):\n"
+            "        return np.allclose(np.asarray(solution, dtype=float), problem['y'], atol=atol)\n")  # fmt: skip
+
+    def task(experiment: str):
+        namespace: dict = {}
+        exec(patch_task("any_task", code, experiment), namespace)
+        return namespace["Task"]()
+
+    problem = {"y": [1.0, 2.0, 3.0]}
+    v7, v6 = task("v7"), task("v6")
+    assert v7.is_solution(problem, [1.0, 2.0, 3.0]) and v7.is_solution(problem, (1.0, 2.0, 3.0))
+    assert v7.is_solution(problem, [1.0, 2.0, 3.1], atol=0.2)  # a task's own keyword arguments still reach it
+    assert not v7.is_solution(problem, array.array("d", problem["y"]))
+    assert not v7.is_solution(problem, iter(problem["y"]))
+    assert v6.is_solution(problem, array.array("d", problem["y"]))  # Harbor's code, unchanged for v6
+    assert patch_task("any_task", patch_task("any_task", code, "v7"), "v7").count(CONCRETE_GUARD) == 1
+    assert CONCRETE_GUARD not in patch_task("any_task", code, "v7", instruction=True)
