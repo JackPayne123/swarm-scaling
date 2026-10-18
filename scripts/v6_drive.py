@@ -17,8 +17,10 @@ Groups: rows named <prefix>-<task>-r<k>-<arm>[-i<j>] (plans/v6-*.tsv); a group i
 portfolios (one per arm) are selected together. --select-after group (v6): each group's selection starts as soon as its
 own runs have ended, one selection at a time with --concurrency 6 (main's scorer has 11 slots), so live agents keep
 most scorer slots. --select-after plan (default for plans with a v7 row, 2026-10-18): no selection starts until every
-row of the plan has ended, then every group's selection runs at once: in the v7 calibration the stable_matching
-selection ran beside agents still working, whose dev_eval waits rose to a mean of 221 s (max 835 s) from 76 s.
+row of the plan has ended, then one select_portfolio.py selects every group at once (portfolios concurrently, and with
+v7's exclusive hidden scoring a group's hidden jobs next to each other, arms alternating): in the v7 calibration the
+stable_matching selection ran beside agents still working, whose dev_eval waits rose to a mean of 221 s (max 835 s)
+from 76 s.
 
 v7 options: --group-start (fleet.py: a group's rows start together), --validity-n N (select_portfolio.py's validity
 pass). Every PULL_S the scorer's logs are copied to logs/_scorer/<instance>/ (scorer.sh pull), so a connection lost at
@@ -112,17 +114,16 @@ def run(args: argparse.Namespace) -> int:
     costs: dict[str, float] = {}
     selected: set[str] = set()
     queue: list[str] = []
-    selecting: list[tuple[str, subprocess.Popen]] = []
+    selecting: list[subprocess.Popen] = []
     after_plan = (args.select_after or ("plan" if any(experiment_of(r) != "v6" for r in rows) else "group")) == "plan"
-    at_once = len(groups) if after_plan else 1  # selections running together
-    print(f"[v6] selections start {'once every row has ended, all at once' if after_plan else 'per group, one at a time'}",
+    print(f"[v6] selections start {'once every row has ended, all groups in one selection' if after_plan else 'per group, one at a time'}",
           flush=True)  # fmt: skip
 
-    def select(group: str) -> subprocess.Popen | None:
-        dirs = [f"logs/{n}" for n in groups[group] if (ROOT / "logs" / n).is_dir()]
+    def select(names: list[str]) -> subprocess.Popen | None:
+        dirs = [f"logs/{n}" for g in names for n in groups[g] if (ROOT / "logs" / n).is_dir()]
         if not dirs:
             return None
-        print(f"[v6] {time.strftime('%H:%M:%S')} selecting {group}", flush=True)
+        print(f"[v6] {time.strftime('%H:%M:%S')} selecting {', '.join(names)}", flush=True)
         return subprocess.Popen([sys.executable, "-u", "scripts/select_portfolio.py", *dirs, "--scorer", args.scorer,
                                  "--concurrency", str(SELECT_CONCURRENCY), "--validity-n", str(args.validity_n),
                                  *(f"--validity-n-task={x}" for x in args.validity_n_task)], cwd=ROOT)  # fmt: skip
@@ -152,11 +153,14 @@ def run(args: argparse.Namespace) -> int:
             if g not in selected:
                 selected.add(g)
                 queue.append(g)
-        selecting[:] = [(g, p) for g, p in selecting if p.poll() is None]
-        while len(selecting) < at_once and queue:
-            g = queue.pop(0)
-            if (p := select(g)) is not None:
-                selecting.append((g, p))
+        selecting[:] = [p for p in selecting if p.poll() is None]
+        while not selecting and queue:
+            # after_plan: every group in one select_portfolio, whose portfolios run concurrently and whose hidden jobs it
+            # orders group by group, arms alternating; v6: one group at a time
+            names = queue[:] if after_plan else queue[:1]
+            del queue[: len(names)]
+            if (p := select(names)) is not None:
+                selecting.append(p)
 
     while plan.poll() is None:
         step(plan_done=False)

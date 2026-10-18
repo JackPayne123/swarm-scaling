@@ -208,20 +208,15 @@ async def select(
         chosen = pick(row["stage2"], key)  # fixed here, before any of this portfolio's hidden scores exists
         row["pick"] = None if chosen is None else {k: chosen[k] for k in ("sha256", "stage1_rank", "score", "alone_score")}
 
-        calls = []
         for e in row["stage2"]:
             row["hidden"][e["sha256"]] = {"scores": []}
-            picked = row["pick"] is not None and e["sha256"] == row["pick"]["sha256"]
-            for r in range(repeats if picked else 1):  # the others only feed the oracle bound
-                calls.append((job(p, e["sha256"], "score", f"r{r}", **({"exclusive": True} if exclusive_hidden else {})),
-                              lambda rec, h=row["hidden"][e["sha256"]]: h["scores"].append(_result(rec))))  # fmt: skip
-        await run_all(calls)
+
+    def finish(p: dict, row: dict) -> None:
         if scorer is not None:
             sessions = {r["job"].get("session") for h in row["hidden"].values() for r in h["scores"]}
             if sessions - {scorer["session"]}:
                 raise RuntimeError(f"{p['portfolio']}: hidden jobs ran in scorer sessions {sorted(sessions, key=str)}, not "
                                    f"only {scorer['session']}: rerun the selection on one scorer")  # fmt: skip
-
         for h in row["hidden"].values():
             for name, field in (("median", key), ("median_algotune", "score"), ("median_alone", "alone_score")):
                 scores = [r[field] for r in h["scores"] if r[field] is not None]
@@ -248,7 +243,43 @@ async def select(
     async with anyio.create_task_group() as tg:
         for p, row in zip(portfolios, rows):
             tg.start_soon(select_one, p, row)
+    # Hidden scoring once every pick is fixed: per task-repeat group, the picks' repeat r of all its portfolios next to
+    # each other, then the other shortlisted sources once each, so a slow drift in machine speed (about 5% over tens
+    # of minutes on the v7b smoke scorer, HARNESS.md "Scorer noise") does not fall on one arm. Exclusive jobs run one at
+    # a time in that order; otherwise they share `concurrency` as before.
+    by_group: dict[str, list[tuple[dict, dict]]] = {}
+    for p, row in zip(portfolios, rows):
+        by_group.setdefault(group_of(p["portfolio"]), []).append((p, row))
+    left = {row["portfolio"]: sum(repeats if pick_of(row) == e["sha256"] else 1 for e in row["stage2"]) for row in rows}
+    calls = []
+    for members in by_group.values():
+        order = [(p, row, row["pick"]["sha256"], r) for r in range(repeats) for p, row in members if row["pick"] is not None]
+        order += [(p, row, e["sha256"], 0) for p, row in members for e in row["stage2"] if e["sha256"] != pick_of(row)]
+        for p, row, sha, r in order:
+            def done(rec: dict, p=p, row=row, sha=sha) -> None:
+                row["hidden"][sha]["scores"].append(_result(rec))
+                left[row["portfolio"]] -= 1
+                if not left[row["portfolio"]]:
+                    finish(p, row)
+            calls.append((job(p, sha, "score", f"r{r}", **({"exclusive": True} if exclusive_hidden else {})), done))
+    for p, row in zip(portfolios, rows):
+        if not left[row["portfolio"]]:  # nothing to score (no valid stage-2 source)
+            finish(p, row)
+    if exclusive_hidden:
+        for body, done in calls:  # in order: the service runs them one at a time anyway
+            done(await run_job(body))
+    else:
+        await run_all(calls)
     return rows
+
+
+def group_of(portfolio: str) -> str:
+    """The task-repeat group of a portfolio: `<prefix>-<task>-r<k>` of `<prefix>-<task>-r<k>-<arm>` (plans/v6-*.tsv)."""
+    return "-".join(portfolio.split("/")[0].split("-")[:3]) + ("/" + portfolio.split("/", 1)[1] if "/" in portfolio else "")
+
+
+def pick_of(row: dict) -> str | None:
+    return None if row["pick"] is None else row["pick"]["sha256"]
 
 
 def fmt(value: float | None) -> str:
