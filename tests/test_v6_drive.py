@@ -41,7 +41,7 @@ def test_v7_agent_scorer_gets_a_slot_per_two_agents_beside_the_selection_scorer_
     """v7 batch 1: 16 Opus agents on the v6 rule's 3 slots kept them 89% busy and agents spent 43% of their wall time
     in dev_eval (mean 202 s a call). A v7 agent keeps about a third of a slot busy, so v7 sizes 2 agents per slot."""
     sel = v6_drive.fleet.vcpus(v6_drive.SELECT_MACHINE)
-    assert v6_drive.SELECT_MACHINE == f"{v6_drive.fleet.AWS_FAMILY}.8xlarge" and sel == 32
+    assert v6_drive.SELECT_MACHINE == f"{v6_drive.fleet.AWS_FAMILY}.16xlarge" and sel == 64
     fam = v6_drive.fleet.AWS_FAMILY
     assert v6_drive.size(v7_rows(2), 512, reserve=sel) == (11, f"{fam}.24xlarge", 22)  # 16 agents
     assert v6_drive.size(v7_rows(1), 512, reserve=sel) == (5, f"{fam}.12xlarge", 10)  # 8 agents
@@ -120,7 +120,7 @@ def test_v7_groups_select_as_they_end_on_a_selection_scorer_that_comes_up_with_t
     assert v6_drive.run(args) == 0
 
     fleet_cmd = events[0][1]
-    assert fleet_cmd[fleet_cmd.index("--reserve-vcpus") + 1] == "32"  # room kept for the selection scorer
+    assert fleet_cmd[fleet_cmd.index("--reserve-vcpus") + 1] == "64"  # room kept for the selection scorer
     life = [e[:3] if e[0] != "select" else ("select", e[1], e[2]) for e in events if e[0] not in ("fleet", "pull")]
     assert life == [
         ("up", "select", 3),  # when group 1's rows have ended, not at launch
@@ -130,7 +130,7 @@ def test_v7_groups_select_as_they_end_on_a_selection_scorer_that_comes_up_with_t
         ("down", "select", 13),  # after the last selection
     ]
     up = next(e for e in events if e[0] == "up")[3]
-    assert up[up.index("--experiment") + 1] == "v7" and up[up.index("--slots") + 1] == "3"  # the agent scorer's offset
+    assert up[up.index("--experiment") + 1] == "v7" and up[up.index("--slots") + 1] == "7"  # the agent scorer's offset
     assert {e[3:] for e in events if e[0] == "select"} == {("http://sel:8770", "select", "sel-token")}
     order = [e[:2] for e in events if e[0] in ("pull", "down", "up")]
     agent_down, sel_up, sel_down = order.index(("down", "agent")), order.index(("up", "select")), order.index(("down", "select"))

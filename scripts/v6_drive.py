@@ -57,7 +57,7 @@ from run_cost import call_costs  # noqa: E402
 MAX_SLOTS = 11  # c7a.24xlarge: 96 vCPUs = 11 slots x 8 + 8 for the service
 AGENTS_PER_SLOT = 8  # v6 (Haiku agents)
 V7_AGENTS_PER_SLOT = 2  # 2026-10-18, after v7 batch 1 (module docstring)
-SELECT_MACHINE = f"{fleet.AWS_FAMILY}.8xlarge"  # the selection scorer: 3 slots; exclusive hidden scoring is serial anyway
+SELECT_MACHINE = f"{fleet.AWS_FAMILY}.16xlarge"  # the selection scorer: 7 slots, so validity passes (pagerank: ~1,600 s each) run in parallel; exclusive hidden scoring is serial anyway (Jack, 2026-10-19)
 SELECT_UP_TRIES = 3  # scorer.sh up attempts for the selection scorer before its groups are left unselected
 POLL_S = 60
 PULL_S = 600  # scorer log copies (v6: the main scorer's jobs.jsonl was lost when the one copy at teardown failed)

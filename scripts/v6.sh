@@ -10,7 +10,7 @@
 # selection (v6_drive.py's docstring). On exit this script takes both down again, whatever happened.
 # Scorer slots get SCORER_MEMORY (default 16g: the verifier holds 100 sinkhorn problems, 7.0 GiB); backstop HOURS
 # (default 30). SCORER_MACHINE sets the agent scorer's type instead of the sizing rule (e.g. c7a.24xlarge);
-# SELECTION_SCORER the selection scorer's (default c7a.8xlarge for v7 plans; none selects on the agent scorer).
+# SELECTION_SCORER the selection scorer's (default c7a.16xlarge for v7 plans; none selects on the agent scorer).
 # Usage: bgjob run --name v6 --grace 60 -- /usr/bin/caffeinate -is bash scripts/v6.sh plans/v6-main.tsv 16 [ref] [run options]
 # Run options go to v6_drive.py run (v7: --group-start --validity-n 1000). EXPERIMENT (default v6) picks the scorers'
 # secret offset (scorer.sh up --experiment).
