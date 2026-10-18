@@ -104,7 +104,8 @@ def run(args: argparse.Namespace) -> int:
     stop.unlink(missing_ok=True)
     plan = subprocess.Popen([sys.executable, "-u", "scripts/cloud/fleet.py", "plan", args.plan, "--ref", args.ref,
                              "--max-agents", str(args.max_agents), "--stop-file", str(stop),
-                             *(["--group-start"] if args.group_start else [])], cwd=ROOT)  # fmt: skip
+                             *(["--group-start"] if args.group_start else []),
+                             *(["--script", args.script] if args.script else [])], cwd=ROOT)  # fmt: skip
     costs: dict[str, float] = {}
     selected: set[str] = set()
     queue: list[str] = []
@@ -179,6 +180,7 @@ def main() -> None:
     pr.add_argument("--group-start", action="store_true", help="start each task-repeat group's rows together (v7)")
     pr.add_argument("--validity-n", type=int, default=0, help="select_portfolio.py --validity-n (v7: 1000)")
     pr.add_argument("--validity-n-task", action="append", default=[], metavar="TASK=N", help="select_portfolio.py's")
+    pr.add_argument("--script", help="fleet.py plan --script: run this script instead of the runner (smoke tests)")
     pr.add_argument("--select-after", choices=("group", "plan"), default=None,
                     help="start a group's selection when its rows end (group) or every selection once the whole plan "
                          "has ended (plan); default: plan when a row is a v7 row, else group")
