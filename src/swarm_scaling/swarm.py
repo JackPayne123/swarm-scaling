@@ -176,6 +176,7 @@ def swarm(
     publish_notices: bool = False,
     known_score: KnownScore | None = None,
     tool_fixes: bool = False,
+    hardware: str | None = None,
 ) -> Solver:
     """Run N concurrent agents on the sample, then hand their candidates to `finalize`.
 
@@ -241,6 +242,8 @@ def swarm(
         known_score: per sample, a lookup from a published file's bytes to its known dev score, quoted in notices.
         tool_fixes: v7 tool details: SendMessage's summary is optional, and check_budget shows dollars to 4 decimals
             and the percent of the budget remaining.
+        hardware: a paragraph on the machine that times every candidate, added to every agent's prompt in every arm
+            (the runner builds it from the scorer's /health, algotune_devkit.scorer_hardware_text).
     """
     if not models:
         raise ValueError("swarm() needs at least one model")
@@ -377,6 +380,7 @@ def swarm(
                 elicit=elicit,
                 end_on_budget=end_on_budget,
                 publish_notices=publish_notices,
+                hardware=hardware,
             )
             rec.started_at = time.time()
             agent_state: AgentState | None = None
@@ -456,6 +460,7 @@ def swarm(
             "blind_frac": blind_frac,
             "end_on_budget": end_on_budget,
             "publish_notices": publish_notices,
+            "hardware": hardware,  # the prompt's timing-hardware paragraph, None without one
             "tool_fixes": tool_fixes,
             "registry_notices": [asdict(x) for x in team.notices],
             "tasks": team.task_events,
@@ -659,6 +664,7 @@ def default_protocol_prompt(
     elicit: str = "loose",
     end_on_budget: bool = False,
     publish_notices: bool = False,
+    hardware: str | None = None,
 ) -> str:
     # The loose, facts-only prompt (research/PROTOCOL.md, PLAN.md decision 2026-10-05):
     # no roles, no message rules, no anti-herding text. Every arm can save candidates, so
@@ -758,6 +764,8 @@ def default_protocol_prompt(
             else ""
         )
     )
+    if hardware:
+        lines += ["", hardware]
     lines.append("")
     if budget_type == "output":
         lines.append(f"You have a budget of {budget_tokens:,} output tokens (everything you generate, including reasoning).")

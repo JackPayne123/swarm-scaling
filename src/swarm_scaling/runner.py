@@ -26,8 +26,10 @@ from pathlib import Path
 
 from inspect_ai import eval
 
+from swarm_scaling import scorer_client
 from swarm_scaling.algotune_devkit import (
     DEV_SEED_CAP, DISJOINT_DEV_SEED_CAP, SOLVER_PATH, algotune_agent_tools, algotune_finalize, known_dev_score,
+    scorer_hardware_text,
 )
 from swarm_scaling.swarm import ELICITS, PRIORITIES, swarm
 from swarm_scaling.tasks import EXPERIMENTS, LOG_DIR, algotune_task
@@ -154,6 +156,9 @@ def main() -> None:
     p.add_argument("--primary-score", default=None, choices=("interleaved", "alone"),
                    help="the run's Score.value: AlgoTune's interleaved speedup or the speedup against the reference "
                         "timed alone (default: alone for --experiment v7, else interleaved)")
+    p.add_argument("--scorer-hardware", action=argparse.BooleanOptionalAction, default=None,
+                   help="state the scoring machine's CPU, ISA extensions and CPUs per timed run in every agent's prompt, "
+                        "from the scorer's /health at run start (default: on for --experiment v7 with --checker remote)")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--request-timeout", type=int, default=900, help="seconds per model request")
     args = p.parse_args()
@@ -186,6 +191,13 @@ def main() -> None:
         publish_notices = args.arm == "team" and args.elicit == "diversified-v7"
     if publish_notices and args.arm != "team":
         p.error("--publish-notices tells teammates about each publish: it is for --arm team")
+    scorer_hardware = args.scorer_hardware
+    if scorer_hardware is None:
+        scorer_hardware = args.experiment == "v7" and args.checker == "remote"
+    if scorer_hardware and args.checker != "remote":
+        p.error("--scorer-hardware describes the remote scorer: it needs --checker remote")
+    # the same /health fields give every row on one scorer the same text, whatever its arm
+    hardware = scorer_hardware_text(scorer_client.health()) if scorer_hardware else None
     metadata = {
         "arm": args.arm,
         "n": args.n,
@@ -208,6 +220,7 @@ def main() -> None:
         "end_on_budget": args.end_on_budget,
         "publish_notices": publish_notices,
         "tool_fixes": args.tool_fixes,
+        "scorer_hardware": hardware,  # the prompt's timing-hardware paragraph (None: not stated)
         "parallel": args.parallel,
         "cpus_per_agent": args.cpus_per_agent,
         "isolate_agents": args.isolate_agents,
@@ -251,6 +264,7 @@ def main() -> None:
             known_score=known_dev_score,
             tool_fixes=args.tool_fixes,
             reasoning_effort=effort_by_model(args.reasoning_effort, config["models"]),
+            hardware=hardware,
         ),
         model=config["models"][0],
         sample_id=args.sample,
