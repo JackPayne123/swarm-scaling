@@ -24,5 +24,6 @@ Jack's independent one-week research project (not Lyptus): matched-compute swarm
 - Run at most one Docker build or one sandboxed eval at a time on the Mac unless Jack says otherwise.
 - Judges must not share a model family with the agents being compared (self-preference bias).
 - Claude manages pre-flights and pilot runs end to end without asking (Jack, 2026-10-10): run the pre-flight, fix or roll back what fails, launch when it passes, monitor, rescore, analyse, and tear down cloud VMs and the scorer when a pilot ends. Ask Jack only for new spend beyond the agreed pilot design, design changes, or a step only he can do (logins, console-only settings). Report results as they land.
+- No pre-registration requirements (Jack, 2026-10-18): earlier "pre-registered" rules in PLAN.md are not binding. Keep design decisions and their reasons in the decisions log as before, and still report honestly when a choice was made after seeing results.
 - AWS credits are exhausted (since 2026-10-12; $168.87 out of pocket by 2026-10-16): AWS usage is Jack's own money. Launch no AWS VM or scorer without Jack's explicit go-ahead for that specific run, and state the expected AWS cost when asking (Jack, 2026-10-16).
 - Do not cite Ord's "1,200 agents / 700 attacked" Hugging Face figures; they are not in OpenAI's report.
