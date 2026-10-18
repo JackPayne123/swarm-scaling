@@ -89,13 +89,16 @@ def state(name: str) -> str | None:
     return lines[-1].split()[1] if lines else None
 
 
-def run_cost(name: str) -> float:
+def run_cost(name: str, models: list[str]) -> float:
+    if all(m.startswith("mockllm/") for m in models):  # scripted smoke runs: free, and run_cost has no price for them
+        return 0.0
     return sum(m["cost"] for f in sorted((ROOT / "logs" / name).rglob("*.eval")) for m in call_costs(f).values())
 
 
 def run(args: argparse.Namespace) -> int:
     rows = fleet.parse_plan(Path(args.plan).read_text())
     budget = {r.name: fleet.agents(r) * arg(r, "--budget", 0.0) for r in rows}
+    models = {r.name: r.args[r.args.index("--models") + 1].split(",") for r in rows}
     groups: dict[str, list[str]] = {}
     for r in rows:
         groups.setdefault(group_of(r.name), []).append(r.name)
@@ -137,7 +140,7 @@ def run(args: argparse.Namespace) -> int:
         states = {r.name: state(r.name) for r in rows}
         for name, st in states.items():
             if st == "exit" and name not in costs:
-                costs[name] = run_cost(name)
+                costs[name] = run_cost(name, models[name])
         if not stop.exists():
             running = sum(budget[n] for n, st in states.items() if st not in (None, "exit"))
             projected = sum(costs.values()) + running + max(budget.values())

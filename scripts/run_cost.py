@@ -32,8 +32,8 @@ def call_costs(path: Path) -> dict[str, dict]:
         pinned = {a["model"] for a in ((sample.metadata or {}).get("swarm") or {}).get("agents", {}).values()
                   if a.get("cache_ttl") == "1h"}
         for e in sample.events:
-            if e.event != "model" or e.output is None or e.output.usage is None or e.model.startswith("mockllm/"):
-                continue  # mockllm (tests, smoke runs) costs nothing and has no price
+            if e.event != "model" or e.output is None or e.output.usage is None:
+                continue
             u = e.output.usage.model_dump(exclude_none=True)
             raw = ((e.call.response or {}) if e.call is not None else {}).get("usage") or {}
             m = out[e.model]
