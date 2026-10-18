@@ -6,10 +6,10 @@
                  runs the whole plan through fleet.py (rows start as the quota allows), runs select_portfolio.py on the
                  task-repeat groups (below), and stops starting rows near the spend cap
 
-Agent scorer size: agent VMs have 2 vCPUs per agent (+2 for a team box's OS). The scorer gets the smallest machine
-(then every slot that machine holds, at most MAX_SLOTS) with at least one slot per agents_per_slot agents that can
-run alongside it, and beside the selection scorer, in the free quota; when even MAX_SLOTS is too few, the agents
-running at once are capped at MAX_SLOTS x agents_per_slot instead. max_agents is always slots x agents_per_slot.
+Agent scorer size: each agent counts the most VM vCPUs per agent of any row (v7's m7a boxes: 2). The scorer gets the
+smallest machine (then every slot that machine holds, at most MAX_SLOTS) with at least one slot per agents_per_slot
+agents that can run alongside it, and beside the selection scorer, in the free quota; when even MAX_SLOTS is too few,
+the agents running at once are capped at MAX_SLOTS x agents_per_slot instead. max_agents is always slots x agents_per_slot.
 agents_per_slot is AGENTS_PER_SLOT (8) for v6 plans and V7_AGENTS_PER_SLOT (2) for plans with a v7 row: a v7 Opus
 agent keeps about a third of a slot busy (v7 batch 1: 16 agents on 3 slots, 89% busy, mean dev_eval queue wait 128 s;
 HARNESS.md, "Selection scorer"), so 16 agents get a c7a.24xlarge (11 slots). --machine sets the agent scorer's type
