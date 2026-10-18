@@ -90,7 +90,21 @@ cloud_of() {  # cloud_of <machine-type>: AWS types have a dot (c7a.4xlarge), GCP
   case $1 in *.*) echo aws ;; *) echo gcp ;; esac
 }
 
-my_ip() { curl -sf --max-time 10 https://checkip.amazonaws.com; }
+_my_ip_lookup() { curl -sf --max-time 10 https://checkip.amazonaws.com; }
+
+# This machine's public IP. Retried with backoff (5 s doubling to 60 s) while the lookup fails or returns no IPv4
+# address, for up to MY_IP_WAIT_S (default 900) seconds, so a network blip during a long run heals itself: in the v7
+# calibration one failed lookup ended `scorer.sh allow-me` and selection stalled until it was re-run by hand.
+my_ip() {
+  local waited=0 delay=5 ip limit=${MY_IP_WAIT_S:-900}
+  until ip=$(_my_ip_lookup) && [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; do
+    [ "$waited" -ge "$limit" ] && { echo "no public IP after ${waited}s of retries" >&2; return 1; }
+    echo "public IP lookup failed; retrying in ${delay}s (${waited}s of ${limit}s so far)" >&2
+    sleep "$delay"
+    waited=$((waited + delay)) delay=$((delay * 2 > 60 ? 60 : delay * 2))
+  done
+  echo "$ip"
+}
 
 # Own key only: ~/.ssh/config routes every host through the 1Password agent, which would prompt per connection.
 SSH_OPTS=(-oIdentitiesOnly=yes -oIdentityAgent=none -oConnectTimeout=20 -oServerAliveInterval=30 -oLogLevel=ERROR)

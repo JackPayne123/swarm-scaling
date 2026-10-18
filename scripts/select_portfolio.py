@@ -263,9 +263,10 @@ def claim_path(runs: list[str]) -> Path:
 
 
 def allow_me() -> None:
-    """scorer_client.on_unreachable: re-open the scorer and SSH ports to this machine's current public IP."""
+    """scorer_client.on_unreachable: re-open the scorer and SSH ports to this machine's current public IP. allow-me
+    retries the IP lookup for up to 15 min (common.sh my_ip) while the network is down, hence the long timeout."""
     out = subprocess.run(["bash", "scripts/cloud/scorer.sh", "allow-me"], cwd=PROJECT_ROOT, capture_output=True, text=True,
-                         timeout=120)  # fmt: skip
+                         timeout=1200)  # fmt: skip
     print(f"[select] scorer unreachable; allow-me: {(out.stdout + out.stderr).strip()[-300:]}", flush=True)
 
 

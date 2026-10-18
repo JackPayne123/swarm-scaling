@@ -17,7 +17,8 @@
 #   scorer.sh status      state, instance state and /health
 #   scorer.sh pull        copies the job log, queue samples (queue.jsonl), service and latency logs to logs/_scorer/<instance>/
 #                         (the drivers run it every 10 min, so a lost connection at teardown loses at most that much)
-#   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6)
+#   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6);
+#                         waits up to 15 min for the network when the IP lookup fails (common.sh my_ip)
 #   scorer.sh down        pulls the logs (retrying, as allow-me after each failure), terminates the VM (and any other
 #                         instance tagged role=scorer), closes every rule on the scorer port, drops the state
 # Env: SEED_OFFSET_FILE (default: the experiment's file).

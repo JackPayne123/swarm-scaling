@@ -247,3 +247,27 @@ def test_v7_plans_put_every_arm_on_the_scorers_cpu_by_default():
         assert machines == ({"divteam": "m7a.4xlarge", **{f"i{k}": "m7a.xlarge" for k in range(4)}} if big else
                             {"divteam": "m7a.2xlarge", **{f"i{k}": "m7a.large" for k in range(4)}})  # fmt: skip
         assert len({line.split("--agent-memory-mb ")[1].split()[0] for line in lines}) == 1  # one box memory per task
+
+
+def test_the_public_ip_lookup_retries_with_backoff_until_the_network_returns_and_gives_up_after_its_bound(tmp_path):
+    """v7 calibration: allow-me failed once with "could not read this machine's public IP" while the network was down,
+    and selection stalled until a human re-ran it. The lookup and sleep are injected; no network, no waiting."""
+    import subprocess
+
+    def my_ip(failures: int, wait_s: int) -> tuple[int, str, list[str]]:
+        script = f"""source scripts/cloud/common.sh
+            _my_ip_lookup() {{  # runs in $(...): count calls in a file
+              echo x >> {tmp_path}/calls
+              [ "$(wc -l < {tmp_path}/calls)" -gt {failures} ] && echo 203.0.113.7 || echo '<html>captive</html>'
+            }}
+            sleep() {{ echo "$1" >> {tmp_path}/slept; }}
+            MY_IP_WAIT_S={wait_s} my_ip"""
+        (tmp_path / "slept").write_text("")
+        (tmp_path / "calls").write_text("")
+        out = subprocess.run(["bash", "-c", script], cwd=ROOT, capture_output=True, text=True)
+        return out.returncode, out.stdout.strip(), (tmp_path / "slept").read_text().split()
+
+    assert my_ip(0, 900) == (0, "203.0.113.7", [])
+    assert my_ip(4, 900) == (0, "203.0.113.7", ["5", "10", "20", "40"])  # a non-IP answer counts as a failure
+    rc, out, slept = my_ip(1000, 900)  # never returns: about 15 min of backoff, capped at 60 s per wait, then fails
+    assert rc == 1 and out == "" and slept[:6] == ["5", "10", "20", "40", "60", "60"] and sum(map(int, slept)) in range(900, 961)
