@@ -39,9 +39,9 @@ def serve(tmp_path, monkeypatch):
     """Start a Scorer with the given fake runner behind the real HTTP handler; point the client at it."""
     servers = []
 
-    def start(run, slots: int = 1) -> Scorer:
+    def start(run, slots: int = 1, **kwargs) -> Scorer:
         scorer = Scorer({"cvar_projection": assets(tmp_path)}, [f"{8 * k}-{8 * k + 7}" for k in range(slots)], run,
-                        "Test CPU", "abc123", "offsetid")  # fmt: skip
+                        "Test CPU", "abc123", "offsetid", **kwargs)  # fmt: skip
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler(scorer, TOKEN))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         servers.append(server)
@@ -415,3 +415,66 @@ async def test_a_retried_post_returns_the_job_it_already_made_instead_of_a_dupli
     assert rec["status"] == "done" and len(scorer.jobs) == 1
     again = await scorer_client.run_job({**job("s"), "request_id": rec["job_id"] + "-x"})
     assert len(scorer.jobs) == 2 and again["job_id"] != rec["job_id"]  # a new request_id is a new job
+
+
+CPUINFO = """processor\t: 0
+vendor_id\t: AuthenticAMD
+cpu family\t: 25
+model\t\t: 17
+model name\t: AMD EPYC 9R14
+siblings\t: 32
+cpu cores\t: 32
+flags\t\t: fpu sse4_2 avx avx2 fma bmi2 avx512f avx512dq avx512cd avx512bw avx512vl avx512_bf16 vaes
+
+processor\t: 1
+"""
+
+
+def test_health_gives_the_hardware_the_prompt_states_and_jobs_carry_the_service_session(serve, tmp_path) -> None:
+    # The prompt's timing-hardware paragraph is built from /health; selection checks that compared hidden scores share
+    # one session (one service run on one machine type).
+    from swarm_scaling.algotune_devkit import scorer_hardware_text
+    from swarm_scaling.scorer_service import cpu_info
+
+    (tmp_path / "cpuinfo").write_text(CPUINFO)
+    serve(lambda job, cpuset, timeout_s: ({"valid": True}, ""), hardware=cpu_info(str(tmp_path / "cpuinfo")),
+          machine_type="c7a.8xlarge")  # fmt: skip
+    health = scorer_client.health()
+    assert health["machine_type"] == "c7a.8xlarge" and health["slot_cpus"] == 8 and health["threads_per_core"] == 1
+    assert health["microarchitecture"] == "Zen 4" and "avx512f" in health["cpu_flags"] and "fpu" not in health["cpu_flags"]
+    text = scorer_hardware_text({**health, "cpu_model": "AMD EPYC 9R14"})
+    assert "8 dedicated CPUs (1 hardware thread per core). CPU: AMD EPYC 9R14 (" in text and "AMD family 25 model 17, Zen 4" in text
+    view = scorer_client.get(scorer_client.submit(job()))
+    assert view["session"] == health["session"] and len(health["session"]) == 16
+
+
+def test_an_exclusive_job_waits_for_running_jobs_runs_alone_on_its_slot_and_later_jobs_wait_for_it(serve) -> None:
+    # v7 calibration: one ode solver scored up to 1.16x apart by slot and load; hidden scoring now runs with the other
+    # slots idle, always on the same CPUs, and later jobs cannot jump ahead of it.
+    import time
+
+    lock, live, starts = threading.Lock(), [], []
+
+    def run(job: Job, cpuset: str, timeout_s: float):
+        with lock:
+            live.append(job.meta["agent_id"])
+            starts.append((job.meta["agent_id"], cpuset, sorted(live)))
+        time.sleep(0.3)
+        with lock:
+            live.remove(job.meta["agent_id"])
+        return {"valid": True}, ""
+
+    scorer = serve(run, slots=3, exclusive_slot=2)
+    ids = []
+    for name in ("n1", "n2", "x", "n3", "n4"):
+        ids.append(scorer_client.submit({**job(agent_id=name), "exclusive": name == "x"}))
+        time.sleep(0.05)  # in this order
+    for i in ids:
+        while scorer_client.get(i)["status"] != "done":
+            time.sleep(0.01)
+    assert [s[0] for s in starts[:3]] == ["n1", "n2", "x"] and {s[0] for s in starts[3:]} == {"n3", "n4"}  # start together
+    assert ("x", "16-23", ["x"]) in starts  # alone, on slot 2's CPUs
+    assert all("x" not in others for name, _, others in starts if name != "x")
+    assert scorer_client.get(ids[2])["exclusive"] is True and scorer.jobs[ids[2]].slot == 2
+    with pytest.raises(scorer_client.ScorerError, match="exclusive must be true or false"):
+        scorer_client.submit({**job(), "exclusive": "yes"})

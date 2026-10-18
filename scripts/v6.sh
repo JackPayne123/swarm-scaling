@@ -2,8 +2,9 @@
 # v6 (2026-10-11): run a v6 plan (plans/v6-pilot.tsv or plans/v6-main.tsv) on one scorer, then take the scorer down.
 # scripts/v6_drive.py does the work: `size` reads the AWS quota now and sizes the scorer (at most 11 slots, at least one
 # per 8 agents running at once, room left for agent VMs); `run` runs the whole plan as the quota allows, selects each
-# task-repeat group's portfolios (scripts/select_portfolio.py, --concurrency 6) as soon as its runs have ended, and
-# starts no further row once measured + committed spend would pass SPEND_CAP dollars.
+# task-repeat group's portfolios (scripts/select_portfolio.py, --concurrency 6) as soon as its runs have ended (v6) or,
+# for a plan with v7 rows, every group at once after the last row has ended (--select-after), and starts no further
+# row once measured + committed spend would pass SPEND_CAP dollars.
 # Scorer slots get SCORER_MEMORY (default 16g: the verifier holds 100 sinkhorn problems, 7.0 GiB); backstop HOURS
 # (default 30).
 # Usage: bgjob run --name v6 --grace 60 -- /usr/bin/caffeinate -is bash scripts/v6.sh plans/v6-main.tsv 16 [ref] [run options]

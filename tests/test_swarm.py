@@ -898,3 +898,28 @@ async def test_v7_tool_fixes_make_the_summary_optional_and_show_budget_to_four_d
     optional = send_message_cc_tool(team, "agent_0", summary_optional=True)
     assert ToolDef(optional).parameters.required == ["to", "message"]
     assert await optional(to="agent_1", message="hi") == "Delivered to agent_1."
+
+
+def test_the_timing_hardware_paragraph_is_identical_in_every_arm_and_logged(tmp_path: Path) -> None:
+    # v7 calibration: 9 of 21 agents probed the scorer's cores and AVX-512 through dev_eval timings; one independent that
+    # did scored 2x its arm. Every arm must be told the same facts.
+    hardware = "Timing hardware: test paragraph."
+
+    def capture(prompts: list[str]):
+        def script(input, tools, tool_choice, config):
+            prompts.append(input[-1].text)
+            return call("bash", usage=used(1000), command="true")
+
+        return get_model(MODEL, custom_outputs=script)
+
+    team: list[list[str]] = [[], []]
+    log = run_swarm(tmp_path / "team", swarm(models=[capture(p) for p in team], per_agent_tokens=1000, budget_type="all",
+                                             workspace_root=str(tmp_path / "ws_t"), elicit="diversified-v7",
+                                             end_on_budget=True, hardware=hardware))  # fmt: skip
+    indep: list[str] = []
+    run_swarm(tmp_path / "indep", swarm(models=[capture(indep)], per_agent_tokens=1000, budget_type="all", messaging=False,
+                                        workspace_root=str(tmp_path / "ws_i"), elicit="diversified-v7", priority_index=0,
+                                        end_on_budget=True, hardware=hardware))  # fmt: skip
+    for prompt in (team[0][0], team[1][0], indep[0]):
+        assert prompt.count(f"\n\n{hardware}\n\n") == 1
+    assert swarm_meta(log)["hardware"] == hardware

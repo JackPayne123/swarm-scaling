@@ -133,3 +133,35 @@ def test_the_v7_prompt_is_refused_without_run_to_budget_and_run_to_budget_withou
             runner.main()
         assert why in capsys.readouterr().err
     assert not (tmp_path / "x").exists()
+
+
+def test_a_v7_remote_run_states_the_scorers_hardware_from_its_health_and_logs_it(monkeypatch, tmp_path):
+    """The text comes from /health at run start, so it is right for whatever machine scores the run."""
+    import json
+
+    from swarm_scaling.algotune_devkit import scorer_hardware_text
+
+    health = {"cpu_model": "AMD EPYC 9R14", "arch": "x86_64", "cpu_vendor": "AuthenticAMD", "cpu_family": 25,
+              "cpu_model_number": 17, "microarchitecture": "Zen 4", "threads_per_core": 1, "slot_cpus": 8,
+              "cpu_flags": ["avx2", "fma", "avx512f", "avx512dq", "avx512bw", "avx512vl"]}  # fmt: skip
+    seen = {}
+    monkeypatch.setattr(runner, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(runner.scorer_client, "health", lambda: health)
+    monkeypatch.setattr(runner, "wait_for_docker_images", lambda: None)
+    monkeypatch.setattr(runner, "algotune_task", lambda **kw: "task")
+    monkeypatch.setattr(runner, "swarm", lambda **kw: seen.setdefault("hardware", kw["hardware"]))
+    monkeypatch.setattr(runner, "eval", lambda *a, **kw: [])
+    base = ["runner", "--models", GLM, "--budget", "5", "--checker", "remote", "--experiment", "v7"]
+    monkeypatch.setattr(sys, "argv", [*base, "--arm", "independent", "--name", "i"])
+    runner.main()
+    text = scorer_hardware_text(health)
+    assert seen["hardware"] == text and "8 dedicated CPUs" in text and "Zen 4" in text and "avx512f" in text
+    assert json.loads((tmp_path / "i" / "run.json").read_text())["scorer_hardware"] == text
+    monkeypatch.setattr(sys, "argv", [*base, "--arm", "team", "--n", "4", "--name", "t"])
+    seen.clear()
+    runner.main()
+    assert seen["hardware"] == text  # the same text in the team arm
+    monkeypatch.setattr(sys, "argv", [*base[:7], "--arm", "independent", "--name", "v6"])  # v6: unchanged, no text
+    seen.clear()
+    runner.main()
+    assert seen["hardware"] is None

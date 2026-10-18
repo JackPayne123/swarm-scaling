@@ -6,6 +6,7 @@
 #                [-- <scorer_service.sh args, default --slots 2>]
 #     --experiment picks whose secret offset the scorer holds (data/.algotune_seed_offset for v6,
 #     data/.algotune_seed_offset.<experiment> after; tasks.seed_offset_file) and is recorded in the state and /health.
+#     After v6 the service also gets --machine-type <machine>, which /health reports beside its CPU and session.
 #     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
 #     checks out <git-ref>, holds /dev/cpu_dma_latency at 0 (hold_cpu_dma_latency.py, log cpu_dma_latency.log),
 #     starts the service detached, opens the port to this machine only, and waits for
@@ -16,7 +17,8 @@
 #   scorer.sh status      state, instance state and /health
 #   scorer.sh pull        copies the job log, queue samples (queue.jsonl), service and latency logs to logs/_scorer/<instance>/
 #                         (the drivers run it every 10 min, so a lost connection at teardown loses at most that much)
-#   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6)
+#   scorer.sh allow-me    re-opens the scorer port and SSH to this machine's current public IP (it changed twice in v6);
+#                         waits up to 15 min for the network when the IP lookup fails (common.sh my_ip)
 #   scorer.sh down        pulls the logs (retrying, as allow-me after each failure), terminates the VM (and any other
 #                         instance tagged role=scorer), closes every rule on the scorer port, drops the state
 # Env: SEED_OFFSET_FILE (default: the experiment's file).
@@ -74,7 +76,7 @@ up() {
   vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" && vm_put "$tmp/env" "$tmp/seed_offset" swarm-upload/ || exit 1
   # shellcheck disable=SC2016
   # v6 refs predate the service's --experiment, so it is passed only for later experiments
-  [ "$experiment" = v6 ] || service_args=(--experiment "$experiment" "${service_args[@]}")
+  [ "$experiment" = v6 ] || service_args=(--experiment "$experiment" --machine-type "$mt" "${service_args[@]}")
   vm_exec "sudo bash -s -- $(printf '%q ' "$REMOTE_REPO" "$REMOTE_STATE" "$ref" "$offset_name" "${service_args[@]}")" <<'EOF' || exit 1
 set -euo pipefail
 repo=$1 state=$2 ref=$3 offset_name=$4

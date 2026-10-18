@@ -76,26 +76,45 @@ AWS_SIZES = {"large": 2, "xlarge": 4, "2xlarge": 8, "4xlarge": 16, "8xlarge": 32
 AGENTS_PER_SLOT = 4  # one scorer slot per 4 agents (decided 2026-10-10)
 SLOT_VCPUS, SCORER_SERVICE_VCPUS = 8, 8  # as scorer_service.py's SLOT_CPUS and SERVICE_CPUS
 
-# On-demand compute USD per hour. Estimates for the cost column only; check billing. They leave out disks
+# On-demand compute USD per hour, by region: a price is looked up only in the region the VM runs in (`hourly_usd`), so a
+# rate from one region can never price another's VM (until 2026-10-18 one flat table priced us-east-1 m7a VMs at
+# ap-southeast-2 rates, 25% high). Estimates for the cost column only; check billing. They leave out disks
 # (60 GB pd-balanced / gp3, about $0.01/h) and public IPs (about $0.005/h).
-HOURLY_USD = {
-    # GCP us-central1, third-party trackers July 2026; -8 is half of -16 (T2D is priced per vCPU and GB)
-    "t2d-standard-8": 0.34, "t2d-standard-16": 0.68, "t2d-standard-32": 1.35,
-    "e2-standard-8": 0.27,  # unverified
-    # AWS Linux on-demand, AWS public price map published 2026-10-08: ap-southeast-2
-    "m7a.2xlarge": 0.5796, "m7a.4xlarge": 1.1592, "m7a.8xlarge": 2.3184,
-    # AWS us-east-1 Linux on-demand, same source
-    "c7a.2xlarge": 0.41056, "c7a.4xlarge": 0.82112, "c7a.8xlarge": 1.64224,
-    # c7a.large / .xlarge: not queried; every c7a size above is $0.05132 per vCPU-hour, so these are 2 and 4 vCPUs of it
-    "c7a.large": 0.10264, "c7a.xlarge": 0.20528,
-    # scorer sizes (`scorer up --plan`): AWS Price List API (`aws pricing get-products`, Linux, shared tenancy, no
-    # pre-installed software), publication 2026-10-09T20:31Z, effective 2026-10-01, queried 2026-10-10
-    "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448, "c7a.24xlarge": 4.92672,  # us-east-1 (24xlarge = 2 x 12xlarge, linear)
-    "m7a.12xlarge": 3.4776, "m7a.16xlarge": 4.6368,  # ap-southeast-2
-    # burstable agent boxes (v7 cheap setup), us-east-1 Linux on-demand, AWS Price List API queried 2026-10-16; unlimited
-    # mode bills $0.05 per vCPU-hour above the 30-40% baseline (v6 agent boxes averaged 2-7% CPU)
-    "t3a.large": 0.0752, "t3a.xlarge": 0.1504, "t3a.2xlarge": 0.3008,
+HOURLY_USD_BY_REGION = {
+    # GCP, third-party trackers July 2026; -8 is half of -16 (T2D is priced per vCPU and GB)
+    "us-central1": {"t2d-standard-8": 0.34, "t2d-standard-16": 0.68, "t2d-standard-32": 1.35,
+                    "e2-standard-8": 0.27},  # e2: unverified  # fmt: skip
+    # AWS Price List API (`command aws --profile swarm-runner --region us-east-1 pricing get-products`, regionCode
+    # us-east-1, Linux, shared tenancy, no pre-installed software, capacitystatus Used), publication 2026-10-15T19:13Z,
+    # effective 2026-10-01, queried 2026-10-18. t3a unlimited mode also bills $0.05 per vCPU-hour above the 30-40%
+    # baseline (v6 agent boxes averaged 2-7% CPU).
+    "us-east-1": {
+        "c7a.large": 0.10264, "c7a.xlarge": 0.20528, "c7a.2xlarge": 0.41056, "c7a.4xlarge": 0.82112, "c7a.8xlarge": 1.64224,
+        "c7a.12xlarge": 2.46336, "c7a.16xlarge": 3.28448, "c7a.24xlarge": 4.92672,
+        "m7a.large": 0.11592, "m7a.xlarge": 0.23184, "m7a.2xlarge": 0.46368, "m7a.4xlarge": 0.92736, "m7a.8xlarge": 1.85472,
+        "m7a.12xlarge": 2.78208, "m7a.16xlarge": 3.70944,
+        "r7a.large": 0.15215, "r7a.xlarge": 0.3043, "r7a.2xlarge": 0.6086, "r7a.4xlarge": 1.2172,
+        "t3a.large": 0.0752, "t3a.xlarge": 0.1504, "t3a.2xlarge": 0.3008,
+    },  # fmt: skip
+    # same source and query, regionCode ap-southeast-2 (Sydney has no c7a)
+    "ap-southeast-2": {
+        "m7a.large": 0.1449, "m7a.xlarge": 0.2898, "m7a.2xlarge": 0.5796, "m7a.4xlarge": 1.1592, "m7a.8xlarge": 2.3184,
+        "m7a.12xlarge": 3.4776, "m7a.16xlarge": 4.6368, "m7a.24xlarge": 6.9552,
+    },  # fmt: skip
 }
+
+
+def region_of(zone: str) -> str:
+    """us-east-1c -> us-east-1 (AWS availability zone), us-central1-a -> us-central1 (GCP zone)."""
+    head, _, tail = zone.rpartition("-")
+    if len(tail) == 1 and tail.isalpha():  # GCP: <region>-<letter>
+        return head
+    return zone.rstrip("abcdefghijklmnopqrstuvwxyz")  # AWS: <region><letter>; a region name is returned as is
+
+
+def hourly_usd(machine: str, zone: str) -> float | None:
+    """The on-demand rate of `machine` in the region of `zone`, or None when that region has no price for it."""
+    return HOURLY_USD_BY_REGION.get(region_of(zone), {}).get(machine)
 
 
 @dataclass
@@ -400,8 +419,9 @@ def hours_since(start: datetime, end: datetime | None = None) -> float:
     return ((end or datetime.now(timezone.utc)) - start).total_seconds() / 3600
 
 
-def cost(machine: str, hours: float) -> str:
-    return f"${HOURLY_USD[machine] * hours:.2f}" if machine in HOURLY_USD else "unpriced"
+def cost(machine: str, zone: str, hours: float) -> str:
+    rate = hourly_usd(machine, zone)
+    return f"${rate * hours:.2f}" if rate is not None else f"unpriced in {region_of(zone)}"
 
 
 def stamp(s: str) -> datetime:
@@ -414,9 +434,9 @@ def status(_: argparse.Namespace) -> None:
     total = 0.0
     for vm in vms:
         h = hours_since(vm["created"])
-        total += HOURLY_USD.get(vm["machine"], 0) * h
-        print(f"  {vm['cloud']} {vm['name']:34} {vm['zone']:16} {vm['machine']:16} {vm['role']:11} {vm['state']:10} up {h:5.2f} h  ~{cost(vm['machine'], h)}")
-    print(f"  estimated compute so far: ~${total:.2f} (on-demand estimates, see HOURLY_USD)", flush=True)
+        total += (hourly_usd(vm["machine"], vm["zone"]) or 0) * h
+        print(f"  {vm['cloud']} {vm['name']:34} {vm['zone']:16} {vm['machine']:16} {vm['role']:11} {vm['state']:10} up {h:5.2f} h  ~{cost(vm['machine'], vm['zone'], h)}")
+    print(f"  estimated compute so far: ~${total:.2f} (on-demand estimates, see HOURLY_USD_BY_REGION)", flush=True)
     subprocess.run(["bash", "scripts/cloud/scorer.sh", "status"], cwd=ROOT)
 
     rows = []
@@ -426,9 +446,10 @@ def status(_: argparse.Namespace) -> None:
         if not created:
             continue
         machine = re.search(r"machine=(\S+)", created[2]).group(1)
+        zone = re.search(r"zone=(\S+)", created[2]).group(1)
         deleted = next((ln for ln in lines if ln[1] in ("deleted", "delete-requested")), None)
         h = hours_since(stamp(created[0]), stamp(deleted[0]) if deleted else None)
-        rows.append((f.parent.name, machine, " ".join(lines[-1][1:])[:30], f"{h:.2f}", cost(machine, h)))
+        rows.append((f.parent.name, machine, " ".join(lines[-1][1:])[:30], f"{h:.2f}", cost(machine, zone, h)))
     if rows:
         print("runs (logs/*/cloud-status): name, machine, last state, VM-hours, estimated compute")
         for row in rows:

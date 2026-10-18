@@ -207,8 +207,31 @@ def scorer_job(state: TaskState, kind: str, source: bytes, agent_id: str = "", *
 def remote_timing(rec: dict) -> dict:
     """Telemetry of a finished scorer job, in the shape of the local checker's plus where it ran."""
     keep = ("queue_wait_s", "started_at", "ended_at", "run_s", "slot", "cpu_model", "scorer_host", "job_id", "alone_baseline",
-            "timing_env")
+            "timing_env", "session", "exclusive")
     return {k: rec.get(k) for k in keep}
+
+
+VENDORS = {"AuthenticAMD": "AMD", "GenuineIntel": "Intel"}
+
+
+def scorer_hardware_text(health: dict) -> str:
+    """The paragraph every agent's prompt gets about the machine that times its candidates (v7, 2026-10-18), from the
+    scorer's /health at run start. In the calibration 9 of 21 agents learned the scorer's 8 cores and AVX-512 only by
+    encoding them into solve() run times through dev_eval, and the one independent on stable_matching that did scored
+    twice the other three. Raises when /health lacks a field (a scorer from before this text), rather than guess."""
+    need = ("cpu_model", "arch", "cpu_vendor", "cpu_family", "cpu_model_number", "threads_per_core", "cpu_flags", "slot_cpus")
+    if missing := [k for k in need if health.get(k) is None]:
+        raise ValueError(f"the scorer's /health has no {missing}: it predates the timing-hardware text")
+    family = f"{VENDORS.get(health['cpu_vendor'], health['cpu_vendor'])} family {health['cpu_family']} model {health['cpu_model_number']}"
+    if health.get("microarchitecture"):
+        family += f", {health['microarchitecture']}"
+    per_core = health["threads_per_core"]
+    return (
+        "Timing hardware: dev_eval, the final selection and the official scoring all run on a separate scoring machine, "
+        f"not in your own box. Each timed run there gets {health['slot_cpus']} dedicated CPUs ({per_core} hardware "
+        f"thread{'s' if per_core != 1 else ''} per core). CPU: {health['cpu_model']} ({health['arch']}, {family}). "
+        f"Instruction-set extensions: {', '.join(health['cpu_flags']) or 'none of the vector extensions'}."
+    )
 
 
 async def timed_dev_eval(
