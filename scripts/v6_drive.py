@@ -1,9 +1,9 @@
 """The v6 driver's two steps (scripts/v6.sh runs them around scorer.sh up/down).
 
   size <plan>    prints "<slots> <machine> <max_agents>": the scorer for the plan, read against the AWS quota now
-  run <plan> <SPEND_CAP> --ref R --scorer URL --max-agents M
-                 runs the whole plan through fleet.py (rows start as the quota allows), runs select_portfolio.py on each
-                 task-repeat group as soon as its runs have ended, and stops starting rows near the spend cap
+  run <plan> <SPEND_CAP> --ref R --scorer URL --max-agents M [--select-after group|plan]
+                 runs the whole plan through fleet.py (rows start as the quota allows), runs select_portfolio.py on the
+                 task-repeat groups (below), and stops starting rows near the spend cap
 
 Scorer size: the plan's agents use about 4 vCPUs each (agent VMs at 2 CPUs per agent + 2). The scorer gets the
 smallest machine (then every slot that machine holds, at most MAX_SLOTS) with at least one slot per AGENTS_PER_SLOT
@@ -14,8 +14,11 @@ Spend cap: once measured spend of ended runs (run_cost.py's pricing) + the full 
 budget of the largest row would exceed SPEND_CAP, no further row starts (fleet.py --stop-file); running rows finish.
 
 Groups: rows named <prefix>-<task>-r<k>-<arm>[-i<j>] (plans/v6-*.tsv); a group is <prefix>-<task>-r<k>, so its
-portfolios (one per arm) are selected together. Selections run one at a time with --concurrency 6 (main's scorer has 11 slots), so live agents
-keep most scorer slots.
+portfolios (one per arm) are selected together. --select-after group (v6): each group's selection starts as soon as its
+own runs have ended, one selection at a time with --concurrency 6 (main's scorer has 11 slots), so live agents keep
+most scorer slots. --select-after plan (default for plans with a v7 row, 2026-10-18): no selection starts until every
+row of the plan has ended, then every group's selection runs at once: in the v7 calibration the stable_matching
+selection ran beside agents still working, whose dev_eval waits rose to a mean of 221 s (max 835 s) from 76 s.
 
 v7 options: --group-start (fleet.py: a group's rows start together), --validity-n N (select_portfolio.py's validity
 pass). Every PULL_S the scorer's logs are copied to logs/_scorer/<instance>/ (scorer.sh pull), so a connection lost at
@@ -65,6 +68,19 @@ def size(rows: list[fleet.Row], free: int) -> tuple[int, str, int]:
 group_of = fleet.group_of
 
 
+def ready_groups(groups: dict[str, list[str]], states: dict[str, str | None], plan_done: bool, after_plan: bool) -> list[str]:
+    """The groups whose selection may start now: each once its own rows have ended (state "exit"), or with after_plan
+    every group, but only once the whole plan has ended, so no selection job shares the scorer with a running agent."""
+    if after_plan:
+        return list(groups) if plan_done else []
+    return [g for g, names in groups.items() if plan_done or all(states[n] == "exit" for n in names)]
+
+
+def experiment_of(row: fleet.Row) -> str:
+    a = row.args
+    return a[a.index("--experiment") + 1] if "--experiment" in a else "v6"
+
+
 def state(name: str) -> str | None:
     """The last state in logs/<name>/cloud-status, None if the row has not started."""
     path = fleet.status_path(name)
@@ -92,7 +108,11 @@ def run(args: argparse.Namespace) -> int:
     costs: dict[str, float] = {}
     selected: set[str] = set()
     queue: list[str] = []
-    selecting: tuple[str, subprocess.Popen] | None = None
+    selecting: list[tuple[str, subprocess.Popen]] = []
+    after_plan = (args.select_after or ("plan" if any(experiment_of(r) != "v6" for r in rows) else "group")) == "plan"
+    at_once = len(groups) if after_plan else 1  # selections running together
+    print(f"[v6] selections start {'once every row has ended, all at once' if after_plan else 'per group, one at a time'}",
+          flush=True)  # fmt: skip
 
     def select(group: str) -> subprocess.Popen | None:
         dirs = [f"logs/{n}" for n in groups[group] if (ROOT / "logs" / n).is_dir()]
@@ -106,7 +126,7 @@ def run(args: argparse.Namespace) -> int:
     last_pull = time.monotonic()
 
     def step(plan_done: bool) -> None:
-        nonlocal selecting, last_pull
+        nonlocal last_pull
         if time.monotonic() - last_pull >= PULL_S:
             last_pull = time.monotonic()
             try:
@@ -124,22 +144,21 @@ def run(args: argparse.Namespace) -> int:
                 stop.touch()
                 print(f"[v6] spend cap: measured ${sum(costs.values()):.2f} + running ${running:.2f} + next row "
                       f"> ${args.spend_cap:.2f}; no further rows start", flush=True)  # fmt: skip
-        for g, names in groups.items():
-            if g not in selected and (plan_done or all(states[n] == "exit" for n in names)):
+        for g in ready_groups(groups, states, plan_done, after_plan):
+            if g not in selected:
                 selected.add(g)
                 queue.append(g)
-        if selecting is not None and selecting[1].poll() is not None:
-            selecting = None
-        while selecting is None and queue:
+        selecting[:] = [(g, p) for g, p in selecting if p.poll() is None]
+        while len(selecting) < at_once and queue:
             g = queue.pop(0)
             if (p := select(g)) is not None:
-                selecting = (g, p)
+                selecting.append((g, p))
 
     while plan.poll() is None:
         step(plan_done=False)
         time.sleep(POLL_S)
     step(plan_done=True)
-    while selecting is not None or queue:
+    while selecting or queue:
         time.sleep(POLL_S / 6)
         step(plan_done=True)
     print(f"[v6] measured spend of ended runs: ${sum(costs.values()):.2f} (cap ${args.spend_cap:.2f})", flush=True)
@@ -160,6 +179,9 @@ def main() -> None:
     pr.add_argument("--group-start", action="store_true", help="start each task-repeat group's rows together (v7)")
     pr.add_argument("--validity-n", type=int, default=0, help="select_portfolio.py --validity-n (v7: 1000)")
     pr.add_argument("--validity-n-task", action="append", default=[], metavar="TASK=N", help="select_portfolio.py's")
+    pr.add_argument("--select-after", choices=("group", "plan"), default=None,
+                    help="start a group's selection when its rows end (group) or every selection once the whole plan "
+                         "has ended (plan); default: plan when a row is a v7 row, else group")
     args = p.parse_args()
     if args.cmd == "size":
         free = fleet.aws_free()
