@@ -1,0 +1,27 @@
+v7bs-unit_simplex_projection-r1-divteam: scorer_hardware = 'Timing hardware: dev_eval, the final selection and the official scoring all run on a separate scoring machine, not in your own box. Each timed run there gets 8 dedicated CPUs (1 hardware thread per core). CPU: AMD EPYC 9R14 (x86_64, AMD family 25 model 17, Zen 4). Instruction-set extensions: sse4_2, avx, avx2, fma, bmi2, avx512f, avx512dq, avx512cd, avx512bw, avx512vl, avx512ifma, avx512vbmi, avx512_vbmi2, avx512_vnni, avx512_bitalg, avx512_vpopcntdq, avx512_bf16, gfni, vaes, vpclmulqdq.'
+  agent_0: hardware paragraph in prompt: True
+    AMD EPYC 9R14
+    nproc 2
+    avx512f 8
+    PROBE {"cpu_count": 2, "affinity": [0, 1], "blas": [["openblas", "libscipy_openblas-5f890258.so", 2], ["openblas", "libscipy_openblas64_-f48b354e.so", 2]], "numba_threads": 2, "memory_max": "5637144576", "cpus_max": "200000 100000"}
+  agent_1: hardware paragraph in prompt: True
+    AMD EPYC 9R14
+    nproc 2
+    avx512f 8
+    PROBE {"cpu_count": 2, "affinity": [2, 3], "blas": [["openblas", "libscipy_openblas64_-f48b354e.so", 2], ["openblas", "libscipy_openblas-5f890258.so", 2]], "numba_threads": 2, "memory_max": "5637144576", "cpus_max": "200000 100000"}
+  agent_2: hardware paragraph in prompt: True
+    AMD EPYC 9R14
+    nproc 2
+    avx512f 8
+    PROBE {"cpu_count": 2, "affinity": [4, 5], "blas": [["openblas", "libscipy_openblas-5f890258.so", 2], ["openblas", "libscipy_openblas64_-f48b354e.so", 2]], "numba_threads": 2, "memory_max": "5637144576", "cpus_max": "200000 100000"}
+  agent_3: hardware paragraph in prompt: True
+    AMD EPYC 9R14
+    nproc 2
+    avx512f 8
+    PROBE {"cpu_count": 2, "affinity": [6, 7], "blas": [["openblas", "libscipy_openblas-5f890258.so", 2], ["openblas", "libscipy_openblas64_-f48b354e.so", 2]], "numba_threads": 2, "memory_max": "5637144576", "cpus_max": "200000 100000"}
+v7bs-unit_simplex_projection-r2-div-i0: scorer_hardware = 'Timing hardware: dev_eval, the final selection and the official scoring all run on a separate scoring machine, not in your own box. Each timed run there gets 8 dedicated CPUs (1 hardware thread per core). CPU: AMD EPYC 9R14 (x86_64, AMD family 25 model 17, Zen 4). Instruction-set extensions: sse4_2, avx, avx2, fma, bmi2, avx512f, avx512dq, avx512cd, avx512bw, avx512vl, avx512ifma, avx512vbmi, avx512_vbmi2, avx512_vnni, avx512_bitalg, avx512_vpopcntdq, avx512_bf16, gfni, vaes, vpclmulqdq.'
+  agent_0: hardware paragraph in prompt: True
+    AMD EPYC 9R14
+    nproc 2
+    avx512f 2
+    PROBE {"cpu_count": 2, "affinity": [0, 1], "blas": [["openblas", "libscipy_openblas64_-f48b354e.so", 2], ["openblas", "libscipy_openblas-5f890258.so", 2]], "numba_threads": 2, "memory_max": "5637144576", "cpus_max": "200000 100000"}

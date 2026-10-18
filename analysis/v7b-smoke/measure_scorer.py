@@ -15,6 +15,9 @@ Phases (dev_eval n=20, reps=10, seed 0 unless stated):
   alone      mix_pool and indep_pick, one job at a time: the service hands consecutive jobs to its slots in turn
   loaded     the same, three jobs at once (one per slot), twice per source
   exclusive  every source 3 times as exclusive jobs, interleaved by source
+  pinned     then dockerd, containerd and the latency holder are moved to the service's CPUs and every device IRQ with
+             them (irqbalance stopped), over SSH as scorer.sh would, and alone and loaded are repeated (alone2,
+             loaded2): does keeping the host's own work off the slots remove the slot differences?
 Each finished job is one JSON line: phase, source, slot, session, start/end, total_solver_s, total_reference_s,
 speedup, alone_speedup, valid, n_invalid and the first error.
 """
@@ -23,6 +26,7 @@ import asyncio
 import glob
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -92,6 +96,20 @@ async def main() -> None:
     for _ in range(3):
         for s in ("mix_pool", "mix_nopool", "team_tolist", "team_ring", "indep_pick"):
             await one("exclusive", s, exclusive=True, **dev)
+    service = "24-31"  # c7a.8xlarge with 3 slots: slots 0-7, 8-15, 16-23
+    pin = (f"sudo systemctl stop irqbalance; for f in /proc/irq/*/smp_affinity_list; do echo {service} | sudo tee $f >/dev/null 2>&1; done; "
+           f"sudo systemctl set-property --runtime docker.service AllowedCPUs={service}; "
+           f"sudo systemctl set-property --runtime containerd.service AllowedCPUs={service}; "
+           f"for p in $(pgrep -f hold_cpu_dma_latency); do sudo taskset -apc {service} $p >/dev/null; done; "
+           "ps -eo psr,comm | grep -E 'dockerd|containerd|python' ; grep -E 'nvme|ena|enp' /proc/interrupts | head -4")  # fmt: skip
+    ssh = subprocess.run(["bash", "-c", 'source scripts/cloud/common.sh && ssh "${AWS_SSH_OPTS[@]}" "ubuntu@$(scorer_field ip)" "$1"', "_", pin],
+                         capture_output=True, text=True, timeout=120)  # fmt: skip
+    print("pinned:", ssh.returncode, ssh.stdout[-1500:], ssh.stderr[-500:], flush=True)
+    for s in ("mix_pool", "indep_pick"):
+        for _ in range(6):
+            await one("alone2", s, **dev)
+        for _ in range(2):
+            await asyncio.gather(*(one("loaded2", s, **dev) for _ in range(3)))
 
 
 if __name__ == "__main__":
