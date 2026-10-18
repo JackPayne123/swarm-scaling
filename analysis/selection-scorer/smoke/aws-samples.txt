@@ -1,0 +1,250 @@
+== 2026-10-18T13:49:33Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (None): 
+== 2026-10-18T13:50:38Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;
+select swarm-scorer-select (None): 
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T13:51:44Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;
+select swarm-scorer-select (None): 
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T13:52:49Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;
+select swarm-scorer-select (None): 
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:53:55Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:55:01Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:56:06Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:57:11Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:58:17Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T13:59:22Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.227.81.160/32 ss-v7ss-unit-simplex-projection-r1-divteam;98.86.227.68/32 ss-v7ss-unit-simplex-projection-r1-div-i0;
+select swarm-scorer-select (None): 
+i-0972797438c2fe60e	m7a.large	running	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+i-0b0ee2999fec1b775	m7a.2xlarge	running	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00
+== 2026-10-18T14:00:28Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): 
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:01:33Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:02:39Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:03:45Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:04:50Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:05:55Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	running	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:07:01Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;34.207.209.14/32 ss-v7ss-unit-simplex-projection-r2-div-i0;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0bc8813a64e2eb5fe	m7a.large	shutting-down	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+i-076fb5ecb0eaa8668	c7a.8xlarge	running	ss-scorer	2026-10-18T13:49:48+00:00
+== 2026-10-18T14:08:06Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): <operator-ip>/32 operator;
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:09:12Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:10:17Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:11:23Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:12:28Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:13:33Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:14:39Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:15:45Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:16:50Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:17:55Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:19:00Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:20:06Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:21:11Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:22:17Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:23:22Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:24:27Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:25:33Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:26:38Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:27:43Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:28:49Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:29:54Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:31:00Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:32:05Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:33:11Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:34:16Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:35:22Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:36:27Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:37:32Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:38:38Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:39:43Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:40:49Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:41:54Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:43:00Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:44:05Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:45:10Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:46:16Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:47:21Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+i-0359debc675a57ccc	c7a.8xlarge	running	ss-scorer-select	2026-10-18T14:00:34+00:00
+== 2026-10-18T14:48:26Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): <operator-ip>/32 operator;
+== 2026-10-18T14:49:32Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): 
+== 2026-10-18T14:49:37Z
+agent swarm-scorer (sg-0f765b07ed5546d7a): 
+select swarm-scorer-select (sg-022feef76cce3118d): 

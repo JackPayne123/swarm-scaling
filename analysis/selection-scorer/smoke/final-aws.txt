@@ -1,0 +1,7 @@
+== 2026-10-18T14:49:43Z every us-east-1 instance not terminated, then every tool-tagged volume
+== tool-tagged instances, terminated included, with launch time and the reason for their state
+i-0bc8813a64e2eb5fe	m7a.large	ss-v7ss-unit-simplex-projection-r2-div-i0	2026-10-18T14:00:02+00:00	terminated	User initiated (2026-10-18 14:07:05 GMT)
+i-0359debc675a57ccc	c7a.8xlarge	ss-scorer-select	2026-10-18T14:00:34+00:00	terminated	User initiated (2026-10-18 14:47:57 GMT)
+i-0972797438c2fe60e	m7a.large	ss-v7ss-unit-simplex-projection-r1-div-i0	2026-10-18T13:52:57+00:00	terminated	User initiated (2026-10-18 14:00:00 GMT)
+i-076fb5ecb0eaa8668	c7a.8xlarge	ss-scorer	2026-10-18T13:49:48+00:00	terminated	User initiated (2026-10-18 14:07:42 GMT)
+i-0b0ee2999fec1b775	m7a.2xlarge	ss-v7ss-unit-simplex-projection-r1-divteam	2026-10-18T13:52:40+00:00	terminated	User initiated (2026-10-18 13:59:43 GMT)
