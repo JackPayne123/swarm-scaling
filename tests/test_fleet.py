@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("fleet", ROOT / "scripts/cloud/fleet.py")
 fleet = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fleet)
+_spec = importlib.util.spec_from_file_location("make_v7_plan", ROOT / "scripts/make_v7_plan.py")
+make_v7_plan = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(make_v7_plan)
 
 PLAN = """
 # name  cloud  machine  args
@@ -169,14 +172,15 @@ def test_collect_pulls_finished_uploads_by_run_name_for_vms_on_either_cloud():
 
 
 @pytest.mark.parametrize("mt,expected", [
-    ("m7a.xlarge", "m7a.xlarge m6a.xlarge m7i.xlarge r7a.xlarge"),
-    ("m7a.4xlarge", "m7a.4xlarge m6a.4xlarge m7i.4xlarge r7a.4xlarge"),
+    ("m7a.large", "m7a.large r7a.large"),
+    ("m7a.4xlarge", "m7a.4xlarge r7a.4xlarge"),
     ("c7a.xlarge", "c7a.xlarge m7a.xlarge m6a.xlarge c6a.xlarge m7i.xlarge c7i.xlarge"),
     ("t3a.large", "t3a.large"),
 ])
-def test_a_memory_driven_type_never_falls_back_to_less_memory_per_vcpu(mt, expected):
+def test_a_memory_driven_type_never_falls_back_to_less_memory_per_vcpu_or_another_cpu(mt, expected):
     """sinkhorn rows ask for m7a (4 GiB per vCPU) because 100 problems peak at 9.6 GiB in the agent box; a c7a.xlarge
-    fallback (8 GiB, about 5.6 GiB for the box) would run out of memory."""
+    fallback (8 GiB, about 5.6 GiB for the box) would run out of memory. v7 agent boxes are m7a so that every arm times
+    locally on the scorer's Zen 4: m6a (Zen 3) or m7i (Intel) would put one arm on another CPU, r7a has the same one."""
     import subprocess
 
     out = subprocess.run(["bash", "-c", f"source scripts/cloud/common.sh && fallback_types {mt}"], cwd=ROOT,
@@ -218,3 +222,28 @@ def test_group_start_starts_a_groups_team_with_its_independents_instead_of_after
     started.clear()
     fleet.schedule(rows, {"gcp": 0, "aws": 40}, launch)
     assert started[5:7] == ["v7-qp-r2-div-i0", "v7-qp-r2-div-i1"]
+
+
+def test_vms_are_priced_at_their_own_regions_rate_and_every_default_v7_box_has_a_us_east_1_price():
+    """The calibration's cost estimate priced a us-east-1 m7a.4xlarge at Sydney's $1.1592/h (us-east-1: $0.92736/h)."""
+    assert fleet.region_of("us-east-1c") == "us-east-1" and fleet.region_of("us-central1-a") == "us-central1"
+    assert fleet.hourly_usd("m7a.4xlarge", "us-east-1c") == 0.92736
+    assert fleet.hourly_usd("m7a.4xlarge", "ap-southeast-2b") == 1.1592
+    assert fleet.hourly_usd("c7a.8xlarge", "ap-southeast-2a") is None  # no c7a in Sydney: unpriced, never borrowed
+    assert fleet.cost("c7a.8xlarge", "ap-southeast-2a", 1.0) == "unpriced in ap-southeast-2"
+    import subprocess
+
+    boxes = {t for (family, _), pair in make_v7_plan.BOXES.items() if family == "m7a" for t in pair}  # the default
+    fallbacks = {f for t in boxes for f in subprocess.run(["bash", "-c", f"source scripts/cloud/common.sh && fallback_types {t}"],
+                                                          cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()}  # fmt: skip
+    assert [t for t in sorted(fallbacks) if fleet.hourly_usd(t, "us-east-1a") is None] == []
+
+
+def test_v7_plans_put_every_arm_on_the_scorers_cpu_by_default():
+    """stable_matching calibration: the team's m7a box had the scorer's Zen 4 (AVX-512), the independents' t3a Zen 1."""
+    for big in (False, True):
+        lines = make_v7_plan.rows("p", "qp", 1, "m", "high", 5, big)
+        machines = {line.split()[0].rsplit("-", 1)[-1]: line.split()[2] for line in lines}
+        assert machines == ({"divteam": "m7a.4xlarge", **{f"i{k}": "m7a.xlarge" for k in range(4)}} if big else
+                            {"divteam": "m7a.2xlarge", **{f"i{k}": "m7a.large" for k in range(4)}})  # fmt: skip
+        assert len({line.split("--agent-memory-mb ")[1].split()[0] for line in lines}) == 1  # one box memory per task

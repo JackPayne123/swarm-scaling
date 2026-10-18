@@ -233,8 +233,10 @@ fallback_types() {  # fallback_types <machine-type>: it, then other x86 families
   else
     # An m (4 GiB per vCPU) or r (8 GiB) type is asked for its memory (v6 sinkhorn rows: 100 problems peak at 9.6 GiB
     # in the agent box), so it falls back only to families with at least as much memory per vCPU, never a c family.
+    # An m type also keeps its CPU (v7 agent boxes are m7a, the scorer's Zen 4, in every arm; 2026-10-18): it falls
+    # back only to the r family of the same generation and vendor (m7a -> r7a, both AMD EPYC 9R14), never m6a or m7i.
     case ${mt%%.*} in
-      m*) fams="m7a m6a m7i r7a" ;;
+      m*) f=${mt%%.*}; fams="$f r${f#m}" ;;
       r*) fams="r7a r6a r7i" ;;
       # t3a agent boxes (v7 cheap setup, 2026-10-16) stay t3a: a silent move to another family would change cost and box
       t*) fams="t3a" ;;
