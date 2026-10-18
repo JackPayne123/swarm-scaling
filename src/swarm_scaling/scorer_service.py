@@ -8,7 +8,11 @@ Slots must fit in Docker's CPUs with at least SERVICE_CPUS left over; on Linux t
 outside every slot, so its threads never run on a slot's CPUs.
 
 API (JSON over HTTP, bearer token on every request):
-    GET  /health      -> {ok, slots, queue_len, cpu_model, version, seed_offset_id, tasks}
+    GET  /health      -> {ok, slots, queue_len, cpu_model, version, seed_offset_id, tasks, session, machine_type,
+                          slot_cpus, exclusive_slot, arch, cpu_vendor, cpu_family, cpu_model_number, microarchitecture,
+                          threads_per_core, cpu_flags (the ISA_FLAGS this CPU has), ...}
+                      session: a fresh id each time the service starts, also in every job's view, so a caller can check
+                      that jobs it compares ran in one service session (on one machine type)
     GET  /stats       -> {queue_len, running, jobs_done, queue_wait_mean_s, queue_wait_p95_s, slot_busy_frac, ...}
     POST /jobs        {kind: dev_eval|final_eval|score|score_dev|validity, task, solver_source, run_id, agent_id, sample_id,
                        n, seed, reps, size, request_id}  -> {job_id}
@@ -18,6 +22,9 @@ API (JSON over HTTP, bearer token on every request):
                       the validity range (default VALIDITY_SEED, 1,000 instances), one instance in memory at a time
                       request_id (optional): a POST repeating an earlier request_id returns that job's id and starts
                       nothing, so a client can retry a POST whose answer it never got
+                      exclusive (optional, default false): the job runs with every other slot idle (no other job
+                      starts until it ends, and it waits for running ones), always on the CPUs of slot
+                      --exclusive-slot; selection's hidden scoring (v7, 2026-10-18; HARNESS.md "Scorer noise")
     GET  /jobs/<id>   -> {status: queued|running|done|error, queued_at, started_at, ended_at, queue_wait_s, run_s,
                           slot, cpu_model, result, output, error, kind, task}
 
@@ -110,15 +117,16 @@ class Job:
     error: str | None = None
     alone_payload: dict | None = None  # cached alone timings sent into the job, or None (the job times them itself)
     alone_baseline: dict | None = None  # what was sent: {"mode": "cached", "age_s", ...} or {"mode": "child"}
+    exclusive: bool = False  # runs with every other slot idle, on the exclusive slot
 
-    def view(self, cpu_model: str) -> dict:
+    def view(self, cpu_model: str, session: str | None = None) -> dict:
         return {
             "job_id": self.id, "kind": self.kind, "task": self.task.name, "status": self.status,
             "queued_at": self.queued_at, "started_at": self.started_at, "ended_at": self.ended_at,
             "queue_wait_s": None if self.started_at is None else round(self.started_at - self.queued_at, 3),
             "run_s": None if self.ended_at is None or self.started_at is None else round(self.ended_at - self.started_at, 3),
             "slot": self.slot, "cpu_model": cpu_model, "result": self.result, "output": self.output, "error": self.error,
-            "alone_baseline": self.alone_baseline, "timing_env": TIMING_ENV,
+            "alone_baseline": self.alone_baseline, "timing_env": TIMING_ENV, "exclusive": self.exclusive, "session": session,
         }  # fmt: skip
 
 
@@ -341,6 +349,9 @@ class Scorer:
         queue_log_path: Path | None = None,
         queue_sample_s: float = QUEUE_SAMPLE_S,
         alone_cache: AloneCache | None = None,
+        hardware: dict | None = None,
+        machine_type: str | None = None,
+        exclusive_slot: int = 0,
     ) -> None:
         self.tasks = {**tasks, **{a.slug: a for a in tasks.values()}}  # accept the task name or the sample id
         self.cpusets, self.run = cpusets, run
@@ -350,6 +361,15 @@ class Scorer:
         self.timeouts_s = timeouts_s or TIMEOUTS_S
         self.log_path = log_path
         self.alone_cache = alone_cache
+        self.hardware = hardware or {}  # cpu_info(): what the prompt's timing-hardware paragraph states
+        self.machine_type = machine_type
+        if not 0 <= exclusive_slot < len(cpusets):
+            raise ValueError(f"exclusive slot {exclusive_slot} is not one of the {len(cpusets)} slots")
+        self.exclusive_slot = exclusive_slot
+        self.session = uuid.uuid4().hex[:16]
+        # exclusive jobs: `running` counts started jobs; a job that waits to run exclusively blocks every new start
+        self.gate = threading.Condition()
+        self.running, self.exclusive_waiting, self.exclusive_running = 0, 0, False
         self.jobs: dict[str, Job] = {}
         self.by_request: dict[str, str] = {}  # request_id -> job id
         self.queue: queue.Queue[Job] = queue.Queue()  # FIFO across every caller
@@ -370,6 +390,8 @@ class Scorer:
             "cache_alone": self.alone_cache is not None, "timing_env": TIMING_ENV,
             "cpu_dma_latency_us": cpu_dma_latency(),
             "tasks": sorted({a.name for a in self.tasks.values()}),
+            "session": self.session, "service_started_at": self.started_at, "machine_type": self.machine_type,
+            "slot_cpus": SLOT_CPUS, "exclusive_slot": self.exclusive_slot, **self.hardware,
         }  # fmt: skip
 
     def stats(self) -> dict:
@@ -430,8 +452,10 @@ class Scorer:
             }
             if not all(isinstance(v, int) for v in args.values() if v is not None) or args["seed"] < 0 or min(args["n"], args["reps"]) < 1:
                 raise ValueError("n and reps must be integers >= 1, seed an integer >= 0, size an integer or null")
+        if not isinstance(body.get("exclusive", False), bool):
+            raise ValueError("exclusive must be true or false")
         meta = {k: str(body.get(k, "")) for k in ("run_id", "agent_id", "sample_id", "request_id")}
-        job = Job(uuid.uuid4().hex[:16], kind, task, body["solver_source"], args, meta)
+        job = Job(uuid.uuid4().hex[:16], kind, task, body["solver_source"], args, meta, exclusive=body.get("exclusive", False))
         rid = body.get("request_id")
         with self.lock:
             if rid and rid in self.by_request:  # a retried POST: the job it already made
@@ -445,11 +469,33 @@ class Scorer:
     def view(self, job_id: str) -> dict | None:
         with self.lock:
             job = self.jobs.get(job_id)
-            return None if job is None else job.view(self.cpu_model)
+            return None if job is None else job.view(self.cpu_model, self.session)
 
-    def _work(self, slot: int) -> None:
+    def _admit(self, job: Job) -> None:
+        """Wait until `job` may start: an exclusive job once nothing else runs, any other job once no exclusive job is
+        running or waiting (so a waiting exclusive job is never starved by later ones)."""
+        with self.gate:
+            if job.exclusive:
+                self.exclusive_waiting += 1
+                self.gate.wait_for(lambda: self.running == 0)
+                self.exclusive_waiting -= 1
+                self.exclusive_running = True
+            else:
+                self.gate.wait_for(lambda: self.exclusive_waiting == 0 and not self.exclusive_running)
+            self.running += 1
+
+    def _release(self, job: Job) -> None:
+        with self.gate:
+            self.running -= 1
+            if job.exclusive:
+                self.exclusive_running = False
+            self.gate.notify_all()
+
+    def _work(self, worker: int) -> None:
         while True:
             job = self.queue.get()
+            self._admit(job)
+            slot = self.exclusive_slot if job.exclusive else worker  # every exclusive job on the same CPUs
             with self.lock:
                 job.status, job.slot, job.started_at = "running", slot, time.time()
             job.alone_baseline = None if job.kind == "validity" else {"mode": "child"}  # validity times nothing
@@ -468,9 +514,10 @@ class Scorer:
             with self.lock:
                 job.result, job.output, job.error, job.status, job.ended_at = result, output, error, status, time.time()
                 self.busy_s[slot] += job.ended_at - job.started_at
+            self._release(job)
             if self.log_path is not None:
                 with self.lock, self.log_path.open("a") as fh:
-                    fh.write(json.dumps({**job.view(self.cpu_model), **job.meta, "output": None}) + "\n")
+                    fh.write(json.dumps({**job.view(self.cpu_model, self.session), **job.meta, "output": None}) + "\n")
 
 
 def handler(scorer: Scorer, token: str):
@@ -531,6 +578,46 @@ def cpu_model() -> str:
     if platform.system() == "Darwin":
         return subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True).stdout.strip()
     return platform.processor() or "unknown"
+
+
+# Instruction-set extensions /health reports when the CPU has them (/proc/cpuinfo names): the ones a numerical solver
+# can target (vector widths, FMA, AVX-512 subsets, AMX).
+ISA_FLAGS = (
+    "sse4_2", "avx", "avx2", "fma", "bmi2", "avx512f", "avx512dq", "avx512cd", "avx512bw", "avx512vl", "avx512ifma",
+    "avx512vbmi", "avx512_vbmi2", "avx512_vnni", "avx512_bitalg", "avx512_vpopcntdq", "avx512_bf16", "avx512_fp16", "gfni",
+    "vaes", "vpclmulqdq", "amx_tile", "amx_bf16", "amx_int8",
+)  # fmt: skip
+
+
+def microarchitecture(vendor: str | None, family: int, model: int) -> str | None:
+    """AMD's Zen generation from /proc/cpuinfo's family and model numbers (AMD's model ranges); None for other CPUs.
+    The scorer's EPYC 9R14 is family 25 model 17 (Zen 4); t3a's EPYC 7571 family 23 model 1 (Zen)."""
+    if vendor != "AuthenticAMD":
+        return None
+    if family == 0x17:
+        return "Zen 2" if model >= 0x30 else "Zen or Zen+"
+    if family == 0x19:
+        return "Zen 4" if 0x10 <= model <= 0x1F or 0x60 <= model <= 0xAF else "Zen 3"
+    return "Zen 5" if family == 0x1A else None
+
+
+def cpu_info(path: str = "/proc/cpuinfo") -> dict:
+    """The first CPU's vendor, family and model numbers, Zen generation, hardware threads per core and the ISA_FLAGS it
+    has, from /proc/cpuinfo (containers on this host see the same CPU); None for each where unreadable (the Mac)."""
+    info = {"arch": platform.machine(), "cpu_vendor": None, "cpu_family": None, "cpu_model_number": None,
+            "microarchitecture": None, "threads_per_core": None, "cpu_flags": None}  # fmt: skip
+    try:
+        first = Path(path).read_text().split("\n\n", 1)[0]
+    except OSError:
+        return info
+    fields = {k.strip(): v.strip() for k, sep, v in (line.partition(":") for line in first.splitlines()) if sep}
+    vendor, family, model = fields.get("vendor_id"), int(fields.get("cpu family", -1)), int(fields.get("model", -1))
+    siblings, cores = int(fields.get("siblings", 0)), int(fields.get("cpu cores", 0))
+    flags = set(fields.get("flags", "").split())
+    info |= {"cpu_vendor": vendor, "cpu_family": family, "cpu_model_number": model,
+             "microarchitecture": microarchitecture(vendor, family, model),
+             "threads_per_core": siblings // cores if cores else None, "cpu_flags": [f for f in ISA_FLAGS if f in flags]}  # fmt: skip
+    return info
 
 
 def cpu_dma_latency(path: str = "/dev/cpu_dma_latency") -> int | None:
@@ -625,6 +712,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--cache-alone", action=argparse.BooleanOptionalAction, default=False,
                    help="time the reference alone once per instance set and reuse it (default off: every job times it)")
     p.add_argument("--experiment", default="v6", help="whose secret seed offset to score with (tasks.seed_offset_file)")
+    p.add_argument("--machine-type", default=None, help="this machine's cloud type (scorer.sh passes it), reported in /health")
+    p.add_argument("--exclusive-slot", type=int, default=0, help="the slot whose CPUs every exclusive job runs on")
     return p
 
 
@@ -660,13 +749,15 @@ def main() -> None:
     scorer = Scorer(
         tasks, cpusets, docker_runner(memory=args.memory, work_dir=args.work_dir), cpu, git_version(PROJECT_ROOT),
         seed_offset_id(offset), digest, experiment=args.experiment, log_path=args.work_dir / "jobs.jsonl",
-        queue_log_path=args.work_dir / "queue.jsonl", alone_cache=alone,
+        queue_log_path=args.work_dir / "queue.jsonl", alone_cache=alone, hardware=cpu_info(), machine_type=args.machine_type,
+        exclusive_slot=args.exclusive_slot,
     )  # fmt: skip
     ThreadingHTTPServer.request_queue_size = 128  # the default 5 reset connections when many clients submitted at once
     server = ThreadingHTTPServer((args.host, args.port), handler(scorer, token))
     print(f"scorer on {args.host}:{args.port}: slots {cpusets} (service on {len(service_cpus)} other CPUs), {len(tasks)} tasks, cpu {scorer.cpu_model}, "
           f"version {scorer.version}, experiment {args.experiment}, seed offset id {scorer.seed_offset_id}, cache alone {args.cache_alone}, "
-          f"cpu_dma_latency {cpu_dma_latency()}", flush=True)  # fmt: skip
+          f"cpu_dma_latency {cpu_dma_latency()}, machine {args.machine_type}, session {scorer.session}, "
+          f"exclusive jobs on slot {args.exclusive_slot}, {scorer.hardware}", flush=True)  # fmt: skip
     server.serve_forever()
 
 

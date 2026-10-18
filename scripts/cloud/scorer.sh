@@ -6,6 +6,7 @@
 #                [-- <scorer_service.sh args, default --slots 2>]
 #     --experiment picks whose secret offset the scorer holds (data/.algotune_seed_offset for v6,
 #     data/.algotune_seed_offset.<experiment> after; tasks.seed_offset_file) and is recorded in the state and /health.
+#     After v6 the service also gets --machine-type <machine>, which /health reports beside its CPU and session.
 #     Generates a fresh token, creates the VM from the runner AMI (checking it holds TASK_IMAGE_REF), uploads the seed offset and token (mode 600),
 #     checks out <git-ref>, holds /dev/cpu_dma_latency at 0 (hold_cpu_dma_latency.py, log cpu_dma_latency.log),
 #     starts the service detached, opens the port to this machine only, and waits for
@@ -74,7 +75,7 @@ up() {
   vm_exec "rm -rf swarm-upload && mkdir -m 700 swarm-upload" && vm_put "$tmp/env" "$tmp/seed_offset" swarm-upload/ || exit 1
   # shellcheck disable=SC2016
   # v6 refs predate the service's --experiment, so it is passed only for later experiments
-  [ "$experiment" = v6 ] || service_args=(--experiment "$experiment" "${service_args[@]}")
+  [ "$experiment" = v6 ] || service_args=(--experiment "$experiment" --machine-type "$mt" "${service_args[@]}")
   vm_exec "sudo bash -s -- $(printf '%q ' "$REMOTE_REPO" "$REMOTE_STATE" "$ref" "$offset_name" "${service_args[@]}")" <<'EOF' || exit 1
 set -euo pipefail
 repo=$1 state=$2 ref=$3 offset_name=$4
